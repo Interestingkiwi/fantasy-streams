@@ -944,11 +944,31 @@ def callback():
             client_secret=session['consumer_secret'],
             code=request.args.get('code')
         )
+
+        # --- ADD THESE LINES FOR DEBUGGING ---
+        logging.info(f"Token Keys Received: {token.keys()}")
+        logging.info(f"Full Token Dump: {token}")
+        # -------------------------------------
+
         session['yahoo_token'] = token
     except Exception as e:
         logging.error(f"Error fetching token: {e}", exc_info=True)
         return '<h1>Error: Could not fetch access token.</h1>', 500
-
+    if 'xoauth_yahoo_guid' not in token:
+        logging.warning("GUID missing from token response. Attempting to fetch manually...")
+        try:
+            # Use the authenticated session to fetch the GUID
+            resp = yahoo.get('https://social.yahooapis.com/v1/user/me/guid?format=json')
+            if resp.status_code == 200:
+                guid_data = resp.json()
+                # The response looks like: {'guid': {'value': 'YOUR_GUID_HERE'}}
+                token['xoauth_yahoo_guid'] = guid_data['guid']['value']
+                session['yahoo_token'] = token # Update session with the new field
+                logging.info(f"Successfully fetched GUID: {token['xoauth_yahoo_guid']}")
+            else:
+                logging.error(f"Failed to fetch GUID. Status: {resp.status_code}, Body: {resp.text}")
+        except Exception as e:
+            logging.error(f"Error fetching fallback GUID: {e}")
     try:
         # 1. Save the User's Credentials to the persistent DB
         save_user_credentials(
