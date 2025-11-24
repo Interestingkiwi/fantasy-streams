@@ -7,8 +7,9 @@
     const statUpdateContainer = document.getElementById('stat-update-container');
     const statUpdateCheckbox = document.getElementById('check-stat-updates');
     const logContainer = document.getElementById('log-container');
+    const infoText = document.getElementById('db-info-text');
 
-    if (!statusText || !actionButton || !statUpdateContainer || !statUpdateCheckbox || !logContainer) {
+    if (!statusText || !actionButton || !statUpdateContainer || !statUpdateCheckbox || !logContainer || !infoText) {
         console.error('Database page elements not found.');
         return;
     }
@@ -36,10 +37,13 @@
         } else {
             statusText.textContent = "Your league's data has not been initialized. Please initialize the database.";
             actionButton.textContent = 'Initialize Database';
-
-            // Hide the stat update option (Initial build is always full)
             statUpdateContainer.classList.add('hidden');
             statUpdateCheckbox.checked = false;
+
+            // 4. Set dynamic text for missing database
+            infoText.innerHTML = `Please click Initialize Database to build the file tailored to your league. This can be a lengthy process, especially if it is later in the season as each fantasy day for each team in your league must be called.
+            <br><br>
+            You do not need to remain on the site for the job to run, so feel free to close the page, and simply refresh after some time (15-30minutes).`;
         }
     };
 
