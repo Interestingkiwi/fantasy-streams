@@ -8,3 +8,6 @@ gevent
 yahoo_fantasy_api>=2.0
 apscheduler
 pandas
+google-cloud-storage
+redis
+rq

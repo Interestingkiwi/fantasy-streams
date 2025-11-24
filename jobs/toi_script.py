@@ -1,6 +1,6 @@
 import requests
 import pandas as pd
-from datetime import date, timedelta, datetime
+from datetime import date, timedelta, datetime, timezone
 import time
 import sqlite3
 import os
@@ -8,6 +8,7 @@ import numpy as np
 import sys
 import unicodedata
 import re
+import pytz
 
 
 MOUNT_PATH = "/var/data/dbs"
@@ -546,89 +547,64 @@ def create_last_week_pp_table(db_file):
 
 def fetch_daily_pp_stats():
     """
-    Fetches NHL powerplay stats for the previous 7 days, not including today.
-    It queries the API day-by-day to get per-game stats and handles pagination.
+    Fetches NHL powerplay stats. Uses US/Eastern time to ensure consistent 'today'.
+    Only updates metadata if ALL days were fetched successfully.
     """
+    print("\n--- Fetching Daily PP Stats ---")
 
-    # --- 1. Define Fields and Data Structures ---
-
-    # These are the fields we want to pull from the API response
-    FIELDS_TO_EXTRACT = [
-        "playerId",
-        "skaterFullName",
-        "teamAbbrevs",
-        "ppTimeOnIce",
-        "ppTimeOnIcePctPerGame",
-        "ppAssists",
-        "ppGoals"
-    ]
-
-    # This maps the API field name to the final column name you requested
-    COLUMN_REMAP = {
-        "playerId": "nhlplayerid"
-    }
-
-    # This list will hold all the dictionaries of player data
+    # --- 1. Setup Fields ---
+    FIELDS_TO_EXTRACT = ["playerId", "skaterFullName", "teamAbbrevs", "ppTimeOnIce",
+                         "ppTimeOnIcePctPerGame", "ppAssists", "ppGoals"]
+    COLUMN_REMAP = {"playerId": "nhlplayerid"}
     all_player_data = []
+    has_errors = False # Track if any day failed
 
-    # --- 2. Calculate Date Range ---
+    # --- 2. Calculate Date Range (Timezone Aware) ---
+    # Always use US Eastern time to determine "Today", regardless of server location
+    est = pytz.timezone('US/Eastern')
+    today = datetime.now(est).date()
 
-    today = date.today()
-    target_end_date = today - timedelta(days=1)   # Yesterday
-    target_start_date = today - timedelta(days=7) # 7 days ago
+    target_end_date = today - timedelta(days=1)
+    target_start_date = today - timedelta(days=7)
 
-    last_run_end_date = get_last_run_end_date()
+    #last_run_end_date = get_last_run_end_date()
+    last_run_end_date = None
 
     if last_run_end_date:
-        # Start querying from the day *after* the last run
         query_start_date = last_run_end_date + timedelta(days=1)
-        # But if there's a large gap, don't query data older than the target 7-day window
         if query_start_date < target_start_date:
             query_start_date = target_start_date
-        print(f"Last run found. Data is current up to {last_run_end_date}.")
+        print(f"Last run found ({last_run_end_date}). Fetching from {query_start_date}.")
     else:
-        # No metadata found, fetch the full 7-day window
         print("No metadata found. Fetching full 7-day window.")
         query_start_date = target_start_date
 
     query_end_date = target_end_date
 
-    # Run database cleanup *before* fetching, based on the target window
+    # Database cleanup
     run_database_cleanup(target_start_date)
 
-    # Check if we are already up to date
     if query_start_date > query_end_date:
-        print(f"Data is already up to date (as of {last_run_end_date}). No new data to fetch.")
-        # We still update metadata to reflect the new cleanup (start_date)
-        if last_run_end_date: # Only update if last_run_end_date is not None
-            update_metadata(target_start_date, last_run_end_date)
-        return False # Return False to indicate no new data was fetched
+        print("Data is already up to date.")
+        return False
 
-    print(f"Target data window: {target_start_date} to {target_end_date}")
-    print(f"Fetching new data for: {query_start_date} to {query_end_date}")
-
-    # Create a list of all date strings we need to query
+    # --- 3. Fetch Data ---
     dates_to_query = []
-    current_date = query_start_date
-    while current_date <= query_end_date:
-        dates_to_query.append(current_date.strftime("%Y-%m-%d"))
-        current_date += timedelta(days=1)
-
-    # --- 3. Loop Through Each Day and Fetch Data ---
+    curr = query_start_date
+    while curr <= query_end_date:
+        dates_to_query.append(curr.strftime("%Y-%m-%d"))
+        curr += timedelta(days=1)
 
     BASE_URL = "https://api.nhle.com/stats/rest/en/skater/powerplay"
 
     for query_date in dates_to_query:
-        print(f"\n--- Querying for date: {query_date} ---")
-
+        print(f"Querying {query_date}...")
+        day_records = []
         start_index = 0
         limit = 100
 
-        # This inner loop handles pagination for a single day
         while True:
-            # Build the filter expression for this specific day
             cayenne_exp = f'gameDate>="{query_date}" and gameDate<="{query_date}" and gameTypeId=2'
-
             params = {
                 "isAggregate": "false",
                 "sort": '[{"property":"ppTimeOnIce","direction":"DESC"}]',
@@ -638,141 +614,70 @@ def fetch_daily_pp_stats():
             }
 
             try:
-                # Make the API request
-                response = requests.get(BASE_URL, params=params)
-                response.raise_for_status()  # Raise an error for bad responses (404, 500, etc.)
-
+                response = requests.get(BASE_URL, params=params, timeout=10)
+                response.raise_for_status()
                 data = response.json()
                 players = data.get("data", [])
-                total_records = data.get("total", 0)
 
                 if not players:
-                    # No more players found for this day, break the pagination loop
-                    print(f"  No more records for {query_date}. (Processed {start_index} of {total_records} total)")
                     break
 
-                print(f"  Processing records {start_index + 1}-{start_index + len(players)} of {total_records} for {query_date}...")
-
-                # Process each player's data
-                for player in players:
-                    record = {}
-
-                    # Add the date we are querying
-                    record["date_"] = query_date
-
-                    # Extract and rename the fields
+                for p in players:
+                    record = {"date_": query_date}
                     for field in FIELDS_TO_EXTRACT:
-                        # Use the remapped name if it exists, otherwise use the original field name
                         new_name = COLUMN_REMAP.get(field, field)
-                        record[new_name] = player.get(field)
+                        record[new_name] = p.get(field)
+                    day_records.append(record)
 
-                    all_player_data.append(record)
-
-                # Increment 'start' for the next page
                 start_index += limit
+                time.sleep(0.2)
 
-                # Be a good citizen and pause briefly between paged requests
-                time.sleep(0.5)
+            except Exception as e:
+                print(f"!!! ERROR fetching {query_date}: {e}")
+                has_errors = True
+                break # Stop this day, move to next
 
-            except requests.exceptions.RequestException as e:
-                print(f"  Error fetching data for {query_date} (start={start_index}): {e}")
-                # Stop trying to paginate for this day if an error occurs
-                break
+        if not has_errors:
+            all_player_data.extend(day_records)
+        else:
+            print(f"Skipping save for {query_date} due to errors.")
 
-        # Pause briefly between *days*
-        time.sleep(1)
-
-    # --- 4. Create DataFrame and Write to Database ---
-
-    print("\n--- Data Fetching Complete ---")
-
+    # --- 4. Save to DB ---
     if not all_player_data:
-        print("No new data was found for the specified date range.")
-        # Still update metadata to show the window we've covered
-        update_metadata(target_start_date, target_end_date)
-        return False # Return False to indicate no new data was fetched
+        print("No new data found.")
+        return False
 
-    # Convert the list of dictionaries into a pandas DataFrame
     df = pd.DataFrame(all_player_data)
 
-    # Re-order columns to your specification
-    final_columns = [
-        "date_",
-        "nhlplayerid",
-        "skaterFullName",
-        "teamAbbrevs",
-        "ppTimeOnIce",
-        "ppTimeOnIcePctPerGame",
-        "ppAssists",
-        "ppGoals"
-    ]
+    # Deduplicate
+    df.drop_duplicates(subset=['date_', 'nhlplayerid'], keep='first', inplace=True)
 
-    # Make sure all requested columns are in the DataFrame before re-ordering
-    available_columns = [col for col in final_columns if col in df.columns]
-    df = df[available_columns]
-
-    print(f"Successfully fetched a total of {len(df)} player-game records.")
-
-    # Display the first 5 rows
-    print("\nData Sample (first 5 rows):")
-    print(df.head())
-
-    # --- 5. Write data to SQLite database ---
-    conn = None
+    # Write to DB
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
     try:
-        conn = sqlite3.connect(DB_FILE)
-        cursor = conn.cursor()
+        # Delete existing for these specific dates to avoid unique constraint errors
+        unique_dates = df['date_'].unique().tolist()
+        placeholders = ','.join(['?'] * len(unique_dates))
+        cursor.execute(f"DELETE FROM powerplay_stats WHERE date_ IN ({placeholders})", unique_dates)
 
-        # --- NEW LOGIC: ---
-        # Get all unique dates from our new data
-
-        # --- FIX: Drop duplicates from the dataframe *before* writing ---
-        # This handles cases where the API pagination might return the same player twice.
-        initial_record_count = len(df)
-        df.drop_duplicates(subset=['date_', 'nhlplayerid'], keep='first', inplace=True)
-        final_record_count = len(df)
-
-        if initial_record_count != final_record_count:
-            print(f"\nDropped {initial_record_count - final_record_count} duplicate records from the new data.")
-        # --- END FIX ---
-
-        dates_in_dataframe = df['date_'].unique()
-
-        print(f"\nDeleting existing records for {len(dates_in_dataframe)} new dates to prevent duplicates...")
-
-        # Create a placeholder string like "(?, ?, ?)"
-        placeholders = ', '.join('?' for _ in dates_in_dataframe)
-
-        # Delete all rows in the DB that match the dates we are about to insert
-        cursor.execute(f"DELETE FROM powerplay_stats WHERE date_ IN ({placeholders})", tuple(dates_in_dataframe))
-        conn.commit()
-
-        print(f"Deleted {cursor.rowcount} old records for the new date range.")
-        # --- END NEW LOGIC ---
-
-        # Write the new DataFrame data to the 'powerplay_stats' table
-        print(f"Writing {len(df)} new records to 'powerplay_stats' table...")
-        # Using if_exists='append' because we've already cleared the date range.
         df.to_sql('powerplay_stats', conn, if_exists='append', index=False)
         conn.commit()
+        print(f"Successfully saved {len(df)} records.")
 
-        print(f"Successfully wrote {len(df)} records to {DB_FILE}.")
-
-    except sqlite3.Error as e:
-        # Handle potential "UNIQUE constraint failed" errors if the cleanup logic failed
-        # This "except" block should ideally not be hit anymore, but we'll keep it as a safeguard.
-        if "UNIQUE constraint failed" in str(e):
-            print(f"Note: Some records may have already existed in the database.")
+        # ONLY update metadata if there were NO errors during fetch
+        if not has_errors:
+            update_metadata(target_start_date, target_end_date)
         else:
-            print(f"An error occurred while writing to the database: {e}")
-    finally:
-        if conn:
-            conn.close()
+            print("WARNING: Metadata NOT updated because errors occurred. Will retry next run.")
 
-    # --- 6. Update Metadata ---
-    # Update metadata to reflect the new 7-day window
-    update_metadata(target_start_date, target_end_date)
-    return True # Return True to indicate new data was fetched and written
+    except Exception as e:
+        print(f"Database write error: {e}")
+    finally:
+        conn.close()
+
+    return True
+
 
 
 def fetch_team_stats_summary():
