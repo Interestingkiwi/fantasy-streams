@@ -769,6 +769,21 @@ def _get_ranked_players(cursor, player_ids, cat_rank_columns, raw_stat_columns, 
 
 # --- Admin DB Configuration ---
 ADMIN_DB_PATH = os.path.join(DATA_DIR, 'admin.db')
+gcs_bucket = storage_client.bucket(gcs_bucket_name)
+
+def upload_admin_db_to_gcs():
+    """Syncs the local admin.db to GCS."""
+    if not gcs_bucket:
+        logging.warning("GCS not configured. Cannot sync admin.db.")
+        return
+
+    try:
+        # Upload to the root of the bucket or a specific folder
+        blob = gcs_bucket.blob('system/admin.db')
+        blob.upload_from_filename(ADMIN_DB_PATH)
+        logging.info("Synced admin.db to GCS.")
+    except Exception as e:
+        logging.error(f"Failed to upload admin.db to GCS: {e}")
 
 def init_admin_db():
     """Creates the admin database tables if they don't exist."""
@@ -832,6 +847,7 @@ def save_user_credentials(token, consumer_key, consumer_secret):
     conn.commit()
     conn.close()
     logging.info(f"Saved credentials for user {guid}")
+    upload_admin_db_to_gcs()
 
 def assign_league_updater(league_id, user_guid):
     """
@@ -850,6 +866,7 @@ def assign_league_updater(league_id, user_guid):
         cursor.execute("INSERT INTO league_updaters (league_id, user_guid) VALUES (?, ?)", (league_id, user_guid))
         conn.commit()
         logging.info(f"League {league_id} assigned to user {user_guid} for background updates.")
+        upload_admin_db_to_gcs()
     else:
         # League already has an updater.
         # Optional: You could logic here to 'steal' the role if the old user's token is invalid.

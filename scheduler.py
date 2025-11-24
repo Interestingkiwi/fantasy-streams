@@ -7,6 +7,7 @@ import json
 import tempfile
 from datetime import datetime
 from apscheduler.schedulers.background import BackgroundScheduler
+from google.cloud import storage
 
 # Import your db_builder and authentication libraries
 import db_builder
@@ -21,6 +22,7 @@ logger = logging.getLogger(__name__)
 # Path to the admin DB created in app.py
 DATA_DIR = '/var/data/dbs'
 ADMIN_DB_PATH = os.path.join(DATA_DIR, 'admin.db')
+GCS_BUCKET_NAME = os.environ.get('GCS_BUCKET_NAME')
 
 def get_refreshed_token(user_row):
     """
@@ -65,14 +67,39 @@ def get_refreshed_token(user_row):
         if os.path.exists(temp_path):
             os.remove(temp_path)
 
+
+def download_admin_db_from_gcs():
+    """
+    Fetches the authoritative admin.db from GCS before running jobs.
+    """
+    if not GCS_BUCKET_NAME:
+        logger.warning("GCS_BUCKET_NAME not set. Cannot fetch admin.db.")
+        return
+
+    try:
+        storage_client = storage.Client()
+        bucket = storage_client.bucket(GCS_BUCKET_NAME)
+        blob = bucket.blob('system/admin.db')
+
+        if blob.exists():
+            logger.info("Downloading latest admin.db from GCS...")
+            blob.download_to_filename(ADMIN_DB_PATH)
+            logger.info("Download complete.")
+        else:
+            logger.warning("admin.db not found in GCS (system/admin.db). Assuming empty start.")
+
+    except Exception as e:
+        logger.error(f"Failed to download admin.db from GCS: {e}")
+
+
 def run_league_updates():
     """
     Iterates through all assigned leagues in admin.db and runs the DB update.
     """
     logger.info("--- Starting Scheduled League Updates ---")
-
+    download_admin_db_from_gcs()
     if not os.path.exists(ADMIN_DB_PATH):
-        logger.warning("Admin DB not found. Skipping updates.")
+        logger.warning("Admin DB not found locally or in GCS. Skipping updates.")
         return
 
     conn = sqlite3.connect(ADMIN_DB_PATH)
