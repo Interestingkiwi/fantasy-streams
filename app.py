@@ -955,18 +955,29 @@ def callback():
         logging.error(f"Error fetching token: {e}", exc_info=True)
         return '<h1>Error: Could not fetch access token.</h1>', 500
     if 'xoauth_yahoo_guid' not in token:
-        logging.warning("GUID missing from token response. Attempting to fetch manually...")
+        logging.warning("GUID missing from token response. Fetching via Fantasy API...")
         try:
-            # Use the authenticated session to fetch the GUID
-            resp = yahoo.get('https://social.yahooapis.com/v1/user/me/guid?format=json')
+            # Use the Fantasy Sports API "use_login=1" endpoint to identify the user
+            # This works because your app already has Fantasy permissions
+            resp = yahoo.get('https://fantasysports.yahooapis.com/fantasy/v2/users;use_login=1?format=json')
+
             if resp.status_code == 200:
-                guid_data = resp.json()
-                # The response looks like: {'guid': {'value': 'YOUR_GUID_HERE'}}
-                token['xoauth_yahoo_guid'] = guid_data['guid']['value']
-                session['yahoo_token'] = token # Update session with the new field
-                logging.info(f"Successfully fetched GUID: {token['xoauth_yahoo_guid']}")
+                data = resp.json()
+                # Navigate the Yahoo Fantasy JSON structure to find the GUID
+                # Structure is: fantasy_content -> users -> 0 -> user -> 0 -> guid
+                try:
+                    user_obj = data['fantasy_content']['users']['0']['user'][0]
+                    guid = user_obj['guid']
+
+                    # Inject it back into the token so the rest of your app works
+                    token['xoauth_yahoo_guid'] = guid
+                    session['yahoo_token'] = token
+                    logging.info(f"Successfully fetched GUID via Fantasy API: {guid}")
+                except (KeyError, IndexError) as e:
+                    logging.error(f"Could not parse GUID from Fantasy response: {e}")
+                    logging.error(f"Response body: {data}")
             else:
-                logging.error(f"Failed to fetch GUID. Status: {resp.status_code}, Body: {resp.text}")
+                logging.error(f"Failed to fetch user info. Status: {resp.status_code}, Body: {resp.text}")
         except Exception as e:
             logging.error(f"Error fetching fallback GUID: {e}")
     try:
