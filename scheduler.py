@@ -134,8 +134,24 @@ def run_league_updates():
             continue
 
         # 2. Update the DB with new token (so we don't use stale tokens next time)
-        # You might want to write a helper function for this to keep it clean
-        # (Omitted here for brevity, but highly recommended to update admin.db with new tokens)
+        conn_update = sqlite3.connect(ADMIN_DB_PATH)
+        cursor_update = conn_update.cursor()
+        cursor_update.execute("""
+            UPDATE users
+            SET access_token = ?,
+                refresh_token = ?,
+                token_time = ?,
+                expires_in = ?
+            WHERE guid = ?
+        """, (
+            creds['access_token'],
+            creds['refresh_token'],
+            creds['token_time'],
+            creds['expires_in'],
+            user_guid
+        ))
+        conn_update.commit()
+        conn_update.close()
 
         # 3. Initialize APIs
         try:
