@@ -945,51 +945,42 @@ def callback():
             code=request.args.get('code')
         )
 
-        # --- ADD THESE LINES FOR DEBUGGING ---
-        logging.info(f"Token Keys Received: {token.keys()}")
-        logging.info(f"Full Token Dump: {token}")
-        # -------------------------------------
-
+        # 1. Basic Token Save
         session['yahoo_token'] = token
-    except Exception as e:
-        logging.error(f"Error fetching token: {e}", exc_info=True)
-        return '<h1>Error: Could not fetch access token.</h1>', 500
-    if 'xoauth_yahoo_guid' not in token:
-        logging.warning("GUID missing from token response. Fetching via Fantasy API...")
-        try:
-            # Use the Fantasy Sports API "use_login=1" endpoint to identify the user
-            # This works because your app already has Fantasy permissions
-            resp = yahoo.get('https://fantasysports.yahooapis.com/fantasy/v2/users;use_login=1?format=json')
 
-            if resp.status_code == 200:
-                data = resp.json()
-                # Navigate the Yahoo Fantasy JSON structure to find the GUID
-                # Structure is: fantasy_content -> users -> 0 -> user -> 0 -> guid
-                try:
+        # 2. Ensure we have the GUID (The unique user ID)
+        # We check the token first (Fast Path). If missing, we ask the Fantasy API (Robust Path).
+        if 'xoauth_yahoo_guid' not in token:
+            logging.info("GUID missing from initial token. Fetching via Fantasy API...")
+            try:
+                # This endpoint confirms the user identity associated with the token
+                resp = yahoo.get('https://fantasysports.yahooapis.com/fantasy/v2/users;use_login=1?format=json')
+
+                if resp.status_code == 200:
+                    data = resp.json()
+                    # Parse: fantasy_content -> users -> 0 -> user -> 0 -> guid
                     user_obj = data['fantasy_content']['users']['0']['user'][0]
                     guid = user_obj['guid']
 
-                    # Inject it back into the token so the rest of your app works
+                    # Retrofit the GUID into the token object so the rest of the app works normally
                     token['xoauth_yahoo_guid'] = guid
-                    session['yahoo_token'] = token
-                    logging.info(f"Successfully fetched GUID via Fantasy API: {guid}")
-                except (KeyError, IndexError) as e:
-                    logging.error(f"Could not parse GUID from Fantasy response: {e}")
-                    logging.error(f"Response body: {data}")
-            else:
-                logging.error(f"Failed to fetch user info. Status: {resp.status_code}, Body: {resp.text}")
-        except Exception as e:
-            logging.error(f"Error fetching fallback GUID: {e}")
-    try:
-        # 1. Save the User's Credentials to the persistent DB
+                    session['yahoo_token'] = token # Re-save the complete token to session
+                    logging.info(f"GUID retrieved successfully: {guid}")
+                else:
+                    logging.error(f"Failed to fetch user GUID. Status: {resp.status_code} Body: {resp.text}")
+                    return '<h1>Error: Could not identify user.</h1>', 500
+            except Exception as e:
+                logging.error(f"Exception fetching fallback GUID: {e}")
+                return '<h1>Error: Authentication failed during user identification.</h1>', 500
+
+        # 3. Persist Credentials to Admin DB (and sync to GCS)
         save_user_credentials(
             session['yahoo_token'],
             session.get('consumer_key'),
             session.get('consumer_secret')
         )
 
-        # 2. Assign this user as the updater for the current league
-        # (This only happens if no one else has claimed "updater" status for this league yet)
+        # 4. Assign as Updater if needed
         current_league_id = session.get('league_id')
         user_guid = session['yahoo_token'].get('xoauth_yahoo_guid')
 
@@ -997,8 +988,8 @@ def callback():
             assign_league_updater(current_league_id, user_guid)
 
     except Exception as e:
-        logging.error(f"Failed to save persistent credentials: {e}")
-    # --- NEW CODE ENDS HERE ---
+        logging.error(f"Error in callback sequence: {e}", exc_info=True)
+        return '<h1>Error: Login sequence failed.</h1>', 500
 
     return redirect(url_for('home'))
 
@@ -3895,6 +3886,7 @@ def db_action():
     data = request.get_json()
     options = {
         'capture_lineups': data.get('capture_lineups', False),
+        'roster_updates_only': data.get('roster_updates_only', False),
         'skip_static': data.get('skip_static', False),
         'skip_players': data.get('skip_players', False)
     }

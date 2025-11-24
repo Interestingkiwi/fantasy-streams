@@ -144,14 +144,19 @@ def run_task(build_id, log_file_path, options, data):
         # --- FIX 4: Call the correct function from db_builder.py ---
         # And pass the new logger to it.
         DATA_DIR = '/var/data/dbs'
-
+        roster_updates_only = options.get('roster_updates_only', False)
+        if roster_updates_only:
+             logger.info("Mode: Roster Updates Only")
+        else:
+             logger.info(f"Mode: Standard Update (Capture Lineups: {options['capture_lineups']})")
         result = update_league_db(
             yq,
             lg,
             data['league_id'],
             DATA_DIR, # Pass the data directory
             logger, # Pass the new logger
-            capture_lineups=options['capture_lineups']
+            capture_lineups=options['capture_lineups'],
+            roster_updates_only=options.get('roster_updates_only', False)
             # Note: I am using the function from your db_builder.py file,
             # which does not include skip_static or skip_players.
             # If you re-add those to league-database.html, you must
@@ -1554,7 +1559,7 @@ def _update_db_metadata(cursor, logger, update_available_players_timestamp=False
 
 
 # --- MODIFIED: Accept logger ---
-def update_league_db(yq, lg, league_id, data_dir, logger, capture_lineups=False):
+def update_league_db(yq, lg, league_id, data_dir, logger, capture_lineups=False, roster_updates_only=False):
     """
     Creates or updates the league-specific SQLite database by calling
     individual query and update functions.
@@ -1577,54 +1582,54 @@ def update_league_db(yq, lg, league_id, data_dir, logger, capture_lineups=False)
         db_filename = f"yahoo-{league_id}-{sanitized_name}.db"
         db_path = os.path.join(data_dir, db_filename)
         logger.info(f"Database will be built at: {db_path}")
+        if not os.path.exists(db_path):
+            logger.warning(f"No database found at {db_path}.")
+            logger.warning(">>> FORCING FULL INITIALIZATION <<<")
+            capture_lineups = True       # Force Full History
+            roster_updates_only = False  # Cannot do partial on missing DB
 
-        if capture_lineups:
-            # --- MODIFIED ---
-            logger.info("Full mode selected (capture_lineups=True). Checking for existing database file...")
-            if os.path.exists(db_path):
-                try:
-                    # --- MODIFIED ---
-                    logger.warning(f"Deleting existing database file: {db_path}")
-                    os.remove(db_path)
-                    logger.info("Existing database file deleted successfully.")
-                except OSError as e:
-                    # --- MODIFIED ---
-                    logger.error(f"Error deleting database file {db_path}: {e}", exc_info=True)
-                    return {'success': False, 'error': f"Could not delete existing DB file: {e}"}
-            else:
-                # --- MODIFIED ---
-                logger.info("No existing database file found to delete.")
-        else:
-            # --- MODIFIED ---
-            logger.info("Update mode selected (capture_lineups=False). Existing database file will be updated.")
-
-        # --- MODIFIED ---
         logger.info(f"Connecting to database: {db_path}")
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
+        if roster_updates_only:
+            logger.info(">>> ROSTER UPDATES ONLY MODE ENABLED <<<")
+            logger.info("Skipping league settings, matchups, and historical stats.")
 
-        # --- yfpy API Call Functions ---
-        # --- MODIFIED: Pass logger to all calls ---
-        _create_tables(cursor, logger)
-        _update_db_metadata(cursor, logger)
+            # Create tables if they don't exist (safe to run)
+            _create_tables(cursor, logger)
+            _update_db_metadata(cursor, logger)
 
-        _update_league_info(yq, cursor, league_id, sanitized_name, league_metadata, logger)
-        _update_teams_info(yq, cursor, logger)
-        playoff_start_week = _update_league_scoring_settings(yq, cursor, logger)
-        _update_lineup_settings(yq, cursor, logger)
-        _update_fantasy_weeks(yq, cursor, league_metadata.league_key, logger)
-        _update_league_matchups(yq, cursor, playoff_start_week, logger)
-        _update_league_transactions(yq, cursor, logger)
+            # Core Roster Functions
+            _update_current_rosters(yq, cursor, conn, league_metadata.num_teams, logger)
+            _create_rosters_tall_and_drop_rosters(cursor, conn, logger)
 
-        _update_daily_lineups(yq, cursor, conn, league_metadata.num_teams, league_metadata.start_date, capture_lineups, logger)
-        _update_current_rosters(yq, cursor, conn, league_metadata.num_teams, logger)
-        _create_rosters_tall_and_drop_rosters(cursor, conn, logger)
+            # Note: We skip _update_daily_lineups, teams info, weeks, etc.
+            conn.commit()
+
+        else:
+            logger.info(f">>> STANDARD UPDATE MODE (Full History: {capture_lineups}) <<<")
+            # --- FULL / PARTIAL MODE (Standard) ---
+            _create_tables(cursor, logger)
+            _update_db_metadata(cursor, logger)
+
+            _update_league_info(yq, cursor, league_id, sanitized_name, league_metadata, logger)
+            _update_teams_info(yq, cursor, logger)
+            playoff_start_week = _update_league_scoring_settings(yq, cursor, logger)
+            _update_lineup_settings(yq, cursor, logger)
+            _update_fantasy_weeks(yq, cursor, league_metadata.league_key, logger)
+            _update_league_matchups(yq, cursor, playoff_start_week, logger)
+            _update_league_transactions(yq, cursor, logger)
+
+            _update_daily_lineups(yq, cursor, conn, league_metadata.num_teams, league_metadata.start_date, capture_lineups, logger)
+            _update_current_rosters(yq, cursor, conn, league_metadata.num_teams, logger)
+            _create_rosters_tall_and_drop_rosters(cursor, conn, logger)
+
 
         # --- yfa API Call Functions ---
         if lg is None:
-            logger.error("Yahoo Fantasy API (lg) object is None. Skipping FA, Waiver, and Rostered Players update.")
-            logger.error("This is expected in dev mode.")
+            logger.error("Yahoo Fantasy API (lg) object is None...")
         else:
+            # Always run these in both modes to keep availability fresh
             _update_free_agents(lg, conn, logger)
             _update_waivers(lg, conn, logger)
             _update_rostered_players(lg, conn, logger)
@@ -1632,9 +1637,7 @@ def update_league_db(yq, lg, league_id, data_dir, logger, capture_lineups=False)
 
         conn.commit()
         conn.close()
-        # --- MODIFIED ---
-        logger.info("Initial data import complete. DB connection closed.")
-
+        logger.info("Data import complete.")
         # --- DB Finalization ---
         # --- MODIFIED ---
         logger.info("--- Starting Database Finalization Process ---")
@@ -1650,8 +1653,14 @@ def update_league_db(yq, lg, league_id, data_dir, logger, capture_lineups=False)
         if finalizer.con:
             finalizer.import_player_ids(PLAYER_IDS_DB_PATH)
             finalizer.process_with_projections(PROJECTIONS_DB_PATH)
-            finalizer.parse_and_store_player_stats()
-            finalizer.parse_and_store_bench_stats()
+
+            if not roster_updates_only:
+                # Only parse stats if we actually fetched new ones
+                finalizer.parse_and_store_player_stats()
+                finalizer.parse_and_store_bench_stats()
+            else:
+                logger.info("Skipping stat parsing in Roster Only mode.")
+
             finalizer.close_connection()
         else:
             # --- MODIFIED ---

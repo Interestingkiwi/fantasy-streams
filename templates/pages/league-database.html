@@ -7,40 +7,26 @@
         <button id="db-action-button" class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg transition duration-300 opacity-50 cursor-not-allowed" disabled>
             Loading...
         </button>
-<!--
-        <p class="text-xs text-gray-400">Go to the <span class="font-bold text-gray-300">Settings</span> page to toggle between using a live-built DB and a pre-loaded test DB.</p>
--->
+<div class="flex items-center gap-4">
     </div>
-    <div class="mt-4 flex items-start">
-        <div class="flex items-center h-5">
-            <input id="capture-daily-lineups" name="capture-daily-lineups" type="checkbox" class="focus:ring-blue-500 h-4 w-4 text-blue-600 border-gray-300 rounded bg-gray-700">
-        </div>
-        <div class="ml-3 text-sm">
-            <label for="capture-daily-lineups" class="font-medium text-gray-300">Capture Full Season Lineups & Stats</label>
-            <p class="text-gray-400 text-xs mt-1">Determines how much historical data to capture for daily lineups and stats.
-            <br><b>Checked:</b> Captures all data from the beginning of the fantasy season. Can take 15+ minutes, only use if you want historical league data.
-            <br><b>Unchecked:</b> Captures data only from the start of the current fantasy week. Much faster for regular updates.</p>
-        </div>
-    </div>
-<!--    <div class="mt-4 flex items-start">
-        <div class="flex items-center h-5">
-            <input id="skip-static-info" name="skip-static-info" type="checkbox" class="focus:ring-blue-500 h-4 w-4 text-blue-600 border-gray-300 rounded bg-gray-700">
-        </div>
-        <div class="ml-3 text-sm">
-            <label for="skip-static-info" class="font-medium text-gray-300">Skip Static League Info</label>
-            <p class="text-gray-400 text-xs mt-1">If checked, skips updating static league information like league settings, teams, and matchups. Use this for faster updates if this info hasn't changed.</p>
+
+    <div class="mt-4">
+        <p class="text-sm text-gray-300 mb-4">
+            Updates the database to reflect any roster changes that have occurred today.
+        </p>
+
+        <div id="stat-update-container" class="flex items-start hidden"> <div class="flex items-center h-5">
+                <input id="check-stat-updates" name="check-stat-updates" type="checkbox" class="focus:ring-blue-500 h-4 w-4 text-blue-600 border-gray-300 rounded bg-gray-700">
+            </div>
+            <div class="ml-3 text-sm">
+                <label for="check-stat-updates" class="font-medium text-gray-300">Check for Stat Updated</label>
+                <p class="text-gray-400 text-xs mt-1">
+                    Database updates overnight to capture matchup stats, however check this box to force an additional update (i.e. There was a stat adjustment that occurred after games concluded that wasn't caught in the overnight update).
+                </p>
+            </div>
         </div>
     </div>
-    <div class="mt-4 flex items-start">
-        <div class="flex items-center h-5">
-            <input id="skip-available-players" name="skip-available-players" type="checkbox" class="focus:ring-blue-500 h-4 w-4 text-blue-600 border-gray-300 rounded bg-gray-700">
-        </div>
-        <div class="ml-3 text-sm">
-            <label for="skip-available-players" class="font-medium text-gray-300">Skip Available Players Update</label>
-            <p class="text-gray-400 text-xs mt-1">If checked, skips updating free agents, waivers, and rostered player lists. Use this for faster daily updates when you only need to refresh lineups and stats.</p>
-        </div>
-    </div>
-</div> -->
+</div>
 <div class="mt-4">
     <h3 class="text-lg font-bold text-white">Update Log</h3>
     <div id="log-container" class="mt-2 p-4 bg-gray-900 rounded-lg h-48 overflow-y-auto">

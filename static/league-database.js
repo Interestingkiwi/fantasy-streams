@@ -1,24 +1,28 @@
 // This script will manage the league-database.html page
 (async function() {
-    // A short delay to ensure the page elements are in the DOM
     await new Promise(resolve => setTimeout(resolve, 0));
 
     const statusText = document.getElementById('db-status-text');
     const actionButton = document.getElementById('db-action-button');
-    const captureLineupsCheckbox = document.getElementById('capture-daily-lineups');
-/*    const skipStaticInfoCheckbox = document.getElementById('skip-static-info');
-    const skipAvailablePlayersCheckbox = document.getElementById('skip-available-players'); */
-    const logContainer = document.getElementById('log-container'); // Get the new log container
+    const statUpdateContainer = document.getElementById('stat-update-container');
+    const statUpdateCheckbox = document.getElementById('check-stat-updates');
+    const logContainer = document.getElementById('log-container');
 
-    if (!statusText || !actionButton || !captureLineupsCheckbox || /*!skipStaticInfoCheckbox || !skipAvailablePlayersCheckbox ||*/ !logContainer) {
+    if (!statusText || !actionButton || !statUpdateContainer || !statUpdateCheckbox || !logContainer) {
         console.error('Database page elements not found.');
         return;
     }
 
+    let dbExists = false; // State to track DB status
+
     const updateStatus = (data) => {
+        dbExists = data.db_exists; // Store state
+
         if (data.is_test_db) {
             statusText.innerHTML = `<strong>TEST MODE ACTIVE.</strong> All pages are reading from <span class="font-mono text-green-400">${data.league_name}</span>. <br>You can still use the button below to build or update a separate, live database.`;
             actionButton.textContent = 'Build/Update Live Database';
+            // In test mode, we might act like DB exists for the purpose of the UI options
+            statUpdateContainer.classList.remove('hidden');
             return;
         }
 
@@ -26,9 +30,16 @@
             const date = new Date(data.timestamp * 1000);
             statusText.textContent = `Your league: '${data.league_name}'s data is up to date as of: ${date.toLocaleString()}`;
             actionButton.textContent = 'Update Database';
+
+            // Show the stat update option
+            statUpdateContainer.classList.remove('hidden');
         } else {
             statusText.textContent = "Your league's data has not been initialized. Please initialize the database.";
             actionButton.textContent = 'Initialize Database';
+
+            // Hide the stat update option (Initial build is always full)
+            statUpdateContainer.classList.add('hidden');
+            statUpdateCheckbox.checked = false;
         }
     };
 
@@ -137,22 +148,40 @@
         actionButton.disabled = true;
         actionButton.classList.add('opacity-50', 'cursor-not-allowed');
         actionButton.textContent = 'Starting Update...';
-        logContainer.innerHTML = ''; // Clear previous logs
+        logContainer.innerHTML = '';
 
-        // Close any existing stream
-        if (eventSource) {
-            eventSource.close();
+        if (eventSource) eventSource.close();
+
+        // --- LOGIC BRANCHING ---
+        let captureLineups = false;
+        let rosterUpdatesOnly = false;
+
+        if (!dbExists) {
+            // Scenario 1: No DB exists -> Force Full Build
+            captureLineups = true;
+            rosterUpdatesOnly = false;
+        } else {
+            // Scenario 2: DB exists
+            if (statUpdateCheckbox.checked) {
+                // "Check for Stat Updated" -> Partial Stat Update
+                captureLineups = false;
+                rosterUpdatesOnly = false;
+            } else {
+                // Default -> Roster Updates Only
+                captureLineups = false;
+                rosterUpdatesOnly = true;
+            }
         }
+        // -----------------------
 
         try {
             const options = {
-                'capture_lineups': captureLineupsCheckbox.checked,
-                // These are commented out in your HTML, but get them if they exist
-                'skip_static': document.getElementById('skip-static-info')?.checked || false,
-                'skip_players': document.getElementById('skip-available-players')?.checked || false,
+                'capture_lineups': captureLineups,
+                'roster_updates_only': rosterUpdatesOnly,
+                'skip_static': false,
+                'skip_players': false
             };
 
-            // 1. Call the action endpoint
             const response = await fetch('/api/db_action', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -161,62 +190,30 @@
 
             if (!response.ok) {
                 const err = await response.json();
-
-                // --- MODIFICATION: Handle 409 "in progress" error ---
                 if (response.status === 409 && err.build_id) {
-                    // This is THE FIX: We got the active build_id, so connect to it.
                     logContainer.innerHTML = '<p class="text-yellow-400">A build is already in progress. Attempting to connect to the log stream...</p>';
                     connectToLogStream(err.build_id);
-                } else if (response.status === 409) {
-                    // Build is in progress, but we couldn't get the build_id.
-                    // This will trigger the catch block with the backup message.
-                    throw new Error('A build is already in progress.');
                 } else {
-                    // A different, unexpected error
-                    throw new Error(err.error || `Server error: ${response.status}`);
+                     throw new Error(err.error || `Server error: ${response.status}`);
                 }
-                // --- END MODIFICATION ---
-
             } else {
-                // This is the normal 200 OK response
                 const data = await response.json();
                 if (!data.success || !data.build_id) {
                      throw new Error('Failed to start build process. Server did not return a build_id.');
                 }
-                // --- MODIFICATION: Use the new function ---
                 connectToLogStream(data.build_id);
-                // --- END MODIFICATION ---
             }
 
         } catch (error) {
             console.error('Error performing DB action:', error);
-
-            // --- MODIFICATION: Add your custom backup message here ---
-            let errorMsg = error.message || 'An unknown error occurred.';
-            if (errorMsg.includes('A build is already in progress.')) {
-                logContainer.innerHTML = `
-                    <p class="text-yellow-400 font-bold">The Database Update is in fact in progress, only you are unable to see the log.</p>
-                    <p class="text-gray-300 mt-2">This can happen if the build was started from another device or session.</p>
-                    <p class="text-gray-300">Please wait a few minutes, and refresh the website to see if the update has been complete.</p>
-                    <p class="text-gray-300">Please do not start an additional update, thank you.</p>
-                `;
-                // Keep the button disabled, but update text
-                actionButton.textContent = 'Build in Progress';
-            } else {
-                // A different error occurred
-                logContainer.innerHTML = `<p class="text-red-400">Error: ${errorMsg}</p>`;
-                // Re-enable the button on other failures
-                actionButton.disabled = false;
-                actionButton.classList.remove('opacity-50', 'cursor-not-allowed');
-                actionButton.textContent = 'Update Failed';
-            }
-            // --- END MODIFICATION ---
+            logContainer.innerHTML = `<p class="text-red-400">Error: ${error.message}</p>`;
+            actionButton.disabled = false;
+            actionButton.classList.remove('opacity-50', 'cursor-not-allowed');
+            actionButton.textContent = 'Update Failed';
         }
     };
 
     actionButton.addEventListener('click', handleDbAction);
-
-    // Initial load
     fetchStatus();
 
 })();
