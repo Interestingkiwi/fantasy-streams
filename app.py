@@ -767,6 +767,97 @@ def _get_ranked_players(cursor, player_ids, cat_rank_columns, raw_stat_columns, 
     return players
 
 
+# --- Admin DB Configuration ---
+ADMIN_DB_PATH = os.path.join(DATA_DIR, 'admin.db')
+
+def init_admin_db():
+    """Creates the admin database tables if they don't exist."""
+    conn = sqlite3.connect(ADMIN_DB_PATH)
+    cursor = conn.cursor()
+
+    # Table to store User Credentials (linked by Yahoo GUID)
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            guid TEXT PRIMARY KEY,
+            access_token TEXT,
+            refresh_token TEXT,
+            token_type TEXT,
+            expires_in INTEGER,
+            token_time REAL,
+            consumer_key TEXT,
+            consumer_secret TEXT
+        )
+    ''')
+
+    # Table to assign a League to a specific User (The "Primary Updater")
+    # This ensures we only update a league once, using one valid token.
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS league_updaters (
+            league_id TEXT PRIMARY KEY,
+            user_guid TEXT,
+            last_updated_ts REAL,
+            FOREIGN KEY(user_guid) REFERENCES users(guid)
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+# Run this once on startup
+init_admin_db()
+
+def save_user_credentials(token, consumer_key, consumer_secret):
+    """Saves or updates user credentials in the admin DB."""
+    conn = sqlite3.connect(ADMIN_DB_PATH)
+    cursor = conn.cursor()
+
+    guid = token.get('xoauth_yahoo_guid')
+    if not guid:
+        logging.error("Cannot save credentials: No GUID in token.")
+        return
+
+    cursor.execute('''
+        INSERT OR REPLACE INTO users
+        (guid, access_token, refresh_token, token_type, expires_in, token_time, consumer_key, consumer_secret)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ''', (
+        guid,
+        token.get('access_token'),
+        token.get('refresh_token'),
+        token.get('token_type'),
+        token.get('expires_in'),
+        token.get('expires_at', time.time()), # Use provided time or current
+        consumer_key,
+        consumer_secret
+    ))
+    conn.commit()
+    conn.close()
+    logging.info(f"Saved credentials for user {guid}")
+
+def assign_league_updater(league_id, user_guid):
+    """
+    Assigns a league to a user IF it doesn't already have an updater.
+    This implements the 'First Come, First Served' hierarchy.
+    """
+    conn = sqlite3.connect(ADMIN_DB_PATH)
+    cursor = conn.cursor()
+
+    # Check if league already has an assigned updater
+    cursor.execute("SELECT user_guid FROM league_updaters WHERE league_id = ?", (league_id,))
+    row = cursor.fetchone()
+
+    if row is None:
+        # No updater assigned, claim it for this user
+        cursor.execute("INSERT INTO league_updaters (league_id, user_guid) VALUES (?, ?)", (league_id, user_guid))
+        conn.commit()
+        logging.info(f"League {league_id} assigned to user {user_guid} for background updates.")
+    else:
+        # League already has an updater.
+        # Optional: You could logic here to 'steal' the role if the old user's token is invalid.
+        logging.info(f"League {league_id} already handled by {row[0]}. Skipping assignment.")
+
+    conn.close()
+
+
 @app.route('/healthz')
 def health_check():
     return "OK", 200
@@ -840,6 +931,26 @@ def callback():
     except Exception as e:
         logging.error(f"Error fetching token: {e}", exc_info=True)
         return '<h1>Error: Could not fetch access token.</h1>', 500
+
+    try:
+        # 1. Save the User's Credentials to the persistent DB
+        save_user_credentials(
+            session['yahoo_token'],
+            session.get('consumer_key'),
+            session.get('consumer_secret')
+        )
+
+        # 2. Assign this user as the updater for the current league
+        # (This only happens if no one else has claimed "updater" status for this league yet)
+        current_league_id = session.get('league_id')
+        user_guid = session['yahoo_token'].get('xoauth_yahoo_guid')
+
+        if current_league_id and user_guid:
+            assign_league_updater(current_league_id, user_guid)
+
+    except Exception as e:
+        logging.error(f"Failed to save persistent credentials: {e}")
+    # --- NEW CODE ENDS HERE ---
 
     return redirect(url_for('home'))
 

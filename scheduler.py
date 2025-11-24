@@ -1,89 +1,185 @@
 import os
 import sys
-import subprocess
+import sqlite3
 import logging
-import time  # <-- ADDED
+import time
+import json
+import tempfile
+from datetime import datetime
 from apscheduler.schedulers.background import BackgroundScheduler
 
-# Set up basic logging
+# Import your db_builder and authentication libraries
+import db_builder
+import yahoo_fantasy_api as yfa
+from yahoo_oauth import OAuth2
+from yfpy.query import YahooFantasySportsQuery
+
+# Basic config
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
-def run_script(script_path, *args):
+# Path to the admin DB created in app.py
+DATA_DIR = '/var/data/dbs'
+ADMIN_DB_PATH = os.path.join(DATA_DIR, 'admin.db')
+
+def get_refreshed_token(user_row):
     """
-    Helper function to run a python script as a subprocess.
+    Reconstructs OAuth session and refreshes token if needed.
+    Returns the (possibly updated) token dictionary.
     """
-    logger.info(f"--- Starting script: {script_path} ---")
+    guid, access_token, refresh_token, token_type, expires_in, token_time, consumer_key, consumer_secret = user_row
+
+    creds = {
+        "consumer_key": consumer_key,
+        "consumer_secret": consumer_secret,
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "token_type": token_type,
+        "token_time": token_time,
+        "xoauth_yahoo_guid": guid
+    }
+
+    # Write to temp file for yahoo_oauth library
+    fd, temp_path = tempfile.mkstemp(suffix=".json")
+    with os.fdopen(fd, 'w') as f:
+        json.dump(creds, f)
+
     try:
-        # Use sys.executable to ensure we use the same python interpreter
-        process = subprocess.run(
-            [sys.executable, script_path, *args],
-            capture_output=True,
-            text=True,
-            check=True
-        )
-        logger.info(f"Output for {script_path}:\n{process.stdout}")
-        if process.stderr:
-            logger.warning(f"Stderr for {script_path}:\n{process.stderr}")
-        logger.info(f"--- Finished script: {script_path} ---")
-        return True
-    except subprocess.CalledProcessError as e:
-        logger.error(f"--- FAILED script: {script_path} ---")
-        logger.error(f"Return Code: {e.returncode}")
-        logger.error(f"Stdout: {e.stdout}")
-        logger.error(f"Stderr: {e.stderr}")
-        return False
+        # Initialize OAuth2 - this automatically checks validity and refreshes if needed
+        sc = OAuth2(None, None, from_file=temp_path)
 
-# --- run_daily_job function REMOVED ---
+        if not sc.token_is_valid():
+            logger.info(f"Refreshing token for user {guid}...")
+            sc.refresh_access_token()
 
-def run_daily_job_sequence():  # <-- RENAMED
+        # Read back the potentially updated token
+        with open(temp_path, 'r') as f:
+            new_creds = json.load(f)
+
+        return new_creds
+
+    except Exception as e:
+        logger.error(f"Failed to refresh token for user {guid}: {e}")
+        return None
+    finally:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+
+def run_league_updates():
     """
-    Runs the full daily job sequence.
+    Iterates through all assigned leagues in admin.db and runs the DB update.
     """
-    logger.info("Starting daily job sequence: run_daily_job_sequence") # <-- UPDATED LOG
+    logger.info("--- Starting Scheduled League Updates ---")
 
-    # Get required env vars for the subprocess
-    league_id = os.environ.get('LEAGUE_ID')
-    key = os.environ.get('YAHOO_CONSUMER_KEY')
-    secret = os.environ.get('YAHOO_CONSUMER_SECRET')
-
-    if not all([league_id, key, secret]):
-        logger.error("Missing required environment variables (LEAGUE_ID, YAHOO_CONSUMER_KEY, YAHOO_CONSUMER_SECRET) for daily job.")
+    if not os.path.exists(ADMIN_DB_PATH):
+        logger.warning("Admin DB not found. Skipping updates.")
         return
 
-    # Run the scripts in sequence. If one fails, stop.
-    if run_script("jobs/fetch_player_ids.py", league_id, "-k", key, "-s", secret):
-        if run_script("jobs/create_projection_db.py"):
-            run_script("jobs/toi_script.py")
+    conn = sqlite3.connect(ADMIN_DB_PATH)
+    cursor = conn.cursor()
+
+    # Get list of leagues and their assigned updaters
+    cursor.execute("""
+        SELECT l.league_id, u.* FROM league_updaters l
+        JOIN users u ON l.user_guid = u.guid
+    """)
+    rows = cursor.fetchall()
+    conn.close()
+
+    if not rows:
+        logger.info("No leagues assigned for background updates.")
+        return
+
+    logger.info(f"Found {len(rows)} leagues to update.")
+
+    for row in rows:
+        league_id = row[0]
+        user_data = row[1:] # The rest of the columns from 'users' table
+        user_guid = user_data[0]
+
+        logger.info(f"Processing League {league_id} (Updater: {user_guid})")
+
+        # 1. Refresh Token
+        creds = get_refreshed_token(user_data)
+
+        if not creds:
+            logger.error(f"Skipping league {league_id} due to token failure.")
+            continue
+
+        # 2. Update the DB with new token (so we don't use stale tokens next time)
+        # You might want to write a helper function for this to keep it clean
+        # (Omitted here for brevity, but highly recommended to update admin.db with new tokens)
+
+        # 3. Initialize APIs
+        try:
+            # YFPY
+            auth_data = {
+                'consumer_key': creds['consumer_key'],
+                'consumer_secret': creds['consumer_secret'],
+                'access_token': creds['access_token'],
+                'refresh_token': creds['refresh_token'],
+                'token_type': creds['token_type'],
+                'token_time': creds['token_time'],
+                'guid': creds['xoauth_yahoo_guid']
+            }
+            yq = YahooFantasySportsQuery(league_id, game_code="nhl", yahoo_access_token_json=auth_data)
+
+            # YFA
+            # We can re-use the temp file logic or just pass the OAuth2 object we created in get_refreshed_token
+            # Re-creating for clarity:
+            fd, temp_path = tempfile.mkstemp(suffix=".json")
+            with os.fdopen(fd, 'w') as f:
+                json.dump(creds, f)
+
+            sc = OAuth2(None, None, from_file=temp_path)
+            gm = yfa.Game(sc, 'nhl')
+            lg = gm.to_league(f"nhl.l.{league_id}")
+            os.remove(temp_path)
+
+            # 4. Run the Update
+            # We reuse your existing logic from db_builder
+            logger.info(f"Starting DB build for {league_id}...")
+
+            # You might need to adjust imports if db_builder isn't in the same dir
+            result = db_builder.update_league_db(
+                yq, lg, league_id, DATA_DIR, logger,
+                capture_lineups=False # Scheduled jobs usually just grab latest, not full history
+            )
+
+            if result.get('success'):
+                logger.info(f"Successfully updated league {league_id}.")
+            else:
+                logger.error(f"Failed to update league {league_id}: {result.get('error')}")
+
+        except Exception as e:
+            logger.error(f"Critical error updating league {league_id}: {e}", exc_info=True)
+
+    logger.info("--- Scheduled League Updates Completed ---")
 
 def start_scheduler():
-    """
-    Initializes and starts the non-blocking scheduler.
-    """
     logger.info("Initializing background scheduler...")
     scheduler = BackgroundScheduler(timezone="UTC")
 
-    # Schedule the full job sequence to run daily
+    # 1. Run League Updates (e.g., at 9:00 UTC / 4:00 AM EST)
     scheduler.add_job(
-        run_daily_job_sequence,  # <-- CHANGED function name
+        run_league_updates,
         trigger='cron',
-        # day_of_week='mon',  <-- REMOVED to run every day
-        hour=6,  # 6:00 AM UTC
+        hour=9,
         minute=0
     )
 
-    # --- Daily (Tue-Sun) job REMOVED ---
+    # 2. Keep your existing daily scripts if needed
+    # scheduler.add_job(run_daily_job_sequence, trigger='cron', hour=6, minute=0)
 
     scheduler.start()
-    logger.info("Scheduler started. Waiting for jobs...")
-
+    logger.info("Scheduler started.")
 
 if __name__ == "__main__":
-    # This allows you to still test this script directly if needed
-    print("Running scheduler in blocking mode (for testing)...")
+    # For testing immediately
+    # run_league_updates()
+
     start_scheduler()
     try:
-        # Keep the main thread alive
         while True:
             time.sleep(60)
     except (KeyboardInterrupt, SystemExit):

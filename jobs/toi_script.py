@@ -567,8 +567,8 @@ def fetch_daily_pp_stats():
     target_end_date = today - timedelta(days=1)
     target_start_date = today - timedelta(days=7)
 
-    #last_run_end_date = get_last_run_end_date()
-    last_run_end_date = None
+    last_run_end_date = get_last_run_end_date()
+
 
     if last_run_end_date:
         query_start_date = last_run_end_date + timedelta(days=1)
