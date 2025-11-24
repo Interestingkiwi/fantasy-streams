@@ -1492,6 +1492,11 @@ def fetch_and_update_goalie_stats():
             df_final['win_total'] / df_final['gamesPlayed'],
             0
         )
+        df_final['shutouts'] = np.where(
+            df_final['gamesPlayed'] > 0,
+            df_final['shutouts'] / df_final['gamesPlayed'],
+            0
+        )
         # Calculate saves per game and replace 'saves'
         df_final['saves'] = np.where(
             df_final['gamesPlayed'] > 0,

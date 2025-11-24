@@ -395,11 +395,16 @@
         `;
 
         sortedMoves.forEach(move => {
+            // --- MODIFIED: Handle null/undefined players for one-sided moves ---
+            const addedName = move.added_player ? move.added_player.player_name : '<span class="text-gray-500 italic">-</span>';
+            const droppedName = move.dropped_player ? move.dropped_player.player_name : '<span class="text-gray-500 italic">-</span>';
+            // --- END MODIFICATION ---
+
             logHtml += `
                 <tr class="hover:bg-gray-700/50">
                     <td class="px-3 py-2 whitespace-nowrap text-sm text-gray-300">${move.date}</td>
-                    <td class="px-3 py-2 whitespace-nowrap text-sm text-green-400">${move.added_player.player_name}</td>
-                    <td class="px-3 py-2 whitespace-nowrap text-sm text-red-400">${move.dropped_player.player_name}</td>
+                    <td class="px-3 py-2 whitespace-nowrap text-sm text-green-400">${addedName}</td>
+                    <td class="px-3 py-2 whitespace-nowrap text-sm text-red-400">${droppedName}</td>
                 </tr>
             `;
         });
@@ -411,7 +416,6 @@
         `;
         simLogContainer.innerHTML = logHtml;
     }
-    // --- END NEW FUNCTION ---
 
 
     function setupEventListeners() {

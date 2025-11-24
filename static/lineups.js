@@ -307,6 +307,7 @@
 
             const opponentsList = (player.opponents_list || []).join(', ');
             const opponentStatsJson = JSON.stringify(player.opponent_stats_this_week || []);
+            const isGoalie = (player.eligible_positions || player.positions || '').includes('G');
 
             let catRankSum = 0, validRanks = 0;
             (categories || []).forEach(cat => {
@@ -320,7 +321,10 @@
                     <td class="px-2 py-1 text-sm text-gray-300">${player.team || player.player_team}</td>
                     <td class="px-2 py-1 text-sm text-gray-300">${player.eligible_positions}</td>
                     <td class="px-2 py-1 text-sm text-gray-300">${gamesThisWeekHtml}</td>
-                    <td class="px-2 py-1 text-sm text-gray-300 cursor-pointer hover:bg-gray-700 opponent-stats-cell" data-opponent-stats='${opponentStatsJson}'>${opponentsList}</td>
+                    <td class="px-2 py-1 text-sm text-gray-300 cursor-pointer hover:bg-gray-700 opponent-stats-cell"
+                        data-player-name="${player.player_name}"
+                        data-is-goalie="${isGoalie}"
+                        data-opponent-stats='${opponentStatsJson}'>${opponentsList}</td>
                     <td class="px-2 py-1 text-sm text-gray-300">${(player.games_this_week || []).length}</td>
                     <td class="px-2 py-1 text-sm text-gray-300">${player.starts_this_week}</td>
                     <td class="px-2 py-1 text-sm text-gray-300">${(player.games_next_week || []).join(', ')}</td>
@@ -517,7 +521,7 @@
         unusedRosterSpotsContainer.innerHTML = tableHtml;
     }
 
-    function renderSimulatedMovesLog() { /* ... (Unchanged) ... */
+    function renderSimulatedMovesLog() {
         if (!simLogContainer) return;
         if (simulatedMoves.length === 0) {
             simLogContainer.innerHTML = '';
@@ -539,11 +543,15 @@
                     <tbody class="bg-gray-800 divide-y divide-gray-700">
         `;
         sortedMoves.forEach(move => {
+            // Handle null players
+            const addedName = move.added_player ? move.added_player.player_name : '<span class="text-gray-500 italic">-</span>';
+            const droppedName = move.dropped_player ? move.dropped_player.player_name : '<span class="text-gray-500 italic">-</span>';
+
             logHtml += `
                 <tr class="hover:bg-gray-700/50">
                     <td class="px-3 py-2 whitespace-nowrap text-sm text-gray-300">${move.date}</td>
-                    <td class="px-3 py-2 whitespace-nowrap text-sm text-green-400">${move.added_player.player_name}</td>
-                    <td class="px-3 py-2 whitespace-nowrap text-sm text-red-400">${move.dropped_player.player_name}</td>
+                    <td class="px-3 py-2 whitespace-nowrap text-sm text-green-400">${addedName}</td>
+                    <td class="px-3 py-2 whitespace-nowrap text-sm text-red-400">${droppedName}</td>
                 </tr>
             `;
         });

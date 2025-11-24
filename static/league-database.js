@@ -29,7 +29,7 @@
         if (data.db_exists) {
             const date = new Date(data.timestamp * 1000);
             statusText.textContent = `Your league: '${data.league_name}'s data is up to date as of: ${date.toLocaleString()}`;
-            actionButton.textContent = 'Update Database';
+            actionButton.textContent = 'Update Rosters';
 
             // Show the stat update option
             statUpdateContainer.classList.remove('hidden');

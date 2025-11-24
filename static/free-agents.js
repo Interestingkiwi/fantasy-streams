@@ -1,10 +1,8 @@
 (async function() {
-    // --- [START] MODIFICATION: Update container IDs ---
     const waiverSkatersContainer = document.getElementById('waiver-skaters-container');
     const waiverGoaliesContainer = document.getElementById('waiver-goalies-container');
     const freeAgentSkatersContainer = document.getElementById('free-agent-skaters-container');
     const freeAgentGoaliesContainer = document.getElementById('free-agent-goalies-container');
-    // --- [END] MODIFICATION ---
     const errorDiv = document.getElementById('db-error-message');
     const playerSearchInput = document.getElementById('player-search');
     const checkboxesContainer = document.getElementById('category-checkboxes-container');
@@ -458,7 +456,9 @@
                 tableHtml += `<tr><td colspan="${totalColumns}" class="text-center py-4 text-gray-400">No players match the current filter.</td></tr>`;
             } else {
                 playersToDisplay.forEach(player => {
-                    const isAlreadyAdded = simulatedMoves.some(m => m.added_player.player_id === player.player_id);
+                    // --- [FIX] Check for added_player before accessing player_id ---
+                    const isAlreadyAdded = simulatedMoves.some(m => m.added_player && m.added_player.player_id === player.player_id);
+                    // --- [END FIX] ---
                     const checkboxDisabled = isAlreadyAdded ? 'disabled' : '';
                     const statusHtml = player.status ? ` <a href="https://sports.yahoo.com/nhl/players/${player.player_id}/news/" target="_blank" rel="noopener noreferrer" class="text-red-400 ml-1 hover:text-red-300 hover:underline">(${player.status})</a>` : '';
 
@@ -564,33 +564,60 @@
 
     // --- SIMULATION FUNCTIONS (Unchanged) ---
     function populateDropPlayerDropdown() {
-            const droppedPlayerIds = new Set(simulatedMoves.map(m => m.dropped_player.player_id));
-            let optionsHtml = '<option selected value="">Select player to drop...</option>';
+        // Filter out moves that don't have a dropped player
+        const droppedPlayerIds = new Set(
+            simulatedMoves
+                .filter(m => m.dropped_player)
+                .map(m => m.dropped_player.player_id)
+        );
 
-            currentTeamRoster.forEach(player => {
-                if (!droppedPlayerIds.has(player.player_id)) {
-                    optionsHtml += `<option value="${player.player_id}" data-type="roster">${player.player_name} - ${player.eligible_positions}</option>`;
-                }
-            });
+        let optionsHtml = '<option selected value="">Select player to drop...</option>';
 
-            simulatedMoves.forEach(move => {
-                const player = move.added_player;
-                if (!droppedPlayerIds.has(player.player_id)) {
-                    optionsHtml += `<option value="${player.player_id}" data-type="simulated" data-add-date="${move.date}">
-                        ${player.player_name} - ${player.positions} (Added ${move.date})
-                    </option>`;
-                }
-            });
-            playerDropDropdown.innerHTML = optionsHtml;
-        }
-
-    function populateTransactionDatePicker(dates) {
-        let optionsHtml = '<option selected value="">Select date...</option>';
-        dates.forEach(date => {
-            optionsHtml += `<option value="${date}">${date}</option>`;
+        currentTeamRoster.forEach(player => {
+            if (!droppedPlayerIds.has(player.player_id)) {
+                optionsHtml += `<option value="${player.player_id}" data-type="roster">${player.player_name} - ${player.eligible_positions}</option>`;
+            }
         });
-        transactionDatePicker.innerHTML = optionsHtml;
+
+        simulatedMoves.forEach(move => {
+            // Only allow dropping players who were actually added (not null)
+            const player = move.added_player;
+            if (player && !droppedPlayerIds.has(player.player_id)) {
+                optionsHtml += `<option value="${player.player_id}" data-type="simulated" data-add-date="${move.date}">
+                    ${player.player_name} - ${player.positions} (Added ${move.date})
+                </option>`;
+            }
+        });
+        playerDropDropdown.innerHTML = optionsHtml;
     }
+
+    function populateTransactionDatePicker(weekDates) {
+            if (!transactionDatePicker) return;
+
+            const previouslySelected = transactionDatePicker.value;
+            let html = '<option value="" disabled selected>Select Date</option>';
+
+            if (weekDates && weekDates.length > 0) {
+                weekDates.forEach(dateStr => {
+                    // dateStr is "YYYY-MM-DD"
+                    html += `<option value="${dateStr}">${dateStr}</option>`;
+                });
+            } else {
+                html = '<option value="" disabled selected>No dates available</option>';
+            }
+
+            transactionDatePicker.innerHTML = html;
+
+            // Attempt to restore previous selection or default to today if it's in the list
+            if (previouslySelected && weekDates.includes(previouslySelected)) {
+                transactionDatePicker.value = previouslySelected;
+            } else {
+                const today = new Date().toISOString().split('T')[0];
+                if (weekDates.includes(today)) {
+                    transactionDatePicker.value = today;
+                }
+            }
+        }
 
     function renderSimulatedMovesLog() {
         if (simulatedMoves.length === 0) {
@@ -612,11 +639,14 @@
                     <tbody class="bg-gray-800 divide-y divide-gray-700">
         `;
         sortedMoves.forEach(move => {
+            const addedName = move.added_player ? move.added_player.player_name : '<span class="text-gray-500 italic">-</span>';
+            const droppedName = move.dropped_player ? move.dropped_player.player_name : '<span class="text-gray-500 italic">-</span>';
+
             logHtml += `
                 <tr class="hover:bg-gray-700/50">
                     <td class="px-3 py-2 whitespace-nowrap text-sm text-gray-300">${move.date}</td>
-                    <td class="px-3 py-2 whitespace-nowrap text-sm text-green-400">${move.added_player.player_name}</td>
-                    <td class="px-3 py-2 whitespace-nowrap text-sm text-red-400">${move.dropped_player.player_name}</td>
+                    <td class="px-3 py-2 whitespace-nowrap text-sm text-green-400">${addedName}</td>
+                    <td class="px-3 py-2 whitespace-nowrap text-sm text-red-400">${droppedName}</td>
                 </tr>
             `;
         });
@@ -625,53 +655,62 @@
     }
 
     function handleSimulateClick() {
-            const checkedBox = document.querySelector('input[name="player-to-add"]:checked');
-            const droppedPlayerOption = playerDropDropdown.options[playerDropDropdown.selectedIndex];
-            const transactionDate = transactionDatePicker.value;
+        const checkedBox = document.querySelector('input[name="player-to-add"]:checked');
+        const droppedPlayerOption = playerDropDropdown.options[playerDropDropdown.selectedIndex];
+        const transactionDate = transactionDatePicker.value;
 
-            if (!checkedBox) return alert("Please check a player to add.");
-            if (!droppedPlayerOption.value) return alert("Please select a player to drop.");
-            if (!transactionDate) return alert("Please select a transaction date.");
+        // 1. Require Date
+        if (!transactionDate) return alert("Please select a transaction date.");
 
-            if (droppedPlayerOption.dataset.type === 'simulated') {
-                const addDate = droppedPlayerOption.dataset.addDate;
-                if (transactionDate < addDate) {
-                    return alert(`Error: Cannot drop ${droppedPlayerOption.text.split('(')[0].trim()} on ${transactionDate} because they are not scheduled to be added until ${addDate}.`);
-                }
+        // 2. Require EITHER an Add OR a Drop
+        if (!checkedBox && !droppedPlayerOption.value) {
+            return alert("Please select a player to ADD or a player to DROP (or both).");
+        }
+
+        // Validate Drop Date Logic (only if dropping a simulated player)
+        if (droppedPlayerOption.value && droppedPlayerOption.dataset.type === 'simulated') {
+            const addDate = droppedPlayerOption.dataset.addDate;
+            if (transactionDate < addDate) {
+                return alert(`Error: Cannot drop ${droppedPlayerOption.text.split('(')[0].trim()} on ${transactionDate} because they are not scheduled to be added until ${addDate}.`);
             }
+        }
 
+        let addedPlayer = null;
+        if (checkedBox) {
             const addedPlayerId = checkedBox.value;
             const tableType = checkedBox.dataset.table;
             let sourceList = tableType.startsWith('waiver') ? allWaiverPlayers : allFreeAgents;
-            const addedPlayer = sourceList.find(p => p.player_id == addedPlayerId);
+            addedPlayer = sourceList.find(p => p.player_id == addedPlayerId);
+            if (!addedPlayer) return alert("An error occurred trying to find the player to add.");
+        }
 
-            if (!addedPlayer) return alert("An error occurred trying to find the player to add. Please refresh and try again.");
-
+        let droppedPlayer = null;
+        if (droppedPlayerOption.value) {
             const droppedPlayerId = droppedPlayerOption.value;
-            let droppedPlayer;
             if (droppedPlayerOption.dataset.type === 'roster') {
                 droppedPlayer = currentTeamRoster.find(p => p.player_id == droppedPlayerId);
             } else {
-                const sourceMove = simulatedMoves.find(m => m.added_player.player_id == droppedPlayerId);
+                const sourceMove = simulatedMoves.find(m => m.added_player && m.added_player.player_id == droppedPlayerId);
                 if (sourceMove) droppedPlayer = sourceMove.added_player;
             }
-
-            if (!droppedPlayer) return alert("An error occurred trying to find the player to drop. Please refresh and try again.");
-
-            simulatedMoves.push({
-                date: transactionDate,
-                added_player: addedPlayer,
-                dropped_player: droppedPlayer
-            });
-
-            localStorage.setItem(SIMULATION_KEY, JSON.stringify(simulatedMoves));
-            localStorage.removeItem(CACHE_KEY); // Invalidate cache
-
-            const selectedCategories = Array.from(document.querySelectorAll('#category-checkboxes-container input:checked')).map(cb => cb.value);
-            fetchData(selectedCategories);
-
-            checkedBox.checked = false;
+            if (!droppedPlayer) return alert("An error occurred trying to find the player to drop.");
         }
+
+        simulatedMoves.push({
+            date: transactionDate,
+            added_player: addedPlayer,     // Can be null
+            dropped_player: droppedPlayer  // Can be null
+        });
+
+        localStorage.setItem(SIMULATION_KEY, JSON.stringify(simulatedMoves));
+        localStorage.removeItem(CACHE_KEY);
+
+        const selectedCategories = Array.from(document.querySelectorAll('#category-checkboxes-container input:checked')).map(cb => cb.value);
+        fetchData(selectedCategories);
+
+        if (checkedBox) checkedBox.checked = false;
+        // Reset dropdown logic happens in popuplateDropPlayerDropdown during fetchData
+    }
 
     function handleResetClick() {
         if (confirm("Are you sure you want to reset all simulated moves?")) {
