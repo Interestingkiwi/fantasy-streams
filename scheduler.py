@@ -298,8 +298,8 @@ def start_scheduler():
     scheduler.add_job(
         run_league_updates,
         trigger='cron',
-        hour=16,
-        minute=25
+        hour=17,
+        minute=35
     )
 
     scheduler.start()
