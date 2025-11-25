@@ -8,7 +8,7 @@ import tempfile
 from datetime import datetime
 from apscheduler.schedulers.background import BackgroundScheduler
 from google.cloud import storage
-import subprocess # <-- ADDED: For running external scripts
+import subprocess
 
 # Import your db_builder and authentication libraries
 import db_builder
@@ -50,7 +50,6 @@ def get_refreshed_token(user_row):
 
     try:
         # Initialize OAuth2. Pass consumer_key/secret explicitly for robustness.
-        # FIX: Explicitly pass consumer_key and consumer_secret
         sc = OAuth2(consumer_key, consumer_secret, from_file=temp_path)
 
         # Force a token refresh attempt.
@@ -59,8 +58,7 @@ def get_refreshed_token(user_row):
 
         # Check if the token is valid after the refresh attempt.
         if not sc.token_is_valid():
-            # If the token is still invalid, it means the refresh failed.
-            # This is critical and usually means the refresh token is expired/revoked.
+            # If the token is still invalid, it means the refresh token is expired/revoked.
             raise Exception("Token refresh failed: Refresh token may be expired or revoked. User must re-authenticate.")
 
         # Read back the potentially updated token
@@ -101,7 +99,6 @@ def download_admin_db_from_gcs():
     except Exception as e:
         logger.error(f"Failed to download admin.db from GCS: {e}")
 
-# ADDED: Helper function to run external scripts as subprocesses
 def run_script(script_path, *args):
     """Runs a script as a subprocess and logs the output."""
     # Use sys.executable to ensure we run with the current Python interpreter
@@ -131,7 +128,6 @@ def run_script(script_path, *args):
     except Exception as e:
         logger.error(f"Exception during execution of {script_path}: {e}")
         return False
-# END ADDED FUNCTION
 
 
 def run_league_updates():
@@ -197,7 +193,7 @@ def run_league_updates():
 
         # 3. Initialize APIs
         try:
-            # YFPY initialization remains correct...
+            # YFPY
             auth_data = {
                 'consumer_key': creds['consumer_key'],
                 'consumer_secret': creds['consumer_secret'],
@@ -209,20 +205,21 @@ def run_league_updates():
             }
             yq = YahooFantasySportsQuery(league_id, game_code="nhl", yahoo_access_token_json=auth_data)
 
-            # YFA
-            # Re-create temp file for yfa
-            fd, temp_path = tempfile.mkstemp(suffix=".json")
-            with os.fdopen(fd, 'w') as f:
-                json.dump(creds, f)
+            # YFA - Initialize OAuth2 session in memory using the refreshed creds
+            # This is the most robust method for passing a fresh token to yfa
+            sc = OAuth2(creds['consumer_key'], creds['consumer_secret'])
 
-            # FIX: Pass consumer_key and consumer_secret explicitly
-            sc = OAuth2(creds['consumer_key'], creds['consumer_secret'], from_file=temp_path)
+            # Manually set the refreshed token data onto the session object
+            sc.token = creds
+            sc.access_token = creds['access_token']
+            sc.refresh_token = creds['refresh_token']
+            sc.token_time = creds['token_time']
+            sc.expires_in = creds['expires_in']
+
             gm = yfa.Game(sc, 'nhl')
             lg = gm.to_league(f"nhl.l.{league_id}")
-            os.remove(temp_path)
 
             # 4. Run the Update
-            # We reuse your existing logic from db_builder
             logger.info(f"Starting DB build for {league_id}...")
 
             # You might need to adjust imports if db_builder isn't in the same dir
@@ -242,11 +239,11 @@ def run_league_updates():
     logger.info("--- Scheduled League Updates Completed ---")
 
 
-def run_daily_job_sequence():  # <-- RENAMED
+def run_daily_job_sequence():
     """
     Runs the full daily job sequence.
     """
-    logger.info("Starting daily job sequence: run_daily_job_sequence") # <-- UPDATED LOG
+    logger.info("Starting daily job sequence: run_daily_job_sequence")
 
     # Get required env vars for the subprocess
     league_id = os.environ.get('LEAGUE_ID')
@@ -263,7 +260,6 @@ def run_daily_job_sequence():  # <-- RENAMED
             run_script("jobs/toi_script.py")
 
 
-
 def start_scheduler():
     logger.info("Initializing background scheduler...")
     scheduler = BackgroundScheduler(timezone="UTC")
@@ -273,14 +269,14 @@ def start_scheduler():
         run_daily_job_sequence,
         trigger='cron',
         hour=11,  # 6:00 AM UTC
-        minute=20
+        minute=10
     )
 
     scheduler.add_job(
         run_league_updates,
         trigger='cron',
         hour=13,
-        minute=25
+        minute=36
     )
 
     scheduler.start()
