@@ -200,6 +200,29 @@ def run_league_updates():
 
     logger.info("--- Scheduled League Updates Completed ---")
 
+
+def run_daily_job_sequence():  # <-- RENAMED
+    """
+    Runs the full daily job sequence.
+    """
+    logger.info("Starting daily job sequence: run_daily_job_sequence") # <-- UPDATED LOG
+
+    # Get required env vars for the subprocess
+    league_id = os.environ.get('LEAGUE_ID')
+    key = os.environ.get('YAHOO_CONSUMER_KEY')
+    secret = os.environ.get('YAHOO_CONSUMER_SECRET')
+
+    if not all([league_id, key, secret]):
+        logger.error("Missing required environment variables (LEAGUE_ID, YAHOO_CONSUMER_KEY, YAHOO_CONSUMER_SECRET) for daily job.")
+        return
+
+    # Run the scripts in sequence. If one fails, stop.
+    if run_script("jobs/fetch_player_ids.py", league_id, "-k", key, "-s", secret):
+        if run_script("jobs/create_projection_db.py"):
+            run_script("jobs/toi_script.py")
+
+
+
 def start_scheduler():
     logger.info("Initializing background scheduler...")
     scheduler = BackgroundScheduler(timezone="UTC")
