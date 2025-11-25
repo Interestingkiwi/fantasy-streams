@@ -49,12 +49,19 @@ def get_refreshed_token(user_row):
         json.dump(creds, f)
 
     try:
-        # Initialize OAuth2
-        sc = OAuth2(None, None, from_file=temp_path)
+        # Initialize OAuth2. Pass consumer_key/secret explicitly for robustness.
+        # FIX: Explicitly pass consumer_key and consumer_secret
+        sc = OAuth2(consumer_key, consumer_secret, from_file=temp_path)
 
-        # Force a token refresh attempt. This ensures we always get a valid token.
+        # Force a token refresh attempt.
         logger.info(f"Attempting to refresh/validate token for user {guid}...")
         sc.refresh_access_token()
+
+        # Check if the token is valid after the refresh attempt.
+        if not sc.token_is_valid():
+            # If the token is still invalid, it means the refresh failed.
+            # This is critical and usually means the refresh token is expired/revoked.
+            raise Exception("Token refresh failed: Refresh token may be expired or revoked. User must re-authenticate.")
 
         # Read back the potentially updated token
         with open(temp_path, 'r') as f:
@@ -63,6 +70,7 @@ def get_refreshed_token(user_row):
         return new_creds
 
     except Exception as e:
+        # This block catches hard failures, including the one we raise above
         logger.error(f"Failed to refresh token for user {guid}: {e}")
         return None
     finally:
@@ -272,7 +280,7 @@ def start_scheduler():
         run_league_updates,
         trigger='cron',
         hour=13,
-        minute=0
+        minute=15
     )
 
     scheduler.start()
