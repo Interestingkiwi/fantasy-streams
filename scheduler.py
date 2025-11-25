@@ -162,6 +162,8 @@ def run_league_updates():
         logger.warning("Admin DB not found locally or in GCS. Skipping updates.")
         return
 
+    process_subscription_expirations()
+
     conn = sqlite3.connect(ADMIN_DB_PATH)
     cursor = conn.cursor()
 
@@ -170,6 +172,10 @@ def run_league_updates():
         SELECT l.league_id, u.* FROM league_updaters l
         JOIN users u ON l.user_guid = u.guid
     """)
+#        SELECT l.league_id, u.* FROM league_updaters l
+#        JOIN users u ON l.user_guid = u.guid
+#        WHERE u.is_premium = 1
+#    """)
     rows = cursor.fetchall()
     conn.close()
 
@@ -262,6 +268,48 @@ def run_league_updates():
     logger.info("--- Scheduled League Updates Completed ---")
 
 
+def process_subscription_expirations():
+    """
+    Checks all Premium users. If their expiration date has passed,
+    downgrade them to Free (0).
+    """
+    conn = sqlite3.connect(ADMIN_DB_PATH)
+    cursor = conn.cursor()
+
+    # Get today's date
+    today_str = datetime.utcnow().strftime('%Y-%m-%d')
+
+    # Find expired users
+    cursor.execute("""
+        SELECT guid FROM users
+        WHERE is_premium = 1
+        AND premium_expiration_date < ?
+        AND premium_expiration_date IS NOT NULL
+    """, (today_str,))
+
+    expired_users = cursor.fetchall()
+
+    if expired_users:
+        logger.info(f"Found {len(expired_users)} expired subscriptions. Downgrading...")
+
+        # Bulk update them to 0
+        cursor.execute("""
+            UPDATE users
+            SET is_premium = 0
+            WHERE is_premium = 1
+            AND premium_expiration_date < ?
+        """, (today_str,))
+
+        conn.commit()
+
+        for user in expired_users:
+            logger.info(f"Downgraded user {user[0]} to Free tier.")
+    else:
+        logger.info("No expired subscriptions found.")
+
+    conn.close()
+
+
 def run_daily_job_sequence():
     """
     Runs the full daily job sequence.
@@ -291,15 +339,15 @@ def start_scheduler():
     scheduler.add_job(
         run_daily_job_sequence,
         trigger='cron',
-        hour=11,  # 6:00 AM UTC
-        minute=10
+        hour=9,  # 6:00 AM UTC
+        minute=0
     )
 
     scheduler.add_job(
         run_league_updates,
         trigger='cron',
-        hour=17,
-        minute=35
+        hour=9,
+        minute=20
     )
 
     scheduler.start()

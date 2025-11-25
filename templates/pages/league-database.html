@@ -2,6 +2,58 @@
     <h2 class="text-xl font-bold text-white flex items-center">League Database
     <span class="help-icon" data-title="Database Help" data-text="Select options to create or update your leagues unique Database. If a database has never been created for your league, do not check Skip Static League Info as the data from those queries are required for the rest of the site.">?</span>
     </h2>
+    <div id="premium-actions-container" class="max-w-4xl mx-auto mb-8 hidden">
+        <div class="bg-gray-800 rounded-lg p-4 shadow-lg flex flex-col md:flex-row items-center justify-between gap-4 border border-gray-700">
+
+            <div class="flex items-center gap-4">
+                 <div id="premium-status-text" class="text-gray-300 font-medium">
+                     </div>
+            </div>
+
+            <div class="flex gap-3">
+                <button id="btn-premium-action" class="bg-yellow-600 hover:bg-yellow-500 text-white font-bold py-2 px-4 rounded transition">
+                    Loading...
+                </button>
+
+                <button id="btn-explore-benefits" class="bg-blue-700 hover:bg-blue-600 text-white font-bold py-2 px-4 rounded transition">
+                    Explore Premium Benefits
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <div id="modal-gift-premium" class="fixed inset-0 bg-black bg-opacity-75 hidden items-center justify-center z-50">
+        <div class="bg-gray-800 rounded-lg p-8 max-w-md w-full border border-gray-600 shadow-2xl">
+            <h3 class="text-2xl font-bold text-yellow-500 mb-4">Go Premium</h3>
+            <p class="text-gray-300 mb-6">
+                Thanks for testing the app! As a token of appreciation, click below to unlock a <strong>Lifetime Account</strong> for free.
+            </p>
+            <div class="flex justify-end gap-3">
+                <button id="btn-close-gift" class="text-gray-400 hover:text-white px-4 py-2">Cancel</button>
+                <button id="btn-claim-gift" class="bg-yellow-600 hover:bg-yellow-500 text-white font-bold py-2 px-6 rounded shadow-lg transform hover:scale-105 transition">
+                    Claim Lifetime Account
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <div id="modal-benefits" class="fixed inset-0 bg-black bg-opacity-75 hidden items-center justify-center z-50">
+        <div class="bg-gray-800 rounded-lg p-8 max-w-lg w-full border border-gray-600 shadow-2xl">
+            <h3 class="text-2xl font-bold text-blue-400 mb-4">Premium Benefits</h3>
+            <div class="text-gray-300 space-y-3 mb-6">
+                <p>Unlock the full power of Fantasy Streams:</p>
+                <ul class="list-disc list-inside space-y-1 ml-2 text-sm text-gray-400">
+                    <li>Automated daily database updates.</li>
+                    <li>Advanced Trade Helper with league-wide comparisons.</li>
+                    <li>Goalie Planning tools.</li>
+                    <li>Priority support.</li>
+                </ul>
+            </div>
+            <div class="flex justify-end">
+                <button id="btn-close-benefits" class="bg-gray-700 hover:bg-gray-600 text-white font-bold py-2 px-4 rounded">Close</button>
+            </div>
+        </div>
+    </div>
     <p id="db-status-text" class="text-gray-400">Checking database status...</p>
     <div class="flex items-center gap-4">
         <button id="db-action-button" class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg transition duration-300 opacity-50 cursor-not-allowed" disabled>

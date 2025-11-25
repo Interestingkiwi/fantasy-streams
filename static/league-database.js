@@ -14,6 +14,8 @@
         return;
     }
 
+    initPremiumFeatures();
+
     let dbExists = false; // State to track DB status
 
     const updateStatus = (data) => {
@@ -221,3 +223,81 @@
     fetchStatus();
 
 })();
+
+function initPremiumFeatures() {
+    const container = document.getElementById('premium-actions-container');
+    const actionBtn = document.getElementById('btn-premium-action');
+    const exploreBtn = document.getElementById('btn-explore-benefits');
+    const statusText = document.getElementById('premium-status-text');
+
+    const giftModal = document.getElementById('modal-gift-premium');
+    const benefitsModal = document.getElementById('modal-benefits');
+
+    const claimBtn = document.getElementById('btn-claim-gift');
+    const closeGiftBtn = document.getElementById('btn-close-gift');
+    const closeBenefitsBtn = document.getElementById('btn-close-benefits');
+
+    if(!container) return; // Guard clause if elements don't exist
+
+    // 1. Fetch Status
+    fetch('/api/user_status')
+        .then(res => res.json())
+        .then(data => {
+            container.classList.remove('hidden');
+
+            if (data.is_premium) {
+                actionBtn.textContent = "Extend Premium";
+                statusText.innerHTML = `🌟 Premium Status: <span class="text-green-400">Active</span> <span class="text-xs text-gray-500 block">Expires: ${data.expiration_date}</span>`;
+            } else {
+                actionBtn.textContent = "Go Premium";
+                statusText.innerHTML = `Status: <span class="text-gray-400">Free Tier</span>`;
+            }
+
+            actionBtn.onclick = () => {
+                giftModal.classList.remove('hidden');
+                giftModal.classList.add('flex');
+            };
+
+            exploreBtn.onclick = () => {
+                benefitsModal.classList.remove('hidden');
+                benefitsModal.classList.add('flex');
+            };
+        })
+        .catch(err => console.error("Error fetching user status:", err));
+
+    // 2. Modal Logic
+    const closeModal = (modal) => {
+        modal.classList.add('hidden');
+        modal.classList.remove('flex');
+    };
+
+    closeGiftBtn.onclick = () => closeModal(giftModal);
+    closeBenefitsBtn.onclick = () => closeModal(benefitsModal);
+
+    window.onclick = (event) => {
+        if (event.target == giftModal) closeModal(giftModal);
+        if (event.target == benefitsModal) closeModal(benefitsModal);
+    };
+
+    // 3. Claim Gift Logic
+    claimBtn.onclick = async () => {
+        claimBtn.textContent = "Updating...";
+        claimBtn.disabled = true;
+        try {
+            const res = await fetch('/api/gift_premium', { method: 'POST' });
+            const result = await res.json();
+            if (result.success) {
+                alert("Success! Your account has been upgraded to Lifetime Premium.");
+                window.location.reload();
+            } else {
+                alert("Error: " + (result.error || "Unknown error occurred."));
+                claimBtn.textContent = "Claim Lifetime Account";
+                claimBtn.disabled = false;
+            }
+        } catch (e) {
+            alert("Network error occurred.");
+            claimBtn.textContent = "Claim Lifetime Account";
+            claimBtn.disabled = false;
+        }
+    };
+}

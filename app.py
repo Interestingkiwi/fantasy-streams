@@ -216,6 +216,84 @@ def requires_auth(f):
     return decorated_function
 
 
+def requires_premium(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        # 1. Standard Auth Check
+        if 'yahoo_token' not in session:
+            return jsonify({"error": "Unauthorized"}), 401
+
+        # 2. Get the GUID
+        guid = session['yahoo_token'].get('xoauth_yahoo_guid')
+
+        # 3. Check Admin DB for premium status
+        # We query the DB directly to catch upgrades that happened since login
+        conn = sqlite3.connect(ADMIN_DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute("SELECT is_premium FROM users WHERE guid = ?", (guid,))
+        row = cursor.fetchone()
+        conn.close()
+
+        if not row or row[0] != 1:
+            return jsonify({
+                "error": "Premium Required",
+                "message": "This feature requires a premium subscription."
+            }), 403
+
+        return f(*args, **kwargs)
+    return decorated_function
+
+
+@app.route('/api/user_status')
+def get_user_status():
+    """Returns the current user's premium status and expiration."""
+    guid = session['yahoo_token'].get('xoauth_yahoo_guid')
+
+    conn = sqlite3.connect(ADMIN_DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT is_premium, premium_expiration_date FROM users WHERE guid = ?", (guid,))
+    row = cursor.fetchone()
+    conn.close()
+
+    if row:
+        return jsonify({
+            "is_premium": bool(row['is_premium']),
+            "expiration_date": row['premium_expiration_date']
+        })
+    return jsonify({"is_premium": False, "expiration_date": None})
+
+
+@app.route('/api/gift_premium', methods=['POST'])
+def gift_premium():
+    """Sets the user to premium with a lifetime expiration."""
+    guid = session['yahoo_token'].get('xoauth_yahoo_guid')
+    lifetime_expiry = '9999-12-31'
+
+    try:
+        conn = sqlite3.connect(ADMIN_DB_PATH)
+        cursor = conn.cursor()
+
+        # Upsert logic mostly handled by login, so update is safe here
+        cursor.execute("""
+            UPDATE users
+            SET is_premium = 1, premium_expiration_date = ?
+            WHERE guid = ?
+        """, (lifetime_expiry, guid))
+
+        conn.commit()
+        conn.close()
+
+        # Sync changes to GCS immediately so Scheduler sees it
+        upload_admin_db_to_gcs()
+
+        return jsonify({"success": True, "expiration_date": lifetime_expiry})
+    except Exception as e:
+        logging.error(f"Error gifting premium: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 from api_v1 import api as api_v1_blueprint
 app.register_blueprint(api_v1_blueprint)
 
@@ -793,11 +871,11 @@ def upload_admin_db_to_gcs():
         logging.error(f"Failed to upload admin.db to GCS: {e}")
 
 def init_admin_db():
-    """Creates the admin database tables if they don't exist."""
+    """Creates the admin database tables and ensures schema is up to date."""
     conn = sqlite3.connect(ADMIN_DB_PATH)
     cursor = conn.cursor()
 
-    # Table to store User Credentials (linked by Yahoo GUID)
+    # Create table if it doesn't exist
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
             guid TEXT PRIMARY KEY,
@@ -807,12 +885,13 @@ def init_admin_db():
             expires_in INTEGER,
             token_time REAL,
             consumer_key TEXT,
-            consumer_secret TEXT
+            consumer_secret TEXT,
+            is_premium INTEGER DEFAULT 0,
+            premium_expiration_date TEXT
         )
     ''')
 
-    # Table to assign a League to a specific User (The "Primary Updater")
-    # This ensures we only update a league once, using one valid token.
+    # Create league_updaters table
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS league_updaters (
             league_id TEXT PRIMARY KEY,
@@ -821,6 +900,17 @@ def init_admin_db():
             FOREIGN KEY(user_guid) REFERENCES users(guid)
         )
     ''')
+
+    # MIGRATION: Attempt to add columns to existing DBs if they are missing
+    try:
+        cursor.execute("ALTER TABLE users ADD COLUMN is_premium INTEGER DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        cursor.execute("ALTER TABLE users ADD COLUMN premium_expiration_date TEXT")
+    except sqlite3.OperationalError:
+        pass
+
     conn.commit()
     conn.close()
 
@@ -858,26 +948,44 @@ def save_user_credentials(token, consumer_key, consumer_secret):
 
 def assign_league_updater(league_id, user_guid):
     """
-    Assigns a league to a user IF it doesn't already have an updater.
-    This implements the 'First Come, First Served' hierarchy.
+    Assigns a league to a user.
+    Logic: Premium users always 'steal' the updater role from Free users.
     """
     conn = sqlite3.connect(ADMIN_DB_PATH)
     cursor = conn.cursor()
 
-    # Check if league already has an assigned updater
-    cursor.execute("SELECT user_guid FROM league_updaters WHERE league_id = ?", (league_id,))
+    # 1. Get the Premium Status of the user currently logging in
+    cursor.execute("SELECT is_premium FROM users WHERE guid = ?", (user_guid,))
+    user_row = cursor.fetchone()
+    is_premium_user = (user_row and user_row[0] == 1)
+
+    # 2. Check who currently owns this league
+    cursor.execute("""
+        SELECT lu.user_guid, u.is_premium
+        FROM league_updaters lu
+        JOIN users u ON lu.user_guid = u.guid
+        WHERE lu.league_id = ?
+    """, (league_id,))
     row = cursor.fetchone()
 
     if row is None:
-        # No updater assigned, claim it for this user
+        # No one updates this league yet. Claim it.
         cursor.execute("INSERT INTO league_updaters (league_id, user_guid) VALUES (?, ?)", (league_id, user_guid))
+        logging.info(f"League {league_id} assigned to {user_guid} (New Assignment).")
         conn.commit()
-        logging.info(f"League {league_id} assigned to user {user_guid} for background updates.")
         upload_admin_db_to_gcs()
     else:
-        # League already has an updater.
-        # Optional: You could logic here to 'steal' the role if the old user's token is invalid.
-        logging.info(f"League {league_id} already handled by {row[0]}. Skipping assignment.")
+        current_updater_guid = row[0]
+        current_updater_is_premium = (row[1] == 1)
+
+        # 3. Takeover Logic: If current is Free and I am Premium -> I take over.
+        if not current_updater_is_premium and is_premium_user:
+            cursor.execute("UPDATE league_updaters SET user_guid = ? WHERE league_id = ?", (user_guid, league_id))
+            logging.info(f"League {league_id} TAKEOVER: Premium user {user_guid} replaced Free user {current_updater_guid}.")
+            conn.commit()
+            upload_admin_db_to_gcs()
+        else:
+            logging.info(f"League {league_id} already has a valid updater. No change.")
 
     conn.close()
 
@@ -3581,6 +3689,7 @@ def _get_team_goalie_stats(cursor, team_id, start_date_str, end_date_str):
 
 
 @app.route('/api/goalie_planning_stats', methods=['POST'])
+@requires_premium
 def get_goalie_planning_stats():
     league_id = session.get('league_id')
     data = request.get_json()
