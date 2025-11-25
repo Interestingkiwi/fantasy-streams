@@ -204,14 +204,13 @@ def run_league_updates():
             }
             yq = YahooFantasySportsQuery(league_id, game_code="nhl", yahoo_access_token_json=auth_data)
 
-            # YFA - CORRECTED FIX for non-interactive mode.
-            # We must use the from_file parameter to signal non-interactive mode.
+            # YFA - Final robust fix for non-interactive mode.
             fd, temp_path = tempfile.mkstemp(suffix=".json")
             with os.fdopen(fd, 'w') as f:
                 json.dump(creds, f)
 
-            # Use None, None for key/secret when using from_file to avoid interactive prompt.
-            sc = OAuth2(None, None, from_file=temp_path)
+            # CORRECTED: Pass consumer keys AND from_file to ensure non-interactive token load.
+            sc = OAuth2(creds['consumer_key'], creds['consumer_secret'], from_file=temp_path)
 
             gm = yfa.Game(sc, 'nhl')
             lg = gm.to_league(f"nhl.l.{league_id}")
