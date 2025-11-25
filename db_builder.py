@@ -913,7 +913,7 @@ def _update_teams_info(yq, cursor, logger):
                 manager_nickname = team.managers[0].nickname
             teams_data_to_insert.append((team_id, team_name, manager_nickname))
 
-        sql = "INSERT OR IGNORE INTO teams (team_id, name, manager_nickname) VALUES (?, ?, ?)"
+        sql = "INSERT OR REPLACE INTO teams (team_id, name, manager_nickname) VALUES (?, ?, ?)"
         cursor.executemany(sql, teams_data_to_insert)
         # --- MODIFIED ---
         logger.info(f"Successfully inserted or ignored data for {len(teams_data_to_insert)} teams.")
