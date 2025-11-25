@@ -8,6 +8,7 @@ import tempfile
 from datetime import datetime
 from apscheduler.schedulers.background import BackgroundScheduler
 from google.cloud import storage
+import subprocess # <-- ADDED: For running external scripts
 
 # Import your db_builder and authentication libraries
 import db_builder
@@ -91,6 +92,38 @@ def download_admin_db_from_gcs():
 
     except Exception as e:
         logger.error(f"Failed to download admin.db from GCS: {e}")
+
+# ADDED: Helper function to run external scripts as subprocesses
+def run_script(script_path, *args):
+    """Runs a script as a subprocess and logs the output."""
+    # Use sys.executable to ensure we run with the current Python interpreter
+    cmd = [sys.executable, script_path] + list(args)
+    logger.info(f"Executing command: {' '.join(cmd)}")
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            check=False # Don't raise exception on non-zero exit code
+        )
+        if result.stdout:
+            # Log stdout if present, stripping leading/trailing whitespace
+            logger.info(f"--- {script_path} STDOUT ---\n{result.stdout.strip()}")
+        if result.stderr:
+            # Log stderr if present
+            logger.error(f"--- {script_path} STDERR ---\n{result.stderr.strip()}")
+
+        if result.returncode != 0:
+            logger.error(f"Script {script_path} failed with return code {result.returncode}")
+            return False
+
+        logger.info(f"Script {script_path} completed successfully.")
+        return True
+
+    except Exception as e:
+        logger.error(f"Exception during execution of {script_path}: {e}")
+        return False
+# END ADDED FUNCTION
 
 
 def run_league_updates():
@@ -232,14 +265,14 @@ def start_scheduler():
         run_daily_job_sequence,
         trigger='cron',
         hour=11,  # 6:00 AM UTC
-        minute=10
+        minute=20
     )
 
     scheduler.add_job(
         run_league_updates,
         trigger='cron',
         hour=11,
-        minute=30
+        minute=40
     )
 
     scheduler.start()
