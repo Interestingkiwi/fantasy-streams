@@ -3689,7 +3689,7 @@ def _get_team_goalie_stats(cursor, team_id, start_date_str, end_date_str):
 
 
 @app.route('/api/goalie_planning_stats', methods=['POST'])
-@requires_premium
+#@requires_premium
 def get_goalie_planning_stats():
     league_id = session.get('league_id')
     data = request.get_json()
