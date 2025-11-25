@@ -272,16 +272,14 @@ def start_scheduler():
     scheduler.add_job(
         run_league_updates,
         trigger='cron',
-        hour=15,
-        minute=0
+        hour=14,
+        minute=03
     )
 
     scheduler.start()
     logger.info("Scheduler started.")
 
 if __name__ == "__main__":
-    # For testing immediately
-    run_league_updates()
 
     start_scheduler()
     try:
