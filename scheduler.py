@@ -37,6 +37,7 @@ def get_refreshed_token(user_row):
         "access_token": access_token,
         "refresh_token": refresh_token,
         "token_type": token_type,
+        "expires_in": expires_in,
         "token_time": token_time,
         "xoauth_yahoo_guid": guid
     }
@@ -205,14 +206,18 @@ def start_scheduler():
 
     # 1. Run League Updates (e.g., at 9:00 UTC / 4:00 AM EST)
     scheduler.add_job(
-        run_league_updates,
+        run_daily_job_sequence,
         trigger='cron',
-        hour=9,
-        minute=0
+        hour=11,  # 6:00 AM UTC
+        minute=10
     )
 
-    # 2. Keep your existing daily scripts if needed
-    # scheduler.add_job(run_daily_job_sequence, trigger='cron', hour=6, minute=0)
+    scheduler.add_job(
+        run_league_updates,
+        trigger='cron',
+        hour=11,
+        minute=30
+    )
 
     scheduler.start()
     logger.info("Scheduler started.")
