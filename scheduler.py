@@ -98,6 +98,29 @@ def download_admin_db_from_gcs():
     except Exception as e:
         logger.error(f"Failed to download admin.db from GCS: {e}")
 
+def upload_admin_db_to_gcs():
+    """
+    Uploads the local authoritative admin.db back to GCS.
+    """
+    if not GCS_BUCKET_NAME:
+        logger.warning("GCS_BUCKET_NAME not set. Cannot upload admin.db.")
+        return
+    if not os.path.exists(ADMIN_DB_PATH):
+        logger.error(f"Cannot upload: Admin DB not found locally at {ADMIN_DB_PATH}.")
+        return
+
+    try:
+        storage_client = storage.Client()
+        bucket = storage_client.bucket(GCS_BUCKET_NAME)
+        blob = bucket.blob('system/admin.db')
+
+        logger.info("Uploading latest admin.db to GCS...")
+        blob.upload_from_filename(ADMIN_DB_PATH)
+        logger.info("Upload complete.")
+
+    except Exception as e:
+        logger.error(f"Failed to upload admin.db to GCS: {e}")
+
 def run_script(script_path, *args):
     """Runs a script as a subprocess and logs the output."""
     # Use sys.executable to ensure we run with the current Python interpreter
@@ -190,6 +213,9 @@ def run_league_updates():
         conn_update.commit()
         conn_update.close()
 
+        # ADDED: Upload the newly updated local admin.db back to GCS
+        upload_admin_db_to_gcs()
+
         # 3. Initialize APIs
         try:
             # YFPY
@@ -209,7 +235,7 @@ def run_league_updates():
             with os.fdopen(fd, 'w') as f:
                 json.dump(creds, f)
 
-            # CORRECTED: Pass consumer keys AND from_file to ensure non-interactive token load.
+            # Pass consumer keys AND from_file to ensure non-interactive token load.
             sc = OAuth2(creds['consumer_key'], creds['consumer_secret'], from_file=temp_path)
 
             gm = yfa.Game(sc, 'nhl')
@@ -272,15 +298,14 @@ def start_scheduler():
     scheduler.add_job(
         run_league_updates,
         trigger='cron',
-        hour=14,
-        minute=3
+        hour=16,
+        minute=0
     )
 
     scheduler.start()
     logger.info("Scheduler started.")
 
 if __name__ == "__main__":
-
     start_scheduler()
     try:
         while True:
