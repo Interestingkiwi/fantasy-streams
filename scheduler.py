@@ -49,7 +49,7 @@ def get_refreshed_token(user_row):
         json.dump(creds, f)
 
     try:
-        # Initialize OAuth2. Pass consumer_key/secret explicitly for robustness.
+        # Initialize OAuth2. Pass consumer_key/secret explicitly for robustness during refresh.
         sc = OAuth2(consumer_key, consumer_secret, from_file=temp_path)
 
         # Force a token refresh attempt.
@@ -58,7 +58,6 @@ def get_refreshed_token(user_row):
 
         # Check if the token is valid after the refresh attempt.
         if not sc.token_is_valid():
-            # If the token is still invalid, it means the refresh token is expired/revoked.
             raise Exception("Token refresh failed: Refresh token may be expired or revoked. User must re-authenticate.")
 
         # Read back the potentially updated token
@@ -205,19 +204,18 @@ def run_league_updates():
             }
             yq = YahooFantasySportsQuery(league_id, game_code="nhl", yahoo_access_token_json=auth_data)
 
-            # YFA - Initialize OAuth2 session in memory using the refreshed creds
-            # This is the most robust method for passing a fresh token to yfa
-            sc = OAuth2(creds['consumer_key'], creds['consumer_secret'])
+            # YFA - CORRECTED FIX for non-interactive mode.
+            # We must use the from_file parameter to signal non-interactive mode.
+            fd, temp_path = tempfile.mkstemp(suffix=".json")
+            with os.fdopen(fd, 'w') as f:
+                json.dump(creds, f)
 
-            # Manually set the refreshed token data onto the session object
-            sc.token = creds
-            sc.access_token = creds['access_token']
-            sc.refresh_token = creds['refresh_token']
-            sc.token_time = creds['token_time']
-            sc.expires_in = creds['expires_in']
+            # Use None, None for key/secret when using from_file to avoid interactive prompt.
+            sc = OAuth2(None, None, from_file=temp_path)
 
             gm = yfa.Game(sc, 'nhl')
             lg = gm.to_league(f"nhl.l.{league_id}")
+            os.remove(temp_path) # Clean up temp file
 
             # 4. Run the Update
             logger.info(f"Starting DB build for {league_id}...")
@@ -275,8 +273,8 @@ def start_scheduler():
     scheduler.add_job(
         run_league_updates,
         trigger='cron',
-        hour=13,
-        minute=36
+        hour=15,
+        minute=0
     )
 
     scheduler.start()
@@ -284,7 +282,7 @@ def start_scheduler():
 
 if __name__ == "__main__":
     # For testing immediately
-    # run_league_updates()
+    run_league_updates()
 
     start_scheduler()
     try:
