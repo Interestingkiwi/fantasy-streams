@@ -197,7 +197,7 @@ def run_league_updates():
 
         # 3. Initialize APIs
         try:
-            # YFPY
+            # YFPY initialization remains correct...
             auth_data = {
                 'consumer_key': creds['consumer_key'],
                 'consumer_secret': creds['consumer_secret'],
@@ -210,13 +210,13 @@ def run_league_updates():
             yq = YahooFantasySportsQuery(league_id, game_code="nhl", yahoo_access_token_json=auth_data)
 
             # YFA
-            # We can re-use the temp file logic or just pass the OAuth2 object we created in get_refreshed_token
-            # Re-creating for clarity:
+            # Re-create temp file for yfa
             fd, temp_path = tempfile.mkstemp(suffix=".json")
             with os.fdopen(fd, 'w') as f:
                 json.dump(creds, f)
 
-            sc = OAuth2(None, None, from_file=temp_path)
+            # FIX: Pass consumer_key and consumer_secret explicitly
+            sc = OAuth2(creds['consumer_key'], creds['consumer_secret'], from_file=temp_path)
             gm = yfa.Game(sc, 'nhl')
             lg = gm.to_league(f"nhl.l.{league_id}")
             os.remove(temp_path)
@@ -280,7 +280,7 @@ def start_scheduler():
         run_league_updates,
         trigger='cron',
         hour=13,
-        minute=15
+        minute=25
     )
 
     scheduler.start()
