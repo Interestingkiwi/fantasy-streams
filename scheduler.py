@@ -273,7 +273,7 @@ def start_scheduler():
         run_league_updates,
         trigger='cron',
         hour=14,
-        minute=03
+        minute=3
     )
 
     scheduler.start()
