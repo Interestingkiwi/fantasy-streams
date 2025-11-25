@@ -49,12 +49,12 @@ def get_refreshed_token(user_row):
         json.dump(creds, f)
 
     try:
-        # Initialize OAuth2 - this automatically checks validity and refreshes if needed
+        # Initialize OAuth2
         sc = OAuth2(None, None, from_file=temp_path)
 
-        if not sc.token_is_valid():
-            logger.info(f"Refreshing token for user {guid}...")
-            sc.refresh_access_token()
+        # Force a token refresh attempt. This ensures we always get a valid token.
+        logger.info(f"Attempting to refresh/validate token for user {guid}...")
+        sc.refresh_access_token()
 
         # Read back the potentially updated token
         with open(temp_path, 'r') as f:
@@ -272,7 +272,7 @@ def start_scheduler():
         run_league_updates,
         trigger='cron',
         hour=11,
-        minute=40
+        minute=50
     )
 
     scheduler.start()
