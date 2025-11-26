@@ -12,3 +12,4 @@ google-cloud-storage
 redis
 rq
 pytz
+psycopg2-binary==2.9.9

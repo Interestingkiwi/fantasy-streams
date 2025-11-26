@@ -3,7 +3,7 @@ Queries to create and update fantasystreams.app db
 
 Author: Jason Druckenmiller
 Date: 10/17/2025
-Updated: 10/23/2025
+Updated: 11/25/2025
 """
 
 import os
@@ -33,12 +33,11 @@ db_build_status = {"running": False, "error": None, "current_build_id": None}
 db_build_status_lock = threading.Lock()
 
 def run_task(build_id, log_file_path, options, data):
-    global db_build_status  # <-- Your existing global fix
+    global db_build_status
 
-    # --- Create a temporary logger FOR THIS THREAD ONLY ---
     logger = logging.getLogger(f"db_build_{build_id}")
     logger.setLevel(logging.INFO)
-    logger.propagate = False  # IMPORTANT: Do not send to root logger
+    logger.propagate = False
 
     file_handler = None
     try:
@@ -49,31 +48,23 @@ def run_task(build_id, log_file_path, options, data):
         if not logger.handlers:
             logger.addHandler(file_handler)
 
-        # --- [START NEW LOGS] ---
-        # This will be the VERY FIRST message the user sees.
         logger.info(f"Build task {build_id} received. Preparing API connections...")
-        # --- [END NEW LOGS] ---
 
     except Exception as e:
-        # ... (rest of your exception handling) ...
         logging.error(f"Failed to create FileHandler for build {build_id}: {e}")
         with db_build_status_lock:
             db_build_status = {"running": False, "error": str(e), "current_build_id": None}
         return
-    # --- END NEW LOGGER SETUP ---
 
     yq = None
     lg = None
 
     try:
-        # --- FIX 3: Instantiate API objects *inside* the thread ---
         if not data.get('dev_mode'):
 
-            # --- [START NEW LOGS] ---
             logger.info("Authenticating with Yahoo API (yfpy)...")
-            # --- [END NEW LOGS] ---
 
-            # 3a. Create yfpy (yq) instance
+            #Create yfpy (yq) instance
             auth_data = {
                 'consumer_key': data['consumer_key'],
                 'consumer_secret': data['consumer_secret'],
@@ -89,13 +80,10 @@ def run_task(build_id, log_file_path, options, data):
                 yahoo_access_token_json=auth_data
             )
 
-            # --- [START NEW LOGS] ---
             logger.info("yfpy authentication successful.")
             logger.info("Authenticating with Yahoo API (yfa)...")
-            # --- [END NEW LOGS] ---
 
-            # 3b. Create yfa (lg) instance
-            # ... (creds dict setup) ...
+            #Create yfa (lg) instance
             creds = {
                 "consumer_key": data['consumer_key'],
                 "consumer_secret": data['consumer_secret'],
@@ -105,7 +93,6 @@ def run_task(build_id, log_file_path, options, data):
                 "token_time": data['token'].get('expires_at', time.time() + 3600),
                 "xoauth_yahoo_guid": data['token'].get('xoauth_yahoo_guid')
             }
-            # ... (temp file setup) ...
             temp_dir = os.path.join(tempfile.gettempdir(), 'temp_creds')
             os.makedirs(temp_dir, exist_ok=True)
             temp_file_path = os.path.join(temp_dir, f"thread_{build_id}.json")
@@ -115,18 +102,13 @@ def run_task(build_id, log_file_path, options, data):
 
             sc = OAuth2(None, None, from_file=temp_file_path)
             if not sc.token_is_valid():
-                # --- [START NEW LOGS] ---
-                # This is the most likely culprit for the long delay!
                 logger.info("Thread token expired, refreshing... (This may take a moment)")
-                # --- [END NEW LOGS] ---
                 sc.refresh_access_token()
 
             gm = yfa.Game(sc, 'nhl')
             lg = gm.to_league(f"nhl.l.{data['league_id']}")
 
-            # --- [START NEW LOGS] ---
             logger.info("yfa authentication successful.")
-            # --- [END NEW LOGS] ---
 
             if os.path.exists(temp_file_path):
                 os.remove(temp_file_path)
@@ -136,13 +118,10 @@ def run_task(build_id, log_file_path, options, data):
             yq = None
             lg = None
 
-        # This message now comes *after* the API calls are done.
         logger.info("--- Starting Database Update ---")
         logger.info(f"League ID: {data['league_id']}")
         logger.info(f"Build ID: {build_id}")
 
-        # --- FIX 4: Call the correct function from db_builder.py ---
-        # And pass the new logger to it.
         DATA_DIR = '/var/data/dbs'
         roster_updates_only = options.get('roster_updates_only', False)
         if roster_updates_only:
@@ -157,12 +136,7 @@ def run_task(build_id, log_file_path, options, data):
             logger, # Pass the new logger
             capture_lineups=options['capture_lineups'],
             roster_updates_only=options.get('roster_updates_only', False)
-            # Note: I am using the function from your db_builder.py file,
-            # which does not include skip_static or skip_players.
-            # If you re-add those to league-database.html, you must
-            # add them here and to update_league_db in db_builder.py
         )
-        # --- END FIX 4 ---
 
         if result and result.get('success'):
             logger.info(f"--- SUCCESS: {result.get('league_name')} updated. ---")
@@ -179,26 +153,21 @@ def run_task(build_id, log_file_path, options, data):
             db_build_status["error"] = str(e)
     finally:
         with db_build_status_lock:
-            # --- MODIFICATION: Reset the whole status object ---
-            error_msg = db_build_status.get("error") # Preserve error if one was set
+            error_msg = db_build_status.get("error")
             db_build_status["running"] = False
             db_build_status["error"] = error_msg
             db_build_status["current_build_id"] = None
-            # --- END MODIFICATION ---
 
         try:
-            # --- MODIFICATION: Create a .done file as a sentinel ---
+            #Create a .done file as a sentinel ---
             done_file_path = f"{log_file_path}.done"
             Path(done_file_path).touch()
-            # --- END MODIFICATION ---
         except Exception as e:
             logger.error(f"Build task {build_id} couldn't create .done file: {e}")
 
-        # --- MODIFICATION: Close the file handler ---
         if file_handler:
             file_handler.close()
             logger.removeHandler(file_handler)
-        # --- END MODIFICATION ---
 
         logger.info(f"Build task {build_id} thread finished.")
 
@@ -209,16 +178,15 @@ class DBFinalizer:
     """
     Processes and joins data in the fantasy hockey database after initial creation.
     """
-    # --- MODIFIED: Accept logger ---
-    def __init__(self, db_path, logger):
+    def __init__(self, db_path, logger, league_id):
         self.db_path = db_path
         self.logger = logger
+        self.league_id = league_id
         self.con = self.get_db_connection()
 
     def get_db_connection(self):
         """Gets a connection to the SQLite database."""
         if not os.path.exists(self.db_path):
-            # --- MODIFIED ---
             self.logger.error(f"Database not found at {self.db_path}. Please provide a valid database file.")
             return None
         return sqlite3.connect(self.db_path)
@@ -227,7 +195,6 @@ class DBFinalizer:
         """Closes the database connection if it's open."""
         if self.con:
             self.con.close()
-            # --- MODIFIED ---
             self.logger.info("Finalizer database connection closed.")
 
     def import_player_ids(self, player_ids_db_path):
@@ -236,44 +203,36 @@ class DBFinalizer:
         and imports the new one in a single transaction.
         """
         if not self.con:
-            # --- MODIFIED ---
             self.logger.error("No database connection for finalizer.")
             return
 
         if not os.path.exists(player_ids_db_path):
-            # --- MODIFIED ---
             self.logger.error(f"Player IDs database not found at: {player_ids_db_path}")
             return
 
         absolute_player_ids_path = os.path.abspath(player_ids_db_path)
-        # --- MODIFIED ---
         self.logger.info(f"Found player IDs DB. Absolute path: {absolute_player_ids_path}")
 
         attached_successfully = False
         try:
-            # --- MODIFIED ---
             self.logger.info("Attaching player IDs database...")
             self.con.execute(f"ATTACH DATABASE '{absolute_player_ids_path}' AS player_ids_db")
             attached_successfully = True
             cursor = self.con.cursor()
 
-            # --- MODIFIED ---
             self.logger.info("Importing 'players' table from player_ids_db...")
             cursor.execute("DROP TABLE IF EXISTS main.players")
             cursor.execute("CREATE TABLE main.players AS SELECT * FROM player_ids_db.players")
 
             self.con.commit()
-            # --- MODIFIED ---
             self.logger.info("Successfully imported the 'players' table.")
 
         except sqlite3.Error as e:
-            # --- MODIFIED ---
             self.logger.error(f"An error occurred while importing player IDs: {e}")
             self.logger.info("Rolling back any pending changes.")
             self.con.rollback()
         finally:
             if attached_successfully:
-                # --- MODIFIED ---
                 self.logger.info("Detaching player IDs database.")
                 self.con.execute("DETACH DATABASE player_ids_db")
 
@@ -284,37 +243,31 @@ class DBFinalizer:
         (imports and joins) within a single transaction.
         """
         if not self.con:
-            # --- MODIFIED ---
             self.logger.error("No database connection for finalizer.")
             return
 
         if not os.path.exists(projections_db_path):
-            # --- MODIFIED ---
             self.logger.error(f"Projections database not found at: {projections_db_path}")
             return
 
         absolute_proj_path = os.path.abspath(projections_db_path)
-        # --- MODIFIED ---
         self.logger.info(f"Found projections DB. Absolute path: {absolute_proj_path}")
 
         attached_successfully = False
         try:
-            # --- MODIFIED ---
             self.logger.info(f"Attaching projections database...")
             self.con.execute(f"ATTACH DATABASE '{absolute_proj_path}' AS projections")
             attached_successfully = True
             cursor = self.con.cursor()
 
-            # --- MODIFIED ---
             self.logger.info("Importing static tables (off_days, schedule, team_schedules, team_standings,team_stats_summary, team_stats_weekly)...")
             tables_to_import = ['off_days', 'schedule', 'team_schedules', 'team_standings','team_stats_summary', 'team_stats_weekly']
             for table in tables_to_import:
-                # --- MODIFIED ---
                 self.logger.info(f"Importing table: {table}")
                 cursor.execute(f"DROP TABLE IF EXISTS main.{table}")
                 cursor.execute(f"CREATE TABLE main.{table} AS SELECT * FROM projections.{table}")
 
-            # --- MODIFIED ---
+            #Create joined_player_stats ---
             self.logger.info("Joining player data with projections (projections)...")
             cursor.execute("DROP TABLE IF EXISTS main.joined_player_stats")
             cursor.execute("""
@@ -341,7 +294,7 @@ class DBFinalizer:
                 ON p.player_id = r.player_id;
             """)
 
-            # --- NEW: Create joined_player_stats_real ---
+            #Create joined_player_stats_real ---
             self.logger.info("Joining player data with to-date stats (stats_to_date)...")
             cursor.execute("DROP TABLE IF EXISTS main.joined_player_stats_real")
             cursor.execute("""
@@ -368,7 +321,7 @@ class DBFinalizer:
                 ON p.player_id = r.player_id;
             """)
 
-            # --- NEW: Create joined_player_stats_combined ---
+            #Create joined_player_stats_combined ---
             self.logger.info("Joining player data with combined projections (combined_projections)...")
             cursor.execute("DROP TABLE IF EXISTS main.joined_player_stats_combined")
             cursor.execute("""
@@ -396,17 +349,14 @@ class DBFinalizer:
             """)
 
             self.con.commit()
-            # --- MODIFIED ---
             self.logger.info("Successfully imported static tables and joined all player projection tables.")
 
         except sqlite3.Error as e:
-            # --- MODIFIED ---
             self.logger.error(f"An error occurred while processing with projections DB: {e}")
             self.logger.info("Rolling back any pending changes.")
             self.con.rollback()
         finally:
             if attached_successfully:
-                # --- MODIFIED ---
                 self.logger.info("Detaching projections database.")
                 self.con.execute("DETACH DATABASE projections")
 
@@ -417,7 +367,6 @@ class DBFinalizer:
         stores the structured stats in 'daily_player_stats'.
         """
         if not self.con:
-            # --- MODIFIED ---
             self.logger.error("No database connection for finalizer.")
             return
 
@@ -426,13 +375,13 @@ class DBFinalizer:
         # Check if the source table exists
         cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='daily_lineups_dump'")
         if cursor.fetchone() is None:
-            # --- MODIFIED ---
             self.logger.info("Table 'daily_lineups_dump' does not exist. Skipping stat parsing.")
             return
 
         # Create the target table if it doesn't exist yet
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS daily_player_stats (
+                league_id INTEGER NOT NULL,
                 date_ TEXT NOT NULL,
                 team_id INTEGER NOT NULL,
                 player_id INTEGER NOT NULL,
@@ -440,56 +389,41 @@ class DBFinalizer:
                 lineup_pos TEXT,
                 stat_id INTEGER NOT NULL,
                 category TEXT,
-                stat_value REAL,
-                PRIMARY KEY (date_, player_id, stat_id)
+                stat_value DOUBLE PRECISION,
+                PRIMARY KEY (league_id, date_, player_id, stat_id)
             );
         """)
         self.con.commit() # Commit table creation if it happened
 
-        # --- OPTIMIZATION START / MODIFICATION ---
         # Find the last date already processed in daily_player_stats
         cursor.execute("SELECT MAX(date_) FROM daily_player_stats")
         max_processed_date_result = cursor.fetchone()
         last_processed_date = max_processed_date_result[0] if max_processed_date_result else None
 
-        # --- MODIFICATION ---
         yesterday_iso = (date.today() - timedelta(days=1)).isoformat() # Get yesterday's date
-        # --- END MODIFICATION ---
 
         # Determine the query and parameters for fetching unprocessed data
         if last_processed_date:
-            # --- MODIFICATION ---
             self.logger.info(f"Parsing daily stats: Resuming from date after {last_processed_date} AND re-processing {yesterday_iso}.")
             dump_query = "SELECT * FROM daily_lineups_dump WHERE date_ > ? OR date_ = ?"
             query_params = (last_processed_date, yesterday_iso)
-            # --- END MODIFICATION ---
         else:
-            # --- MODIFIED ---
             self.logger.info("Parsing daily stats: Processing all dates from dump table.")
             dump_query = "SELECT * FROM daily_lineups_dump"
             query_params = ()
-        # --- END MODIFICATION ---
 
         # Fetch only the necessary data from the dump table
         cursor.execute(dump_query, query_params)
 
-        # --- FIX: Get column names IMMEDIATELY after execute ---
         column_names = [description[0] for description in cursor.description]
-        # --- END FIX ---
-
         all_lineups = cursor.fetchall()
-        # --- OPTIMIZATION END ---
-
 
         if not all_lineups:
-            # --- MODIFIED ---
             self.logger.info("No new dates found in daily_lineups_dump to process for daily_player_stats.")
             return
 
-        # --- MODIFIED ---
         self.logger.info(f"Parsing raw player strings for {len(all_lineups)} new/updated rows...")
 
-        # (Rest of the function remains mostly the same)
         stat_map = {
             1: 'G', 2: 'A', 3: 'P', 4: '+/-', 5: 'PIM', 6: 'PPG', 7: 'PPA', 8: 'PPP',
             9: 'SHG', 10: 'SHA', 11: 'SHP', 12: 'GWG', 13: 'GTG', 14: 'SOG', 15: 'SH%',
@@ -500,7 +434,6 @@ class DBFinalizer:
 
         cursor.execute("SELECT player_id, player_name_normalized FROM players")
         player_norm_name_map = dict(cursor.fetchall())
-        # --- MODIFIED ---
         self.logger.info(f"Loaded {len(player_norm_name_map)} players for name normalization lookup.")
 
 
@@ -517,14 +450,11 @@ class DBFinalizer:
                 date_ = row_dict['date_']
                 team_id = row_dict['team_id']
             except KeyError as e:
-                # --- MODIFIED ---
                 self.logger.error(f"Missing key {e} when creating row_dict. Column names: {column_names}. Row data: {row}")
                 continue # Skip this row if it doesn't match columns
             except Exception as e:
-                # --- MODIFIED ---
                 self.logger.error(f"Error processing row {row} with columns {column_names}: {e}")
                 continue # Skip this row on other errors
-            # --- End safety check ---
 
 
             for col in active_roster_columns:
@@ -554,29 +484,27 @@ class DBFinalizer:
                             for stat_id, stat_value in player_stats.items():
                                 category = stat_map.get(stat_id, 'UNKNOWN')
                                 stats_to_insert.append((
-                                    date_, team_id, player_id, player_name_normalized,
-                                    lineup_pos, stat_id, category, stat_value
+                                    self.league_id, date_, team_id, player_id,
+                                    player_name_normalized, lineup_pos, stat_id,
+                                    category, stat_value
                                 ))
                         except (ValueError, SyntaxError) as e:
-                            # --- MODIFIED ---
                             self.logger.warning(f"Could not parse stats for player {player_id} on {date_} in daily_player_stats: {e}")
 
         if stats_to_insert:
-            # --- MODIFIED ---
             self.logger.info(f"Found {len(stats_to_insert)} individual stat entries to insert/replace into daily_player_stats.")
-            # --- MODIFICATION: Use INSERT OR REPLACE ---
             cursor.executemany("""
-                INSERT OR REPLACE INTO daily_player_stats (
-                    date_, team_id, player_id, player_name_normalized, lineup_pos,
+                INSERT INTO daily_player_stats (
+                    league_id, date_, team_id, player_id, player_name_normalized, lineup_pos,
                     stat_id, category, stat_value
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (league_id, date_, player_id, stat_id)
+                DO UPDATE SET stat_value = EXCLUDED.stat_value
             """, stats_to_insert)
             self.con.commit()
-            # --- MODIFIED ---
             self.logger.info("Successfully stored/replaced parsed player stats in daily_player_stats.")
         else:
-            # --- MODIFIED ---
             self.logger.info("No new player stats to insert into daily_player_stats.")
 
 
@@ -1649,7 +1577,7 @@ def update_league_db(yq, lg, league_id, data_dir, logger, capture_lineups=False,
         logger.info(f"Using Projections DB from: {PROJECTIONS_DB_PATH}")
 
         # --- MODIFIED: Pass logger ---
-        finalizer = DBFinalizer(db_path, logger)
+        finalizer = DBFinalizer(db_path, logger, league_id)
         if finalizer.con:
             finalizer.import_player_ids(PLAYER_IDS_DB_PATH)
             finalizer.process_with_projections(PROJECTIONS_DB_PATH)
