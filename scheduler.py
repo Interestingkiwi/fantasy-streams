@@ -169,7 +169,17 @@ def run_league_updates():
 
     # Get list of leagues and their assigned updaters
     cursor.execute("""
-        SELECT l.league_id, u.* FROM league_updaters l
+        SELECT
+            l.league_id,
+            u.guid,
+            u.access_token,
+            u.refresh_token,
+            u.token_type,
+            u.expires_in,
+            u.token_time,
+            u.consumer_key,
+            u.consumer_secret
+        FROM league_updaters l
         JOIN users u ON l.user_guid = u.guid
     """)
 #        SELECT l.league_id, u.* FROM league_updaters l
