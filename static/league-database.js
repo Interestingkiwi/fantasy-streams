@@ -21,14 +21,6 @@
     const updateStatus = (data) => {
         dbExists = data.db_exists; // Store state
 
-        if (data.is_test_db) {
-            statusText.innerHTML = `<strong>TEST MODE ACTIVE.</strong> All pages are reading from <span class="font-mono text-green-400">${data.league_name}</span>. <br>You can still use the button below to build or update a separate, live database.`;
-            actionButton.textContent = 'Build/Update Live Database';
-            // In test mode, we might act like DB exists for the purpose of the UI options
-            statUpdateContainer.classList.remove('hidden');
-            return;
-        }
-
         if (data.db_exists) {
             const date = new Date(data.timestamp * 1000);
             statusText.textContent = `Your league: '${data.league_name}'s data is up to date as of: ${date.toLocaleString()}`;
@@ -183,9 +175,7 @@
         try {
             const options = {
                 'capture_lineups': captureLineups,
-                'roster_updates_only': rosterUpdatesOnly,
-                'skip_static': false,
-                'skip_players': false
+                'roster_updates_only': rosterUpdatesOnly
             };
 
             const response = await fetch('/api/db_action', {
