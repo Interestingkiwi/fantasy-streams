@@ -433,7 +433,7 @@ def setup_schedule_tables(cursor, games):
     off_days = [(d,) for d, c in counts.items() if c * 4 < NHL_TEAM_COUNT]
     cursor.executemany("INSERT INTO off_days VALUES (%s)", sorted(off_days))
 
-def run():
+def create_projections_db():
     with get_db_connection() as conn:
         with conn.cursor() as cursor:
             process_separate_files_to_table(cursor, PROJ1_SKATER_FILE, PROJ1_GOALIE_FILE, 'proj1')
@@ -445,4 +445,4 @@ def run():
             conn.commit()
 
 if __name__ == "__main__":
-    run()
+    create_projections_db()
