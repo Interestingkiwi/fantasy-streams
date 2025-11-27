@@ -863,17 +863,44 @@ def save_user_credentials(token, consumer_key, consumer_secret):
     """Saves or updates user credentials in the admin DB."""
     guid = token.get('xoauth_yahoo_guid')
 
-    with get_db_connection() as conn:
-        with conn.cursor() as cursor:
-            cursor.execute("""
-                INSERT INTO users (guid, access_token, refresh_token, token_type, expires_in, token_time, consumer_key, consumer_secret)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (guid) DO UPDATE SET
-                    access_token = EXCLUDED.access_token,
-                    refresh_token = EXCLUDED.refresh_token,
-                    token_time = EXCLUDED.token_time;
-            """, (guid, token.get('access_token'), token.get('refresh_token'), ...))
-            conn.commit()
+    # Calculate a token time if not present (current time)
+    # Yahoo tokens usually provide 'expires_in', but we store the absolute time 'token_time'
+    token_time = token.get('expires_at', time.time())
+
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    INSERT INTO users (
+                        guid,
+                        access_token,
+                        refresh_token,
+                        token_type,
+                        expires_in,
+                        token_time,
+                        consumer_key,
+                        consumer_secret
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (guid) DO UPDATE SET
+                        access_token = EXCLUDED.access_token,
+                        refresh_token = EXCLUDED.refresh_token,
+                        token_time = EXCLUDED.token_time,
+                        expires_in = EXCLUDED.expires_in;
+                """, (
+                    guid,
+                    token.get('access_token'),
+                    token.get('refresh_token'),
+                    token.get('token_type'),
+                    token.get('expires_in'),
+                    token_time,
+                    consumer_key,
+                    consumer_secret
+                ))
+                conn.commit()
+                logging.info(f"Successfully saved credentials for {guid}")
+    except Exception as e:
+        logging.error(f"Error saving user credentials: {e}", exc_info=True)
 
 
 def assign_league_updater(league_id, user_guid):
