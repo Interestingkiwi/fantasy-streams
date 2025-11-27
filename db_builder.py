@@ -416,7 +416,7 @@ class DBFinalizer:
 def _create_tables(cursor, logger):
     logger.info("Creating database tables if they don't exist...")
 
-    # Tables with league_id in PK
+    # 1. Metadata & Settings
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS league_info (
             league_id INTEGER NOT NULL,
@@ -426,26 +426,11 @@ def _create_tables(cursor, logger):
         )
     ''')
     cursor.execute('''
-        CREATE TABLE IF NOT EXISTS teams (
+        CREATE TABLE IF NOT EXISTS db_metadata (
             league_id INTEGER NOT NULL,
-            team_id TEXT NOT NULL,
-            name TEXT,
-            manager_nickname TEXT,
-            PRIMARY KEY (league_id, team_id)
-        )
-    ''')
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS daily_lineups_dump (
-            league_id INTEGER NOT NULL,
-            date_ TEXT NOT NULL,
-            team_id INTEGER NOT NULL,
-            c1 TEXT, c2 TEXT, l1 TEXT, l2 TEXT, r1 TEXT, r2 TEXT,
-            d1 TEXT, d2 TEXT, d3 TEXT, d4 TEXT, g1 TEXT, g2 TEXT,
-            b1 TEXT, b2 TEXT, b3 TEXT, b4 TEXT, b5 TEXT, b6 TEXT,
-            b7 TEXT, b8 TEXT, b9 TEXT, b10 TEXT, b11 TEXT, b12 TEXT,
-            b13 TEXT, b14 TEXT, b15 TEXT, b16 TEXT, b17 TEXT, b18 TEXT, b19 TEXT,
-            i1 TEXT, i2 TEXT, i3 TEXT, i4 TEXT, i5 TEXT,
-            PRIMARY KEY (league_id, date_, team_id)
+            key TEXT NOT NULL,
+            value TEXT,
+            PRIMARY KEY (league_id, key)
         )
     ''')
     cursor.execute('''
@@ -460,9 +445,9 @@ def _create_tables(cursor, logger):
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS lineup_settings (
             league_id INTEGER NOT NULL,
+            position_id SERIAL PRIMARY KEY,
             position TEXT NOT NULL,
-            position_count INTEGER NOT NULL,
-            PRIMARY KEY (league_id, position)
+            position_count INTEGER NOT NULL
         )
     ''')
     cursor.execute('''
@@ -474,13 +459,15 @@ def _create_tables(cursor, logger):
             PRIMARY KEY (league_id, week_num)
         )
     ''')
+
+    # 2. Teams & Rosters
     cursor.execute('''
-        CREATE TABLE IF NOT EXISTS matchups (
+        CREATE TABLE IF NOT EXISTS teams (
             league_id INTEGER NOT NULL,
-            week INTEGER NOT NULL,
-            team1 TEXT NOT NULL,
-            team2 TEXT NOT NULL,
-            PRIMARY KEY (league_id, week, team1)
+            team_id TEXT NOT NULL,
+            name TEXT,
+            manager_nickname TEXT,
+            PRIMARY KEY (league_id, team_id)
         )
     ''')
     cursor.execute('''
@@ -496,6 +483,16 @@ def _create_tables(cursor, logger):
             PRIMARY KEY (league_id, team_id)
         )
     ''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS rosters_tall (
+            league_id INTEGER NOT NULL,
+            team_id INTEGER NOT NULL,
+            player_id INTEGER NOT NULL,
+            PRIMARY KEY (league_id, team_id, player_id)
+        );
+    ''')
+
+    # 3. Player Status
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS free_agents (
             league_id INTEGER NOT NULL,
@@ -521,12 +518,15 @@ def _create_tables(cursor, logger):
             PRIMARY KEY (league_id, player_id)
         )
     ''')
+
+    # 4. Stats & Transactions
     cursor.execute('''
-        CREATE TABLE IF NOT EXISTS db_metadata (
+        CREATE TABLE IF NOT EXISTS matchups (
             league_id INTEGER NOT NULL,
-            key TEXT NOT NULL,
-            value TEXT,
-            PRIMARY KEY (league_id, key)
+            week INTEGER NOT NULL,
+            team1 TEXT NOT NULL,
+            team2 TEXT NOT NULL,
+            PRIMARY KEY (league_id, week, team1)
         )
     ''')
     cursor.execute('''
@@ -540,7 +540,52 @@ def _create_tables(cursor, logger):
             PRIMARY KEY (league_id, transaction_date, player_id, move_type)
         )
     ''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS daily_lineups_dump (
+            league_id INTEGER NOT NULL,
+            date_ TEXT NOT NULL,
+            team_id INTEGER NOT NULL,
+            c1 TEXT, c2 TEXT, l1 TEXT, l2 TEXT, r1 TEXT, r2 TEXT,
+            d1 TEXT, d2 TEXT, d3 TEXT, d4 TEXT, g1 TEXT, g2 TEXT,
+            b1 TEXT, b2 TEXT, b3 TEXT, b4 TEXT, b5 TEXT, b6 TEXT,
+            b7 TEXT, b8 TEXT, b9 TEXT, b10 TEXT, b11 TEXT, b12 TEXT,
+            b13 TEXT, b14 TEXT, b15 TEXT, b16 TEXT, b17 TEXT, b18 TEXT, b19 TEXT,
+            i1 TEXT, i2 TEXT, i3 TEXT, i4 TEXT, i5 TEXT,
+            PRIMARY KEY (league_id, date_, team_id)
+        )
+    ''')
+    # MOVED FROM DBFINALIZER:
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS daily_player_stats (
+            league_id INTEGER NOT NULL,
+            date_ TEXT NOT NULL,
+            team_id INTEGER NOT NULL,
+            player_id INTEGER NOT NULL,
+            player_name_normalized TEXT,
+            lineup_pos TEXT,
+            stat_id INTEGER NOT NULL,
+            category TEXT,
+            stat_value REAL,
+            PRIMARY KEY (league_id, date_, player_id, stat_id)
+        );
+    """)
+    # MOVED FROM DBFINALIZER:
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS daily_bench_stats (
+            league_id INTEGER NOT NULL,
+            date_ TEXT NOT NULL,
+            team_id INTEGER NOT NULL,
+            player_id INTEGER NOT NULL,
+            player_name_normalized TEXT,
+            lineup_pos TEXT,
+            stat_id INTEGER NOT NULL,
+            category TEXT,
+            stat_value REAL,
+            PRIMARY KEY (league_id, date_, player_id, stat_id)
+        );
+    """)
 
+    
 def _update_league_info(yq, cursor, league_id, league_name, league_metadata, logger):
     logger.info("Updating league_info table...")
     data_to_insert = [

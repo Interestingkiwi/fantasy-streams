@@ -813,13 +813,13 @@ def _get_ranked_players(cursor, player_ids, cat_rank_columns, raw_stat_columns, 
 
 def init_admin_db():
     """
-    Creates the admin database tables in Postgres if they don't exist.
-    Runs on app startup.
+    Creates ALL database tables (Admin + League) in Postgres if they don't exist.
+    Runs on app startup to prevent 'Relation does not exist' errors.
     """
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
-                # 1. Create Users Table
+                # 1. Create Users Table (Admin)
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS users (
                         guid TEXT PRIMARY KEY,
@@ -835,7 +835,7 @@ def init_admin_db():
                     );
                 """)
 
-                # 2. Create League Updaters Table
+                # 2. Create League Updaters Table (Admin)
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS league_updaters (
                         league_id TEXT PRIMARY KEY,
@@ -846,15 +846,19 @@ def init_admin_db():
                 """)
 
                 # 3. Run Migrations (Idempotent)
-                # Ensures columns exist even if table was created by an older version
                 cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_premium BOOLEAN DEFAULT FALSE;")
                 cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS premium_expiration_date DATE;")
 
+                # 4. Initialize League Schema (The Fix for your Error)
+                # We use a dummy logger just for initialization
+                dummy_logger = logging.getLogger('schema_init')
+                db_builder._create_tables(cursor, dummy_logger)
+
                 conn.commit()
-                logging.info("Admin DB tables initialized successfully.")
+                logging.info("All DB tables initialized successfully.")
 
     except Exception as e:
-        logging.error(f"Failed to initialize Admin DB: {e}", exc_info=True)
+        logging.error(f"Failed to initialize DB: {e}", exc_info=True)
 
 # Run this once on startup
 init_admin_db()
