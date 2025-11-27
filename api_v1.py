@@ -1,74 +1,67 @@
-from flask import Blueprint, jsonify, session
+from flask import Blueprint, jsonify
 import logging
-from datetime import timezone
+import psycopg2.extras
+from database import get_db_connection
 
-# We now import the 'requires_auth' decorator you will create in app.py
-# We also need the GCS and storage clients that are defined in app.py
-from app import (
-    requires_auth,
-    storage_client,  # Import the initialized GCS client
-    gcs_bucket       # Import the GCS bucket object
-)
+# We import requires_auth from app.
+# Since app.py defines requires_auth BEFORE importing api_v1, this circular import is safe.
+from app import requires_auth
 
-# 1. Create the Blueprint
 api = Blueprint('api_v1', __name__, url_prefix='/api/v1')
+logger = logging.getLogger(__name__)
 
-
-# 2. Define your routes
 @api.route("/league/<league_id>/database-status")
-@requires_auth # Use your existing auth decorator
+@requires_auth
 def api_get_database_status(league_id):
     """
-    Checks GCS for a league's database and returns its status.
-    This is for the mobile app's main "database" screen.
-
-    The @requires_auth decorator will automatically check if the user
-    is logged in and if they have access to this league_id.
+    Checks Postgres for a league's status.
+    Replaces the old GCS blob check.
     """
     if not league_id:
         return jsonify({"error": "League ID is required."}), 400
 
-    if not gcs_bucket:
-        logging.error("api_v1: GCS_BUCKET_NAME not set or GCS client failed to init.")
-        return jsonify({"error": "Server GCS is not configured."}), 500
-
-    db_filename = None
-    blob_to_check = None
-    db_filename_prefix = f'yahoo-{league_id}-'
-    remote_path_prefix = f'league-dbs/{db_filename_prefix}'
-
     try:
-        logging.info(f"API checking GCS for: {remote_path_prefix}")
+        with get_db_connection() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cursor:
 
-        # Find the first blob that matches the prefix
-        for blob in gcs_bucket.list_blobs(prefix=remote_path_prefix):
-            blob_to_check = blob
-            db_filename = blob.name.split('/')[-1]
-            break # We only care about the first (and likely only) one
+                # 1. Check League Info (Does the league exist?)
+                cursor.execute("""
+                    SELECT value
+                    FROM league_info
+                    WHERE league_id = %s AND key = 'league_name'
+                """, (league_id,))
+                name_row = cursor.fetchone()
 
-        if not blob_to_check or not db_filename:
-            logging.warning(f"API: No DB found for league {league_id}")
-            # The database does not exist. Tell the app.
-            return jsonify({
-                "exists": False,
-                "message": "No database found. Please build one on the website."
-            }), 404
+                if not name_row:
+                    # League not found in Postgres
+                    return jsonify({
+                        "exists": False,
+                        "message": "No database found. Please build one on the website."
+                    }), 404
 
-        # --- DB EXISTS ---
-        # Get metadata
-        last_updated_utc = blob_to_check.updated.isoformat()
-        league_name_from_file = db_filename.replace(f'yahoo-{league_id}-', '').replace('.db', '')
+                league_name = name_row['value']
 
-        # Return the good status
-        return jsonify({
-            "exists": True,
-            "league_id": league_id,
-            "league_name": league_name_from_file,
-            "filename": db_filename,
-            "last_updated_utc": last_updated_utc,
-            "size_bytes": blob_to_check.size
-        })
+                # 2. Check Timestamp (When was it last updated?)
+                cursor.execute("""
+                    SELECT value
+                    FROM db_metadata
+                    WHERE league_id = %s AND key = 'last_updated_timestamp'
+                """, (league_id,))
+                time_row = cursor.fetchone()
+
+                last_updated_utc = time_row['value'] if time_row else None
+
+                # 3. Construct Response
+                # We maintain the same JSON structure so the mobile app doesn't break
+                return jsonify({
+                    "exists": True,
+                    "league_id": league_id,
+                    "league_name": league_name,
+                    "filename": f"yahoo-{league_id}.db", # Legacy placeholder
+                    "last_updated_utc": last_updated_utc,
+                    "size_bytes": 0 # Legacy placeholder (Postgres doesn't have a file size)
+                })
 
     except Exception as e:
-        logging.error(f"Error checking GCS status for league {league_id}: {e}", exc_info=True)
-        return jsonify({"error": "An error occurred checking database status."}), 500
+        logger.error(f"API Error checking DB status: {e}", exc_info=True)
+        return jsonify({"error": "Internal Server Error"}), 500
