@@ -1523,9 +1523,9 @@ def season_history_page_data():
                 # Fallback logic: Use found week, otherwise first week, otherwise 1
                 current_week = current_week_row['week_num'] if current_week_row else (weeks[0]['week_num'] if weeks else 1)
 
-            except Exception as e:
-                logging.error(f"Error fetching season history page data: {e}", exc_info=True)
-                return jsonify({'db_exists': False, 'error': f"An error occurred: {e}"}), 500
+    except Exception as e:
+        logging.error(f"Error fetching season history page data: {e}", exc_info=True)
+        return jsonify({'db_exists': False, 'error': f"An error occurred: {e}"}), 500
 
 
 def _get_live_matchup_stats(cursor, team1_id, team2_id, start_date_str, end_date_str, league_id):
