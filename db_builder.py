@@ -679,10 +679,19 @@ def _update_teams_info(yq, cursor, league_id, logger):
         teams_data_to_insert = []
         for team in teams:
             team_id = team.team_id
+
+            # --- FIX: Decode team name if it is bytes ---
             team_name = team.name
+            if isinstance(team_name, bytes):
+                team_name = team_name.decode('utf-8')
+
             manager_nickname = None
             if team.managers and team.managers[0].nickname:
                 manager_nickname = team.managers[0].nickname
+                # --- FIX: Decode manager nickname if it is bytes ---
+                if isinstance(manager_nickname, bytes):
+                    manager_nickname = manager_nickname.decode('utf-8')
+
             teams_data_to_insert.append((league_id, team_id, team_name, manager_nickname))
 
         sql = """
