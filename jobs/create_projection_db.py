@@ -61,9 +61,26 @@ def sanitize_header(header_list):
     }
     for h in header_list:
         clean_h = h.strip().lower()
-        if clean_h == '"+/-"': clean_h = 'plus_minus'
-        else: clean_h = re.sub(r'[^a-z0-9_%]', '', clean_h.replace(' ', '_'))
+
+        # 1. Handle specific edge cases first
+        if clean_h == '"+/-"':
+            clean_h = 'plus_minus'
+
+        # 2. Check mapping BEFORE regex (matches "sv%")
+        if clean_h in stat_mapping:
+            sanitized.append(stat_mapping[clean_h])
+            continue
+
+        # 3. If not in map, clean it aggressively
+        # Replace % with 'pct' to avoid SQL parameter collisions
+        clean_h = clean_h.replace('%', 'pct').replace(' ', '_')
+
+        # Remove any remaining special chars (excluding % now)
+        clean_h = re.sub(r'[^a-z0-9_]', '', clean_h)
+
+        # 4. Check mapping again (matches "faceoff_pct" if you added it)
         sanitized.append(stat_mapping.get(clean_h, clean_h))
+
     return sanitized
 
 def calculate_per_game_stats(row, gp_index, stat_indices):
