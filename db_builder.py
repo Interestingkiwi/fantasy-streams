@@ -679,10 +679,11 @@ def _update_teams_info(yq, cursor, league_id, logger):
         teams_data_to_insert = []
         for team in teams:
             team_id = team.team_id
+            team_name = team.name
             manager_nickname = None
             if team.managers and team.managers[0].nickname:
                 manager_nickname = team.managers[0].nickname
-            teams_data_to_insert.append((league_id, team_id, team.name, manager_nickname))
+            teams_data_to_insert.append((league_id, team_id, team_name, manager_nickname))
 
         sql = """
             INSERT INTO teams (league_id, team_id, name, manager_nickname)
