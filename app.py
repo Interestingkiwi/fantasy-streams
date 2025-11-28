@@ -844,13 +844,21 @@ def init_admin_db():
                         FOREIGN KEY(user_guid) REFERENCES users(guid)
                     );
                 """)
+                # 3. Create Job Logs Table
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS job_logs (
+                        log_id SERIAL PRIMARY KEY,
+                        job_id TEXT NOT NULL,
+                        message TEXT,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    );
+                """)
 
-                # 3. Run Migrations (Idempotent)
+                # 4. Run Migrations (Idempotent)
                 cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_premium BOOLEAN DEFAULT FALSE;")
                 cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS premium_expiration_date DATE;")
 
-                # 4. Initialize League Schema (The Fix for your Error)
-                # We use a dummy logger just for initialization
+                # 5. Initialize League Schema (The Fix for your Error)
                 dummy_logger = logging.getLogger('schema_init')
                 db_builder._create_tables(cursor, dummy_logger)
 
@@ -4161,56 +4169,64 @@ def db_log_stream():
     if not build_id:
         return Response("data: ERROR: No build_id provided.\n\ndata: __DONE__\n\n", mimetype='text/event-stream')
 
-    # --- CHANGED: Match the path used in db_action ---
-    log_file_path = os.path.join('/var/data/dbs', f"{build_id}.log")
-
     def generate():
+        last_log_id = 0
+
         try:
-            # Check if job exists
+            # 1. Check if job exists (using Redis queue)
             job = job_queue.fetch_job(build_id)
             if not job:
                 yield f"data: ERROR: Job {build_id} not found.\n\n"
                 yield 'data: __DONE__\n\n'
                 return
 
-            yield f"data: Connecting to log stream...\n\n"
+            yield f"data: Connected to log stream...\n\n"
 
-            # Open the file (it might not exist instantly, so we wait)
-            retries = 0
-            while not os.path.exists(log_file_path):
-                if retries > 10: # Wait up to 10 seconds
-                    yield f"data: Waiting for worker to start...\n\n"
-                time.sleep(1)
-                retries += 1
-                if retries > 30:
-                     yield f"data: ERROR: Log file never appeared.\n\n"
-                     yield 'data: __DONE__\n\n'
-                     return
+            # 2. Polling Loop
+            while True:
+                # Fetch new logs from Postgres
+                with get_db_connection() as conn:
+                    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cursor:
+                        cursor.execute("""
+                            SELECT log_id, message
+                            FROM job_logs
+                            WHERE job_id = %s AND log_id > %s
+                            ORDER BY log_id ASC
+                        """, (build_id, last_log_id))
+                        new_logs = cursor.fetchall()
 
-            # Stream the file content
-            with open(log_file_path, 'r') as f:
-                while True:
-                    line = f.readline()
-                    if line:
-                        yield f"data: {line.strip()}\n\n"
+                if new_logs:
+                    for log in new_logs:
+                        yield f"data: {log['message']}\n\n"
+                        last_log_id = log['log_id']
+
+                # Check Job Status
+                job.refresh()
+                status = job.get_status()
+
+                if status in ['finished', 'failed', 'canceled']:
+                    # One final check for logs
+                    with get_db_connection() as conn:
+                        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cursor:
+                            cursor.execute("""
+                                SELECT log_id, message
+                                FROM job_logs
+                                WHERE job_id = %s AND log_id > %s
+                                ORDER BY log_id ASC
+                            """, (build_id, last_log_id))
+                            final_logs = cursor.fetchall()
+                            for log in final_logs:
+                                yield f"data: {log['message']}\n\n"
+
+                    if status == 'failed':
+                        yield f"data: ERROR: Job failed unexpectedly.\n\n"
                     else:
-                        # No new line, check if job is done
-                        job.refresh()
-                        if job.get_status() in ['finished', 'failed', 'canceled']:
-                            # Read one last time to catch trailing logs
-                            last_lines = f.read()
-                            if last_lines:
-                                for l in last_lines.split('\n'):
-                                    if l: yield f"data: {l}\n\n"
+                        yield "data: Success! Update complete.\n\n"
 
-                            if job.get_status() == 'failed':
-                                yield f"data: ERROR: Job failed unexpectedly.\n\n"
-                            else:
-                                yield "data: Success! Update complete.\n\n"
+                    yield "data: __DONE__\n\n"
+                    break
 
-                            yield "data: __DONE__\n\n"
-                            break
-                        time.sleep(0.5)
+                time.sleep(2) # Poll every 2 seconds
 
         except Exception as e:
             logging.error(f"Log stream error: {e}")

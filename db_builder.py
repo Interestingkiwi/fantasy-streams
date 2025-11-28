@@ -4,7 +4,7 @@ Refactored for Multi-Tenancy (League ID) and Postgres Syntax
 
 Author: Jason Druckenmiller
 Created: 10/17/2025
-Updated: 11/26/2025
+Updated: 11/29/2025
 """
 
 import os
@@ -22,28 +22,52 @@ from database import get_db_connection
 db_build_status = {"running": False, "error": None, "current_build_id": None}
 db_build_status_lock = threading.Lock()
 
+
+class PostgresHandler(logging.Handler):
+    """
+    Custom logging handler that writes logs to the PostgreSQL 'job_logs' table.
+    """
+    def __init__(self, job_id):
+        super().__init__()
+        self.job_id = job_id
+
+    def emit(self, record):
+        log_entry = self.format(record)
+        try:
+            # We open a fresh connection for each log to ensure thread safety
+            # inside the worker process.
+            with get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        "INSERT INTO job_logs (job_id, message) VALUES (%s, %s)",
+                        (self.job_id, log_entry)
+                    )
+                conn.commit()
+        except Exception as e:
+            # Fallback to stderr if DB logging fails
+            print(f"Failed to log to DB: {e}")
+
+
 def run_task(build_id, log_file_path, options, data):
     global db_build_status
 
     logger = logging.getLogger(f"db_build_{build_id}")
     logger.setLevel(logging.INFO)
-    logger.propagate = False
+    logger.propagate = False # Don't spam the main worker logs
 
-    # 1. File Handler (Keeps logs for the UI)
-    file_handler = None
-    try:
-        file_handler = logging.FileHandler(log_file_path, mode='w', encoding='utf-8')
-        file_handler.setLevel(logging.INFO)
-        formatter = logging.Formatter('%(message)s')
-        file_handler.setFormatter(formatter)
-        if not logger.handlers:
-            logger.addHandler(file_handler)
 
-            # --- NEW: Add Console Handler (So you can see logs in Render Dashboard) ---
-            stream_handler = logging.StreamHandler(sys.stdout)
-            stream_handler.setLevel(logging.INFO)
-            stream_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
-            logger.addHandler(stream_handler)
+    db_handler = PostgresHandler(build_id)
+    db_handler.setLevel(logging.INFO)
+    formatter = logging.Formatter('%(message)s')
+    db_handler.setFormatter(formatter)
+
+    if not logger.handlers:
+        logger.addHandler(db_handler)
+
+        stream_handler = logging.StreamHandler(sys.stdout)
+        stream_handler.setLevel(logging.INFO)
+        stream_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+        logger.addHandler(stream_handler)
             # -------------------------------------------------------------------------
 
         logger.info(f"Build task {build_id} received. Preparing API connections...")

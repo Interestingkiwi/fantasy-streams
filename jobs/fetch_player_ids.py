@@ -17,6 +17,7 @@ import json
 import shutil
 from datetime import date
 from yfpy.query import YahooFantasySportsQuery
+import psycopg2.extras
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from database import get_db_connection
@@ -28,44 +29,68 @@ logger = logging.getLogger(__name__)
 # but we DO rely on it for the token file bootstrapping.
 MOUNT_PATH = "/var/data/dbs"
 
-def initialize_yahoo_query(league_id, consumer_key, consumer_secret):
-    # --- Bootstrapping Logic (Preserved) ---
-    SECRET_TOKEN_PATH = "/etc/secrets/token.json"
-    PERSISTENT_TOKEN_PATH = os.path.join(MOUNT_PATH, "token.json")
-    os.makedirs(MOUNT_PATH, exist_ok=True)
+def initialize_yahoo_query(league_id, consumer_key=None, consumer_secret=None):
+    """
+    Initializes YQ by fetching the token from the Postgres 'users' table
+    associated with the given league_id.
+    """
+    # 1. Find the User GUID assigned to update this league
+    token_data = None
 
-    if not os.path.exists(PERSISTENT_TOKEN_PATH) and os.path.exists(SECRET_TOKEN_PATH):
-        shutil.copy2(SECRET_TOKEN_PATH, PERSISTENT_TOKEN_PATH)
+    with get_db_connection() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cursor:
+            # Join league_updaters -> users to get the token
+            cursor.execute("""
+                SELECT u.access_token, u.refresh_token, u.token_type,
+                       u.expires_in, u.token_time, u.guid,
+                       u.consumer_key, u.consumer_secret
+                FROM league_updaters lu
+                JOIN users u ON lu.user_guid = u.guid
+                WHERE lu.league_id = %s
+            """, (str(league_id),))
 
-    original_cwd = os.getcwd()
+            row = cursor.fetchone()
+            if row:
+                token_data = row
+
+    if not token_data:
+        logger.error(f"No assigned updater found for league {league_id} in DB.")
+        return None
+
+    # 2. Construct the Token Dictionary
+    # Use keys from DB if not provided in args (args take precedence)
+    ck = consumer_key or token_data['consumer_key']
+    cs = consumer_secret or token_data['consumer_secret']
+
+    if not ck or not cs:
+         logger.error("Consumer Key/Secret missing.")
+         return None
+
+    access_token_json = {
+        "access_token": token_data['access_token'],
+        "refresh_token": token_data['refresh_token'],
+        "token_type": token_data['token_type'],
+        "expires_in": token_data['expires_in'],
+        "token_time": token_data['token_time'],
+        "guid": token_data['guid'],
+        "consumer_key": ck,
+        "consumer_secret": cs
+    }
+
     try:
-        os.chdir(MOUNT_PATH)
-        token_file_path = "token.json"
-        kwargs = {}
-        if consumer_key and consumer_secret:
-            kwargs["yahoo_consumer_key"] = consumer_key
-            kwargs["yahoo_consumer_secret"] = consumer_secret
-
-        if os.path.exists(token_file_path):
-            with open(token_file_path, 'r') as f:
-                kwargs["yahoo_access_token_json"] = json.load(f)
-
-        yq = YahooFantasySportsQuery(league_id=league_id, game_code="nhl", **kwargs)
-
-        # Trigger call to verify/refresh
-        yq.get_current_game_info()
-
-        # Save back refreshed token
-        if yq._yahoo_access_token_dict:
-            with open(token_file_path, 'w') as f:
-                json.dump(yq._yahoo_access_token_dict, f)
-
-        os.chdir(original_cwd)
+        # 3. Initialize YFPY with the dictionary directly
+        yq = YahooFantasySportsQuery(
+            league_id=league_id,
+            game_code="nhl",
+            yahoo_consumer_key=ck,
+            yahoo_consumer_secret=cs,
+            yahoo_access_token_json=access_token_json
+        )
         return yq
     except Exception as e:
-        logger.error(f"Init failed: {e}")
-        os.chdir(original_cwd)
+        logger.error(f"YQ Init failed: {e}")
         return None
+        
 
 def fetch_and_store_players(yq):
     logger.info("Fetching player info...")
