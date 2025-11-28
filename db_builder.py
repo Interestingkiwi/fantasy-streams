@@ -18,10 +18,11 @@ import threading
 import json
 import tempfile
 import sys
-from pathlib import Path # <--- ADDED
+from pathlib import Path
 from database import get_db_connection
+import psycopg2.extras
 
-# --- API Imports (Moved to top level) ---
+# --- API Imports ---
 from yfpy.query import YahooFantasySportsQuery
 from yahoo_oauth import OAuth2
 import yahoo_fantasy_api as yfa
@@ -83,38 +84,40 @@ def run_task(build_id, log_file_path, options, data):
 
     try:
         if not data.get('dev_mode'):
-            logger.info("Authenticating with Yahoo API (yfpy)...")
-            auth_data = {
-                'consumer_key': data['consumer_key'],
-                'consumer_secret': data['consumer_secret'],
-                'access_token': data['token'].get('access_token'),
-                'refresh_token': data['token'].get('refresh_token'),
-                'token_type': data['token'].get('token_type', 'bearer'),
-                'token_time': data['token'].get('expires_at', time.time() + 3600),
-                'guid': data['token'].get('xoauth_yahoo_guid')
-            }
+            # --- FIX: FETCH & REFRESH TOKEN FROM DB FIRST ---
+            guid = data['token'].get('xoauth_yahoo_guid')
 
-            # Re-initialize yfpy with explicit auth
-            yq = YahooFantasySportsQuery(
-                data['league_id'],
-                game_code="nhl",
-                yahoo_access_token_json=auth_data,
-                yahoo_consumer_key=data['consumer_key'],
-                yahoo_consumer_secret=data['consumer_secret']
-            )
+            db_creds = None
+            with get_db_connection() as conn:
+                with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cursor:
+                    cursor.execute("SELECT * FROM users WHERE guid = %s", (guid,))
+                    db_creds = cursor.fetchone()
 
-            logger.info("yfpy authentication successful.")
-            logger.info("Authenticating with Yahoo API (yfa)...")
+            if db_creds:
+                logger.info(f"Fetched credentials for {guid} from DB.")
+                creds = {
+                    "consumer_key": db_creds['consumer_key'],
+                    "consumer_secret": db_creds['consumer_secret'],
+                    "access_token": db_creds['access_token'],
+                    "refresh_token": db_creds['refresh_token'],
+                    "token_type": db_creds['token_type'],
+                    "expires_in": db_creds['expires_in'],
+                    "token_time": db_creds['token_time'],
+                    "xoauth_yahoo_guid": db_creds['guid']
+                }
+            else:
+                logger.warning("User not found in DB, falling back to passed data (might be stale).")
+                creds = {
+                    "consumer_key": data['consumer_key'],
+                    "consumer_secret": data['consumer_secret'],
+                    "access_token": data['token'].get('access_token'),
+                    "refresh_token": data['token'].get('refresh_token'),
+                    "token_type": data['token'].get('token_type', 'bearer'),
+                    "token_time": data['token'].get('expires_at', time.time() + 3600),
+                    "xoauth_yahoo_guid": data['token'].get('xoauth_yahoo_guid')
+                }
 
-            creds = {
-                "consumer_key": data['consumer_key'],
-                "consumer_secret": data['consumer_secret'],
-                "access_token": data['token'].get('access_token'),
-                "refresh_token": data['token'].get('refresh_token'),
-                "token_type": data['token'].get('token_type', 'bearer'),
-                "token_time": data['token'].get('expires_at', time.time() + 3600),
-                "xoauth_yahoo_guid": data['token'].get('xoauth_yahoo_guid')
-            }
+            # 2. Perform Refresh
             temp_dir = os.path.join(tempfile.gettempdir(), 'temp_creds')
             os.makedirs(temp_dir, exist_ok=True)
             temp_file_path = os.path.join(temp_dir, f"thread_{build_id}.json")
@@ -122,15 +125,54 @@ def run_task(build_id, log_file_path, options, data):
             with open(temp_file_path, 'w') as f:
                 json.dump(creds, f)
 
+            logger.info("Validating/Refreshing token...")
             sc = OAuth2(None, None, from_file=temp_file_path)
+
+            # Force refresh check
+            sc.refresh_access_token()
+
             if not sc.token_is_valid():
-                logger.info("Thread token expired, refreshing... (This may take a moment)")
-                sc.refresh_access_token()
+                 raise Exception("Token refresh failed. User may need to re-authenticate.")
+
+            # 3. Read Fresh Creds & Update DB
+            with open(temp_file_path, 'r') as f:
+                new_creds = json.load(f)
+
+            # Save back to DB
+            with get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("""
+                        UPDATE users SET
+                            access_token = %s,
+                            refresh_token = %s,
+                            token_time = %s,
+                            expires_in = %s
+                        WHERE guid = %s
+                    """, (
+                        new_creds['access_token'],
+                        new_creds['refresh_token'],
+                        new_creds['token_time'],
+                        new_creds['expires_in'],
+                        guid
+                    ))
+                conn.commit()
+            logger.info("Token refreshed and saved to DB.")
+
+            # 4. Initialize Libraries with FRESH Creds
+            logger.info("Initializing Yahoo APIs with fresh token...")
+
+            yq = YahooFantasySportsQuery(
+                data['league_id'],
+                game_code="nhl",
+                yahoo_access_token_json=new_creds,
+                yahoo_consumer_key=new_creds['consumer_key'],
+                yahoo_consumer_secret=new_creds['consumer_secret']
+            )
 
             gm = yfa.Game(sc, 'nhl')
             lg = gm.to_league(f"nhl.l.{data['league_id']}")
 
-            logger.info("yfa authentication successful.")
+            logger.info("Yahoo API authentication successful.")
 
             if os.path.exists(temp_file_path):
                 os.remove(temp_file_path)
@@ -193,13 +235,8 @@ class DBFinalizer:
         self.conn = conn
 
     def parse_and_store_player_stats(self):
-        """
-        Parses raw player data from 'daily_lineups_dump' for dates not already
-        processed for this league.
-        """
         cursor = self.conn.cursor()
 
-        # Check if source table exists
         cursor.execute("SELECT to_regclass('public.daily_lineups_dump');")
         if cursor.fetchone()[0] is None:
             self.logger.info("Table 'daily_lineups_dump' does not exist. Skipping stat parsing.")
@@ -222,7 +259,6 @@ class DBFinalizer:
         """)
         self.conn.commit()
 
-        # Find last processed date for THIS league
         cursor.execute("SELECT MAX(date_) FROM daily_player_stats WHERE league_id = %s", (self.league_id,))
         max_processed_date_result = cursor.fetchone()
         last_processed_date = max_processed_date_result[0] if max_processed_date_result else None
@@ -256,7 +292,6 @@ class DBFinalizer:
             29: 'GP/S', 30: 'GP/G', 33: 'TOI/S', 34: 'TOI/S/Gm'
         }
 
-        # Get player name map (GLOBAL TABLE)
         cursor.execute("SELECT player_id, player_name_normalized FROM players")
         player_norm_name_map = dict(cursor.fetchall())
 
@@ -283,7 +318,7 @@ class DBFinalizer:
                         stats_list_str = match.group(2)
                         pos_match = pos_pattern.match(col)
                         lineup_pos = pos_match.group(1) if pos_match else None
-                        player_name_normalized = player_norm_name_map.get(str(player_id)) # ID from Yahoo is usually int, dict keys might be str depending on fetch
+                        player_name_normalized = player_norm_name_map.get(str(player_id))
 
                         try:
                             stats_list = ast.literal_eval(stats_list_str)
@@ -322,14 +357,9 @@ class DBFinalizer:
             self.logger.info("No new stats found.")
 
     def parse_and_store_bench_stats(self):
-        """
-        Parses raw bench player data from 'daily_lineups_dump'.
-        """
         cursor = self.conn.cursor()
-
         cursor.execute("SELECT to_regclass('public.daily_lineups_dump');")
-        if cursor.fetchone()[0] is None:
-            return
+        if cursor.fetchone()[0] is None: return
 
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS daily_bench_stats (
@@ -363,8 +393,7 @@ class DBFinalizer:
         column_names = [desc[0] for desc in cursor.description]
         all_lineups = cursor.fetchall()
 
-        if not all_lineups:
-            return
+        if not all_lineups: return
 
         stat_map = {
             1: 'G', 2: 'A', 3: 'P', 4: '+/-', 5: 'PIM', 6: 'PPG', 7: 'PPA', 8: 'PPP',
@@ -389,8 +418,7 @@ class DBFinalizer:
                 row_dict = dict(zip(column_names, row))
                 date_ = row_dict['date_']
                 team_id = row_dict['team_id']
-            except:
-                continue
+            except: continue
 
             for col in bench_roster_columns:
                 if col in row_dict and row_dict[col]:
@@ -420,8 +448,7 @@ class DBFinalizer:
                                     self.league_id, date_, team_id, player_id, player_name_normalized,
                                     lineup_pos, stat_id, category, stat_value
                                 ))
-                        except:
-                            pass
+                        except: pass
 
         if stats_to_insert:
             self.logger.info(f"Found {len(stats_to_insert)} bench stats.")
@@ -436,11 +463,17 @@ class DBFinalizer:
             """, stats_to_insert)
             self.conn.commit()
 
-
 # --- Helper Functions ---
 
 def _create_tables(cursor, logger):
     logger.info("Creating database tables if they don't exist...")
+
+    # --- CRITICAL FIX: Drop Config Tables to enforce correct schema constraints ---
+    # This fixes the 'no unique or exclusion constraint' error.
+    tables_to_reset = ['lineup_settings', 'league_info', 'scoring', 'weeks', 'matchups']
+    for table in tables_to_reset:
+        cursor.execute(f"DROP TABLE IF EXISTS {table} CASCADE")
+    # ------------------------------------------------------------------------------
 
     # Tables with league_id in PK
     cursor.execute('''
@@ -483,6 +516,7 @@ def _create_tables(cursor, logger):
             PRIMARY KEY (league_id, stat_id)
         )
     ''')
+    # Constraint added here
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS lineup_settings (
             league_id INTEGER NOT NULL,
