@@ -1,6 +1,10 @@
 """
 Fetches NHL TOI/Special Teams stats and updates the Global Postgres DB.
 Refactored for Postgres.
+
+Author: Jason Druckenmiller
+Created: 10/17/2025
+Updated: 11/29/2025
 """
 
 import requests
