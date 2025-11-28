@@ -4113,9 +4113,12 @@ def db_action():
                 logging.warning(f"Could not fetch job {active_job_id}, proceeding. Error: {e}")
 
         # Start new build tracking
+        # Start new build tracking
         build_id = str(uuid.uuid4())
-        # Note: We still use a temp file for logging progress, which is fine since it's ephemeral
-        log_file_path = os.path.join(tempfile.gettempdir(), f"{build_id}.log")
+
+        # --- Use Persistent Disk path so Web App can read it ---
+        # Was: tempfile.gettempdir()
+        log_file_path = os.path.join('/var/data/dbs', f"{build_id}.log")
 
         db_build_status = {"running": True, "error": None, "current_build_id": build_id}
 
@@ -4158,45 +4161,60 @@ def db_log_stream():
     if not build_id:
         return Response("data: ERROR: No build_id provided.\n\ndata: __DONE__\n\n", mimetype='text/event-stream')
 
+    # --- CHANGED: Match the path used in db_action ---
+    log_file_path = os.path.join('/var/data/dbs', f"{build_id}.log")
+
     def generate():
         try:
+            # Check if job exists
             job = job_queue.fetch_job(build_id)
             if not job:
-                yield f"data: ERROR: Job {build_id} not found in queue.\n\n"
+                yield f"data: ERROR: Job {build_id} not found.\n\n"
                 yield 'data: __DONE__\n\n'
                 return
 
-            yield f"data: Job {build_id} found. Waiting for worker...\n\n"
+            yield f"data: Connecting to log stream...\n\n"
 
-            # --- MODIFIED: Added a counter ---
-            running_counter = 0
+            # Open the file (it might not exist instantly, so we wait)
+            retries = 0
+            while not os.path.exists(log_file_path):
+                if retries > 10: # Wait up to 10 seconds
+                    yield f"data: Waiting for worker to start...\n\n"
+                time.sleep(1)
+                retries += 1
+                if retries > 30:
+                     yield f"data: ERROR: Log file never appeared.\n\n"
+                     yield 'data: __DONE__\n\n'
+                     return
 
-            while True:
-                job.refresh()
-                status = job.get_status()
+            # Stream the file content
+            with open(log_file_path, 'r') as f:
+                while True:
+                    line = f.readline()
+                    if line:
+                        yield f"data: {line.strip()}\n\n"
+                    else:
+                        # No new line, check if job is done
+                        job.refresh()
+                        if job.get_status() in ['finished', 'failed', 'canceled']:
+                            # Read one last time to catch trailing logs
+                            last_lines = f.read()
+                            if last_lines:
+                                for l in last_lines.split('\n'):
+                                    if l: yield f"data: {l}\n\n"
 
-                if status == 'queued':
-                    yield "data: Job is in the queue, waiting for a worker...\n\n"
-                elif status == 'started':
-                    # --- MODIFIED: Increment counter and update message ---
-                    running_counter += 1
-                    yield f"data: Job is running... (Check {running_counter})\n\n"
-                elif status == 'finished':
-                    yield "data: Job finished successfully.\n\n"
-                    yield "data: __DONE__\n\n"
-                    break
-                elif status == 'failed':
-                    yield "data: --- JOB FAILED ---\n\n"
-                    yield f"data: ERROR: {job.exc_info}\n\n"
-                    yield "data: __DONE__\n\n"
-                    break
+                            if job.get_status() == 'failed':
+                                yield f"data: ERROR: Job failed unexpectedly.\n\n"
+                            else:
+                                yield "data: Success! Update complete.\n\n"
 
-                # --- MODIFIED: Slowed down the polling interval ---
-                time.sleep(10)
+                            yield "data: __DONE__\n\n"
+                            break
+                        time.sleep(0.5)
 
         except Exception as e:
-            logging.error(f"Error in log stream generator for {build_id}: {e}")
-            yield f"data: ERROR: Log stream failed. {e}\n\n"
+            logging.error(f"Log stream error: {e}")
+            yield f"data: ERROR: Stream disconnect ({e})\n\n"
             yield 'data: __DONE__\n\n'
 
     return Response(generate(), mimetype='text/event-stream')

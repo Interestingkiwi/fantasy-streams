@@ -29,6 +29,7 @@ def run_task(build_id, log_file_path, options, data):
     logger.setLevel(logging.INFO)
     logger.propagate = False
 
+    # 1. File Handler (Keeps logs for the UI)
     file_handler = None
     try:
         file_handler = logging.FileHandler(log_file_path, mode='w', encoding='utf-8')
@@ -37,6 +38,13 @@ def run_task(build_id, log_file_path, options, data):
         file_handler.setFormatter(formatter)
         if not logger.handlers:
             logger.addHandler(file_handler)
+
+            # --- NEW: Add Console Handler (So you can see logs in Render Dashboard) ---
+            stream_handler = logging.StreamHandler(sys.stdout)
+            stream_handler.setLevel(logging.INFO)
+            stream_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+            logger.addHandler(stream_handler)
+            # -------------------------------------------------------------------------
 
         logger.info(f"Build task {build_id} received. Preparing API connections...")
 
@@ -585,7 +593,7 @@ def _create_tables(cursor, logger):
         );
     """)
 
-    
+
 def _update_league_info(yq, cursor, league_id, league_name, league_metadata, logger):
     logger.info("Updating league_info table...")
     data_to_insert = [
