@@ -8,12 +8,8 @@ import sys
 import os
 import re
 import csv
-import requests
-import time
 import unicodedata
-from datetime import date, timedelta
-from collections import defaultdict, Counter
-import numpy as np
+from datetime import date
 
 # Add parent dir to path so we can import database
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -29,7 +25,6 @@ PROJ2_GOALIE_FILE = os.path.join(SEED_DATA_DIR, 'proj2g.csv')
 
 START_DATE = date(2025, 10, 7)
 END_DATE = date(2026, 4, 17)
-NHL_TEAM_COUNT = 32
 
 TEAM_TRICODE_MAP = {
     "TB": "TBL", "NJ": "NJD", "SJ": "SJS", "LA": "LAK", "T.B": "TBL",
@@ -56,6 +51,7 @@ def sanitize_header(header_list):
     }
     for h in header_list:
         clean_h = h.strip().lower()
+
         if clean_h == '"+/-"':
             clean_h = 'plus_minus'
 
@@ -67,6 +63,7 @@ def sanitize_header(header_list):
         clean_h = re.sub(r'[^a-z0-9_]', '', clean_h)
 
         sanitized.append(stat_mapping.get(clean_h, clean_h))
+
     return sanitized
 
 def calculate_per_game_stats(row, gp_index, stat_indices):
@@ -179,7 +176,7 @@ def df_to_postgres(df, table_name, conn, if_exists='replace'):
 
     cols = []
     for col, dtype in df.dtypes.items():
-        # Clean column name just in case
+        # Clean column name
         if not col or col.strip() == "": continue
 
         pg_type = 'TEXT'
@@ -200,6 +197,7 @@ def df_to_postgres(df, table_name, conn, if_exists='replace'):
     placeholders = ",".join(["%s"] * len(columns))
     col_names = ",".join([f'"{c}"' for c in columns])
 
+    # Handle NaN -> None conversion
     data = [tuple(None if pd.isna(x) else x for x in row) for row in df_clean.to_numpy()]
 
     cursor.executemany(f"INSERT INTO {table_name} ({col_names}) VALUES ({placeholders}) ON CONFLICT DO NOTHING", data)
@@ -221,19 +219,14 @@ def process_separate_files_to_table(cursor, skater_csv_file, goalie_csv_file, ta
             try:
                 p_name_idx = header_lower.index('player name')
                 gp_idx = header_lower.index('gp')
+                pos_idx = header_lower.index('positions')
             except ValueError as e: raise ValueError(f"Missing column in {skater_csv_file}: {e}")
 
             stats_exclude = ['player name', 'age', 'positions', 'position', 'team', 'salary', 'gp org', 'gp', 'toi org es', 'toi org pp', 'toi org pk', 'toi es', 'toi pp', 'toi pk', 'total toi', 'rank', 'playerid', 'fantasy team']
             stat_indices = [i for i, h in enumerate(header_lower) if h not in stats_exclude and h.strip() != '']
 
             for row in reader:
-                # Check for 'positions' AND 'position' to be safe
-                pos_idx = -1
-                if 'positions' in header_lower: pos_idx = header_lower.index('positions')
-                elif 'position' in header_lower: pos_idx = header_lower.index('position')
-
-                if not row or (pos_idx != -1 and pos_idx < len(row) and 'G' in row[pos_idx]): continue
-
+                if not row or (pos_idx < len(row) and 'G' in row[pos_idx]): continue
                 calculate_per_game_stats(row, gp_idx, stat_indices)
                 player_name = row[p_name_idx]
                 if not player_name: continue
@@ -285,15 +278,18 @@ def process_separate_files_to_table(cursor, skater_csv_file, goalie_csv_file, ta
     all_keys = set()
     for p in player_data.values(): all_keys.update(p.keys())
 
+    # Clean empty keys
     final_headers = [k for k in list(all_keys) if k and k.strip() != ""]
-
     if 'player_name_normalized' in final_headers: final_headers.remove('player_name_normalized')
+
+    # --- FIX: Force Metadata Columns to TEXT to avoid type errors ---
+    text_cols = ['player_name', 'positions', 'position', 'team', 'playerid', 'fantasy_team', 'salary', 'age', 'rank', 'gp_org', 'gp', 'total_toi']
 
     cols_def = []
     cols_def.append('player_name_normalized TEXT PRIMARY KEY')
 
     for col in final_headers:
-        if col in ['player_name', 'positions', 'team', 'playerid', 'fantasy_team']:
+        if col in text_cols:
             cols_def.append(f'"{col}" TEXT')
         else:
             cols_def.append(f'"{col}" DOUBLE PRECISION')
@@ -309,7 +305,14 @@ def process_separate_files_to_table(cursor, skater_csv_file, goalie_csv_file, ta
 
     rows_to_insert = []
     for norm, data in player_data.items():
-        rows_to_insert.append(tuple(data.get(h, None) for h in insert_headers))
+        # --- FIX: Convert empty strings to None for ALL columns ---
+        clean_row = []
+        for h in insert_headers:
+            val = data.get(h, None)
+            if val == "":
+                val = None
+            clean_row.append(val)
+        rows_to_insert.append(tuple(clean_row))
 
     cursor.executemany(insert_sql, rows_to_insert)
     print(f"Populated {target_table_name} with {len(rows_to_insert)} rows.")
@@ -378,7 +381,6 @@ def join_yahoo_ids(conn, cursor):
     df_to_postgres(df_final, 'projections', conn)
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_proj_norm ON projections(player_name_normalized)")
 
-# --- RESTORED: Full Schedule Fetcher ---
 def get_full_nhl_schedule(start_date, end_date):
     all_games = {}
     curr = start_date
@@ -436,11 +438,8 @@ def create_projections_db():
             process_separate_files_to_table(cursor, PROJ2_SKATER_FILE, PROJ2_GOALIE_FILE, 'proj2')
             create_averaged_projections(conn, cursor)
             join_yahoo_ids(conn, cursor)
-
-            # --- RESTORED: Schedule Fetching ---
             games = get_full_nhl_schedule(START_DATE, END_DATE)
             setup_schedule_tables(cursor, games)
-
             conn.commit()
 
 if __name__ == "__main__":
