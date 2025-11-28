@@ -659,7 +659,13 @@ def _get_ranked_players(cursor, player_ids, cat_rank_columns, raw_stat_columns, 
     if not player_ids:
         return []
 
-    # 1. Get dates for current and next week (League Specific)
+    # --- FIX: Convert IDs to Strings ---
+    # The 'players' table uses TEXT for player_id, but inputs might be Integers.
+    # We convert them here so Postgres compares TEXT = TEXT.
+    player_ids = [str(p) for p in player_ids]
+    # -----------------------------------
+
+    # 1. Get dates for current and next week
     cursor.execute(
         "SELECT start_date, end_date FROM weeks WHERE week_num = %s AND league_id = %s",
         (week_num, league_id)
@@ -680,7 +686,7 @@ def _get_ranked_players(cursor, player_ids, cat_rank_columns, raw_stat_columns, 
         start_date_next = week_dates_next['start_date']
         end_date_next = week_dates_next['end_date']
 
-    # 2. Fetch Schedules (Global Table - No league_id needed)
+    # 2. Fetch Schedules (Global Table)
     schedule_data_this_week = []
     if start_date and end_date:
         cursor.execute(
@@ -697,10 +703,9 @@ def _get_ranked_players(cursor, player_ids, cat_rank_columns, raw_stat_columns, 
         )
         schedule_data_next_week = cursor.fetchall()
 
-    # 3. Build Dynamic Query with CASTs
+    # 3. Build Dynamic Query
     placeholders = ','.join(['%s'] * len(player_ids))
 
-    # Columns we want
     base_columns = ['p.player_id', 'p.player_name', 'p.player_team', 'p.positions', 'p.status', 'p.player_name_normalized']
 
     pp_stat_columns = [
@@ -709,10 +714,9 @@ def _get_ranked_players(cursor, player_ids, cat_rank_columns, raw_stat_columns, 
         'total_ppGoals', 'team_games_played'
     ]
 
-    # Prefix stats with 'proj.' (from projections table) and quote them
+    # Prefix stats with 'proj.'
     stat_cols_select = [f'proj."{c}"' for c in (cat_rank_columns + pp_stat_columns + raw_stat_columns)]
 
-    # Status Calculation
     status_col = """
         CASE
             WHEN fa.player_id IS NOT NULL THEN 'F'
@@ -727,33 +731,23 @@ def _get_ranked_players(cursor, player_ids, cat_rank_columns, raw_stat_columns, 
     query = f"""
         SELECT {', '.join(columns_to_select)}
         FROM players p
-        -- Join Global Stats
         JOIN {source_table} proj ON p.player_name_normalized = proj.player_name_normalized
-
-        -- Join League Status (CAST integers to TEXT for comparison)
-        LEFT JOIN free_agents fa
-            ON p.player_id = CAST(fa.player_id AS TEXT) AND fa.league_id = %s
-        LEFT JOIN waiver_players w
-            ON p.player_id = CAST(w.player_id AS TEXT) AND w.league_id = %s
-        LEFT JOIN rostered_players r
-            ON p.player_id = CAST(r.player_id AS TEXT) AND r.league_id = %s
-
+        LEFT JOIN free_agents fa ON p.player_id = CAST(fa.player_id AS TEXT) AND fa.league_id = %s
+        LEFT JOIN waiver_players w ON p.player_id = CAST(w.player_id AS TEXT) AND w.league_id = %s
+        LEFT JOIN rostered_players r ON p.player_id = CAST(r.player_id AS TEXT) AND r.league_id = %s
         WHERE p.player_id IN ({placeholders})
     """
 
-    # Params: 3 league_ids for the joins + the list of player IDs
     params = [league_id, league_id, league_id] + player_ids
 
     cursor.execute(query, tuple(params))
     players = cursor.fetchall()
 
-    # 4. Loop and Enrich Results
+    # 4. Enrich Results
     for player in players:
-        # Calculate Total Rank
         total_rank = sum(player.get(col, 0) or 0 for col in cat_rank_columns)
         player['total_cat_rank'] = round(total_rank, 2)
 
-        # Initialize Lists
         player['games_this_week'] = []
         player['games_next_week'] = []
         player['game_dates_this_week_full'] = []
@@ -764,7 +758,7 @@ def _get_ranked_players(cursor, player_ids, cat_rank_columns, raw_stat_columns, 
         if not player_team:
             continue
 
-        # Process This Week's Games
+        # Process This Week
         games_this_week = [
             g for g in schedule_data_this_week
             if g['home_team'] == player_team or g['away_team'] == player_team
@@ -788,7 +782,7 @@ def _get_ranked_players(cursor, player_ids, cat_rank_columns, raw_stat_columns, 
                     **{k: opponent_stats.get(k) for k in ['ga_gm', 'soga_gm', 'ga_gm_weekly', 'soga_gm_weekly', 'gf_gm', 'sogf_gm', 'gf_gm_weekly', 'sogf_gm_weekly', 'pk_pct', 'pk_pct_weekly']}
                 })
 
-        # Process Next Week's Games
+        # Process Next Week
         games_next_week = [
             g for g in schedule_data_next_week
             if g['home_team'] == player_team or g['away_team'] == player_team
@@ -1496,12 +1490,14 @@ def lineup_page_data():
 @app.route('/api/season_history_page_data')
 def season_history_page_data():
     league_id = session.get('league_id')
+    if not league_id:
+        return jsonify({'error': 'Not logged in'}), 401
 
     try:
         with get_db_connection() as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cursor:
 
-                # Fetch weeks
+                # 1. Fetch weeks
                 cursor.execute("""
                     SELECT week_num, start_date, end_date
                     FROM weeks
@@ -1519,19 +1515,22 @@ def season_history_page_data():
                 """, (league_id,))
                 teams = cursor.fetchall()
 
-                # 3. Determine current week
+                # 3. Current Week
                 today = date.today().isoformat()
                 cursor.execute("""
                     SELECT week_num
                     FROM weeks
-                    WHERE league_id = %s
-                      AND start_date <= %s
-                      AND end_date >= %s
+                    WHERE league_id = %s AND start_date <= %s AND end_date >= %s
                 """, (league_id, today, today))
-
                 current_week_row = cursor.fetchone()
-                # Fallback logic: Use found week, otherwise first week, otherwise 1
                 current_week = current_week_row['week_num'] if current_week_row else (weeks[0]['week_num'] if weeks else 1)
+
+                return jsonify({
+                    'db_exists': True,
+                    'weeks': weeks,
+                    'teams': teams,
+                    'current_week': current_week
+                })
 
     except Exception as e:
         logging.error(f"Error fetching season history page data: {e}", exc_info=True)
