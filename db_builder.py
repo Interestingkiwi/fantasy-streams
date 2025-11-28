@@ -4,7 +4,7 @@ Refactored for Multi-Tenancy (League ID) and Postgres Syntax
 
 Author: Jason Druckenmiller
 Created: 10/17/2025
-Updated: 11/29/2025
+Updated: 11/28/2025
 """
 
 import os
@@ -17,13 +17,19 @@ import ast
 import threading
 import json
 import tempfile
-from database import get_db_connection
 import sys
+from pathlib import Path # <--- ADDED
+from database import get_db_connection
+
+# --- API Imports (Moved to top level) ---
+from yfpy.query import YahooFantasySportsQuery
+from yahoo_oauth import OAuth2
+import yahoo_fantasy_api as yfa
 
 db_build_status = {"running": False, "error": None, "current_build_id": None}
 db_build_status_lock = threading.Lock()
 
-
+# --- Custom Logging Handler ---
 class PostgresHandler(logging.Handler):
     """
     Custom logging handler that writes logs to the PostgreSQL 'job_logs' table.
@@ -36,7 +42,6 @@ class PostgresHandler(logging.Handler):
         log_entry = self.format(record)
         try:
             # We open a fresh connection for each log to ensure thread safety
-            # inside the worker process.
             with get_db_connection() as conn:
                 with conn.cursor() as cursor:
                     cursor.execute(
@@ -46,33 +51,32 @@ class PostgresHandler(logging.Handler):
                 conn.commit()
         except Exception as e:
             # Fallback to stderr if DB logging fails
-            print(f"Failed to log to DB: {e}")
-
+            print(f"Failed to log to DB: {e}", file=sys.stderr)
 
 def run_task(build_id, log_file_path, options, data):
     global db_build_status
 
+    # 1. Setup Logger
     logger = logging.getLogger(f"db_build_{build_id}")
     logger.setLevel(logging.INFO)
-    logger.propagate = False # Don't spam the main worker logs
+    logger.propagate = False
 
-
-    db_handler = PostgresHandler(build_id)
-    db_handler.setLevel(logging.INFO)
-    formatter = logging.Formatter('%(message)s')
-    db_handler.setFormatter(formatter)
-
+    # 2. Add Handlers
     if not logger.handlers:
+        # Database Handler (For UI Streaming)
+        db_handler = PostgresHandler(build_id)
+        db_handler.setLevel(logging.INFO)
+        formatter = logging.Formatter('%(message)s')
+        db_handler.setFormatter(formatter)
         logger.addHandler(db_handler)
 
+        # Console Handler (For Render Dashboard visibility)
         stream_handler = logging.StreamHandler(sys.stdout)
         stream_handler.setLevel(logging.INFO)
         stream_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
         logger.addHandler(stream_handler)
-            # -------------------------------------------------------------------------
 
-        logger.info(f"Build task {build_id} received. Preparing API connections...")
-
+    logger.info(f"Build task {build_id} received. Preparing API connections...")
 
     yq = None
     lg = None
@@ -89,10 +93,14 @@ def run_task(build_id, log_file_path, options, data):
                 'token_time': data['token'].get('expires_at', time.time() + 3600),
                 'guid': data['token'].get('xoauth_yahoo_guid')
             }
+
+            # Re-initialize yfpy with explicit auth
             yq = YahooFantasySportsQuery(
                 data['league_id'],
                 game_code="nhl",
-                yahoo_access_token_json=auth_data
+                yahoo_access_token_json=auth_data,
+                yahoo_consumer_key=data['consumer_key'],
+                yahoo_consumer_secret=data['consumer_secret']
             )
 
             logger.info("yfpy authentication successful.")
@@ -170,16 +178,6 @@ def run_task(build_id, log_file_path, options, data):
             db_build_status["running"] = False
             db_build_status["error"] = error_msg
             db_build_status["current_build_id"] = None
-
-        try:
-            done_file_path = f"{log_file_path}.done"
-            Path(done_file_path).touch()
-        except Exception as e:
-            logger.error(f"Build task {build_id} couldn't create .done file: {e}")
-
-        if file_handler:
-            file_handler.close()
-            logger.removeHandler(file_handler)
 
         logger.info(f"Build task {build_id} thread finished.")
 
@@ -444,7 +442,7 @@ class DBFinalizer:
 def _create_tables(cursor, logger):
     logger.info("Creating database tables if they don't exist...")
 
-    # 1. Metadata & Settings
+    # Tables with league_id in PK
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS league_info (
             league_id INTEGER NOT NULL,
@@ -454,11 +452,26 @@ def _create_tables(cursor, logger):
         )
     ''')
     cursor.execute('''
-        CREATE TABLE IF NOT EXISTS db_metadata (
+        CREATE TABLE IF NOT EXISTS teams (
             league_id INTEGER NOT NULL,
-            key TEXT NOT NULL,
-            value TEXT,
-            PRIMARY KEY (league_id, key)
+            team_id TEXT NOT NULL,
+            name TEXT,
+            manager_nickname TEXT,
+            PRIMARY KEY (league_id, team_id)
+        )
+    ''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS daily_lineups_dump (
+            league_id INTEGER NOT NULL,
+            date_ TEXT NOT NULL,
+            team_id INTEGER NOT NULL,
+            c1 TEXT, c2 TEXT, l1 TEXT, l2 TEXT, r1 TEXT, r2 TEXT,
+            d1 TEXT, d2 TEXT, d3 TEXT, d4 TEXT, g1 TEXT, g2 TEXT,
+            b1 TEXT, b2 TEXT, b3 TEXT, b4 TEXT, b5 TEXT, b6 TEXT,
+            b7 TEXT, b8 TEXT, b9 TEXT, b10 TEXT, b11 TEXT, b12 TEXT,
+            b13 TEXT, b14 TEXT, b15 TEXT, b16 TEXT, b17 TEXT, b18 TEXT, b19 TEXT,
+            i1 TEXT, i2 TEXT, i3 TEXT, i4 TEXT, i5 TEXT,
+            PRIMARY KEY (league_id, date_, team_id)
         )
     ''')
     cursor.execute('''
@@ -487,15 +500,13 @@ def _create_tables(cursor, logger):
             PRIMARY KEY (league_id, week_num)
         )
     ''')
-
-    # 2. Teams & Rosters
     cursor.execute('''
-        CREATE TABLE IF NOT EXISTS teams (
+        CREATE TABLE IF NOT EXISTS matchups (
             league_id INTEGER NOT NULL,
-            team_id TEXT NOT NULL,
-            name TEXT,
-            manager_nickname TEXT,
-            PRIMARY KEY (league_id, team_id)
+            week INTEGER NOT NULL,
+            team1 TEXT NOT NULL,
+            team2 TEXT NOT NULL,
+            PRIMARY KEY (league_id, week, team1)
         )
     ''')
     cursor.execute('''
@@ -511,16 +522,6 @@ def _create_tables(cursor, logger):
             PRIMARY KEY (league_id, team_id)
         )
     ''')
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS rosters_tall (
-            league_id INTEGER NOT NULL,
-            team_id INTEGER NOT NULL,
-            player_id INTEGER NOT NULL,
-            PRIMARY KEY (league_id, team_id, player_id)
-        );
-    ''')
-
-    # 3. Player Status
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS free_agents (
             league_id INTEGER NOT NULL,
@@ -546,15 +547,12 @@ def _create_tables(cursor, logger):
             PRIMARY KEY (league_id, player_id)
         )
     ''')
-
-    # 4. Stats & Transactions
     cursor.execute('''
-        CREATE TABLE IF NOT EXISTS matchups (
+        CREATE TABLE IF NOT EXISTS db_metadata (
             league_id INTEGER NOT NULL,
-            week INTEGER NOT NULL,
-            team1 TEXT NOT NULL,
-            team2 TEXT NOT NULL,
-            PRIMARY KEY (league_id, week, team1)
+            key TEXT NOT NULL,
+            value TEXT,
+            PRIMARY KEY (league_id, key)
         )
     ''')
     cursor.execute('''
@@ -568,21 +566,6 @@ def _create_tables(cursor, logger):
             PRIMARY KEY (league_id, transaction_date, player_id, move_type)
         )
     ''')
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS daily_lineups_dump (
-            league_id INTEGER NOT NULL,
-            date_ TEXT NOT NULL,
-            team_id INTEGER NOT NULL,
-            c1 TEXT, c2 TEXT, l1 TEXT, l2 TEXT, r1 TEXT, r2 TEXT,
-            d1 TEXT, d2 TEXT, d3 TEXT, d4 TEXT, g1 TEXT, g2 TEXT,
-            b1 TEXT, b2 TEXT, b3 TEXT, b4 TEXT, b5 TEXT, b6 TEXT,
-            b7 TEXT, b8 TEXT, b9 TEXT, b10 TEXT, b11 TEXT, b12 TEXT,
-            b13 TEXT, b14 TEXT, b15 TEXT, b16 TEXT, b17 TEXT, b18 TEXT, b19 TEXT,
-            i1 TEXT, i2 TEXT, i3 TEXT, i4 TEXT, i5 TEXT,
-            PRIMARY KEY (league_id, date_, team_id)
-        )
-    ''')
-    # MOVED FROM DBFINALIZER:
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS daily_player_stats (
             league_id INTEGER NOT NULL,
@@ -597,7 +580,6 @@ def _create_tables(cursor, logger):
             PRIMARY KEY (league_id, date_, player_id, stat_id)
         );
     """)
-    # MOVED FROM DBFINALIZER:
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS daily_bench_stats (
             league_id INTEGER NOT NULL,
@@ -612,7 +594,14 @@ def _create_tables(cursor, logger):
             PRIMARY KEY (league_id, date_, player_id, stat_id)
         );
     """)
-
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS rosters_tall (
+            league_id INTEGER NOT NULL,
+            team_id INTEGER NOT NULL,
+            player_id INTEGER NOT NULL,
+            PRIMARY KEY (league_id, team_id, player_id)
+        );
+    ''')
 
 def _update_league_info(yq, cursor, league_id, league_name, league_metadata, logger):
     logger.info("Updating league_info table...")
@@ -889,13 +878,14 @@ def _create_rosters_tall(cursor, conn, league_id, logger):
 def _update_league_transactions(yq, cursor, league_id, logger):
     try:
         logger.info("Fetching transactions...")
+        # Note: Not deleting old transactions to keep history, but rely on PK to ignore dups
         transactions = yq.get_league_transactions()
         data = []
         processed = set()
 
         for t in transactions:
             if t.status == 'successful':
-
+                # Simplify timezone handling for brevity: assume UTC or handle in app
                 t_date = datetime.fromtimestamp(t.timestamp).strftime('%Y-%m-%d')
                 for p in t.players:
                     move = p.transaction_data.type
@@ -1022,7 +1012,7 @@ def update_league_db(yq, lg, league_id, logger, capture_lineups=False, roster_up
             if not roster_updates_only:
                 fin = DBFinalizer(league_id, logger, conn)
                 fin.parse_and_store_player_stats()
-                # fin.parse_and_store_bench_stats() # Uncomment if needed
+                fin.parse_and_store_bench_stats()
 
     return {
         'success': True,
