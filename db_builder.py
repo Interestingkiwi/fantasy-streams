@@ -72,11 +72,6 @@ def run_task(build_id, log_file_path, options, data):
 
         logger.info(f"Build task {build_id} received. Preparing API connections...")
 
-    except Exception as e:
-        logging.error(f"Failed to create FileHandler for build {build_id}: {e}")
-        with db_build_status_lock:
-            db_build_status = {"running": False, "error": str(e), "current_build_id": None}
-        return
 
     yq = None
     lg = None
