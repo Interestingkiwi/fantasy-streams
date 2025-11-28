@@ -1,4 +1,4 @@
-read_sql_postgres"""
+"""
 Fetches NHL TOI/Special Teams stats and updates the Global Postgres DB.
 Refactored for Postgres.
 """
