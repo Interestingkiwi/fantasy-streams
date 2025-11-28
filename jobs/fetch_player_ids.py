@@ -3,20 +3,20 @@ Fetches all players from the Yahoo Fantasy API and stores them in the Global Pos
 
 Author: Jason Druckenmiller
 Created: 11/02/2025
-Updated: 11/26/2025
+Updated: 11/28/2025
 """
 
 import argparse
 import logging
 import os
 import sys
-import sqlite3
 import unicodedata
 import re
 import json
-import shutil
-from datetime import date
+import tempfile
+import time
 from yfpy.query import YahooFantasySportsQuery
+from yahoo_oauth import OAuth2  # <--- Added for refresh logic
 import psycopg2.extras
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -25,14 +25,9 @@ from database import get_db_connection
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
-# NOTE: We rely on env vars or arguments for keys, no longer rely on file mounting for SQL,
-# but we DO rely on it for the token file bootstrapping.
-MOUNT_PATH = "/var/data/dbs"
-
 def initialize_yahoo_query(league_id, consumer_key=None, consumer_secret=None):
     """
-    Initializes YQ by fetching the token from the Postgres 'users' table
-    associated with the given league_id.
+    Initializes YQ by fetching AND REFRESHING the token from the Postgres 'users' table.
     """
     # 1. Find the User GUID assigned to update this league
     token_data = None
@@ -58,7 +53,6 @@ def initialize_yahoo_query(league_id, consumer_key=None, consumer_secret=None):
         return None
 
     # 2. Construct the Token Dictionary
-    # Use keys from DB if not provided in args (args take precedence)
     ck = consumer_key or token_data['consumer_key']
     cs = consumer_secret or token_data['consumer_secret']
 
@@ -66,19 +60,68 @@ def initialize_yahoo_query(league_id, consumer_key=None, consumer_secret=None):
          logger.error("Consumer Key/Secret missing.")
          return None
 
-    access_token_json = {
+    creds = {
+        "consumer_key": ck,
+        "consumer_secret": cs,
         "access_token": token_data['access_token'],
         "refresh_token": token_data['refresh_token'],
         "token_type": token_data['token_type'],
         "expires_in": token_data['expires_in'],
         "token_time": token_data['token_time'],
-        "guid": token_data['guid'],
-        "consumer_key": ck,
-        "consumer_secret": cs
+        "xoauth_yahoo_guid": token_data['guid']
     }
 
+    # 3. REFRESH TOKEN LOGIC (Added)
+    temp_path = os.path.join(tempfile.gettempdir(), f"token_refresh_{league_id}.json")
     try:
-        # 3. Initialize YFPY with the dictionary directly
+        # Write current creds to temp file
+        with open(temp_path, 'w') as f:
+            json.dump(creds, f)
+
+        # Init OAuth2 to handle refresh
+        sc = OAuth2(None, None, from_file=temp_path)
+        sc.refresh_access_token()
+
+        if not sc.token_is_valid():
+            logger.error("Token refresh failed.")
+            return None
+
+        # Read back fresh creds
+        with open(temp_path, 'r') as f:
+            new_creds = json.load(f)
+
+        # 4. UPDATE DATABASE with fresh token
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    UPDATE users SET
+                        access_token = %s,
+                        refresh_token = %s,
+                        token_time = %s,
+                        expires_in = %s
+                    WHERE guid = %s
+                """, (
+                    new_creds['access_token'],
+                    new_creds['refresh_token'],
+                    new_creds['token_time'],
+                    new_creds['expires_in'],
+                    token_data['guid']
+                ))
+            conn.commit()
+        logger.info("Token refreshed and saved to DB.")
+
+        # Use the NEW credentials for yfpy
+        access_token_json = new_creds
+
+    except Exception as e:
+        logger.error(f"Error during token refresh: {e}")
+        if os.path.exists(temp_path): os.remove(temp_path)
+        return None
+    finally:
+        if os.path.exists(temp_path): os.remove(temp_path)
+
+    try:
+        # 5. Initialize YFPY with the FRESH dictionary
         yq = YahooFantasySportsQuery(
             league_id=league_id,
             game_code="nhl",
@@ -90,7 +133,6 @@ def initialize_yahoo_query(league_id, consumer_key=None, consumer_secret=None):
     except Exception as e:
         logger.error(f"YQ Init failed: {e}")
         return None
-        
 
 def fetch_and_store_players(yq):
     logger.info("Fetching player info...")
@@ -136,6 +178,7 @@ def fetch_and_store_players(yq):
                     status = EXCLUDED.status
             """, data)
             conn.commit()
+            logger.info(f"Successfully updated {len(data)} players.")
 
 def run():
     parser = argparse.ArgumentParser()
