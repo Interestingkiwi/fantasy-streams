@@ -1,10 +1,6 @@
 """
 Fetches NHL TOI/Special Teams stats and updates the Global Postgres DB.
 Refactored for Postgres.
-
-Author: Jason Druckenmiller
-Created: 10/17/2025
-Updated: 11/29/2025
 """
 
 import requests
@@ -157,7 +153,7 @@ def log_unmatched_players(conn, df_unmatched, source_table_name):
         log_df['player_name'] = df_unmatched['player_name_normalized']
     elif 'skaterFullName' in df_unmatched.columns:
         log_df['player_name'] = df_unmatched['skaterFullName']
-    elif 'goalieFullName' in df_unmatched.columns: # --- FIX: Added Goalie Name ---
+    elif 'goalieFullName' in df_unmatched.columns:
         log_df['player_name'] = df_unmatched['goalieFullName']
     else:
         log_df['player_name'] = 'Unknown'
@@ -261,11 +257,17 @@ def create_last_game_pp_table():
             cursor.execute("DROP TABLE IF EXISTS last_game_pp")
             cursor.execute("""
                 CREATE TABLE last_game_pp AS
-                SELECT t1.* FROM powerplay_stats t1
+                SELECT
+                    t1.nhlplayerid,
+                    t1."ppTimeOnIce" as "lg_ppTimeOnIce",
+                    t1."ppTimeOnIcePctPerGame" as "lg_ppTimeOnIcePctPerGame",
+                    t1."ppAssists" as "lg_ppAssists",
+                    t1."ppGoals" as "lg_ppGoals"
+                FROM powerplay_stats t1
                 INNER JOIN (
-                    SELECT teamAbbrevs, MAX(date_) as max_date
-                    FROM powerplay_stats GROUP BY teamAbbrevs
-                ) t2 ON t1.teamAbbrevs = t2.teamAbbrevs AND t1.date_ = t2.max_date
+                    SELECT "teamAbbrevs", MAX(date_) as max_date
+                    FROM powerplay_stats GROUP BY "teamAbbrevs"
+                ) t2 ON t1."teamAbbrevs" = t2."teamAbbrevs" AND t1.date_ = t2.max_date
             """)
             conn.commit()
 
@@ -277,24 +279,27 @@ def create_last_week_pp_table():
             cursor.execute("""
                 CREATE TABLE last_week_pp AS
                 WITH team_game_counts AS (
-                    SELECT teamAbbrevs, COUNT(DISTINCT date_) as team_games_played
-                    FROM powerplay_stats GROUP BY teamAbbrevs
+                    SELECT "teamAbbrevs", COUNT(DISTINCT date_) as team_games_played
+                    FROM powerplay_stats GROUP BY "teamAbbrevs"
                 ),
                 player_sums AS (
-                    SELECT nhlplayerid, teamAbbrevs, MAX(skaterFullName) as skaterFullName,
-                    SUM(ppTimeOnIce) as total_ppTimeOnIce,
-                    SUM(ppTimeOnIcePctPerGame) as total_ppTimeOnIcePctPerGame,
-                    SUM(ppAssists) as total_ppAssists,
-                    SUM(ppGoals) as total_ppGoals,
+                    SELECT nhlplayerid, "teamAbbrevs", MAX("skaterFullName") as "skaterFullName",
+                    SUM("ppTimeOnIce") as total_ppTimeOnIce,
+                    SUM("ppTimeOnIcePctPerGame") as total_ppTimeOnIcePctPerGame,
+                    SUM("ppAssists") as total_ppAssists,
+                    SUM("ppGoals") as total_ppGoals,
                     COUNT(date_) as player_games_played
-                    FROM powerplay_stats GROUP BY nhlplayerid, teamAbbrevs
+                    FROM powerplay_stats GROUP BY nhlplayerid, "teamAbbrevs"
                 )
-                SELECT ps.nhlplayerid, ps.skaterFullName, ps.teamAbbrevs,
-                    CAST(ps.total_ppTimeOnIce AS REAL) / tgc.team_games_played AS avg_ppTimeOnIce,
-                    CAST(ps.total_ppTimeOnIcePctPerGame AS REAL) / tgc.team_games_played AS avg_ppTimeOnIcePctPerGame,
-                    ps.total_ppAssists, ps.total_ppGoals, ps.player_games_played, tgc.team_games_played
+                SELECT ps.nhlplayerid, ps."skaterFullName", ps."teamAbbrevs",
+                    CAST(ps.total_ppTimeOnIce AS REAL) / tgc.team_games_played AS "avg_ppTimeOnIce",
+                    CAST(ps.total_ppTimeOnIcePctPerGame AS REAL) / tgc.team_games_played AS "avg_ppTimeOnIcePctPerGame",
+                    ps.total_ppAssists as "total_ppAssists",
+                    ps.total_ppGoals as "total_ppGoals",
+                    ps.player_games_played as "player_games_played",
+                    tgc.team_games_played as "team_games_played"
                 FROM player_sums ps
-                JOIN team_game_counts tgc ON ps.teamAbbrevs = tgc.teamAbbrevs
+                JOIN team_game_counts tgc ON ps."teamAbbrevs" = tgc."teamAbbrevs"
             """)
             conn.commit()
 
@@ -383,21 +388,30 @@ def fetch_and_update_scoring_to_date():
             if 'skaterFullName' in df.columns:
                 df['player_name_normalized'] = df['skaterFullName'].apply(normalize_name)
 
-            # Rename for DB
+            # --- FIX: Convert stats to numeric and calculate Per Game ---
+            numeric_cols = ['gamesPlayed', 'goals', 'assists', 'points', 'plusMinus', 'penaltyMinutes', 'ppGoals', 'ppPoints', 'shots']
+            for col in numeric_cols:
+                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+
+            # Per Game Division
+            # Note: 'points', 'plusMinus' etc are totals from this endpoint
+            cols_to_average = ['goals', 'assists', 'points', 'plusMinus', 'penaltyMinutes', 'ppGoals', 'ppPoints', 'shots']
+            for col in cols_to_average:
+                df[col] = np.where(df['gamesPlayed'] > 0, df[col] / df['gamesPlayed'], 0)
+
+            # Calculated Derived Stats
+            df['ppAssists'] = df['ppPoints'] - df['ppGoals']
+
+            # Prepare for DB
             cols = {
                 'playerId': 'nhlplayerid', 'skaterFullName': 'skaterFullName', 'teamAbbrevs': 'teamAbbrevs',
                 'gamesPlayed': 'gamesPlayed', 'goals': 'goals', 'assists': 'assists', 'points': 'points',
                 'plusMinus': 'plusMinus', 'penaltyMinutes': 'penaltyMinutes', 'ppGoals': 'ppGoals',
                 'ppPoints': 'ppPoints', 'shootingPct': 'shootingPct', 'timeOnIcePerGame': 'timeOnIcePerGame',
-                'shots': 'shots'
+                'shots': 'shots', 'ppAssists': 'ppAssists'
             }
-            # Calculate ppAssists
-            df['ppAssists'] = df['ppPoints'] - df['ppGoals']
-            cols['ppAssists'] = 'ppAssists' # Add to keep list
 
-            # --- FIX: Keep Normalized Name ---
-            keep_cols = list(cols.keys()) + ['player_name_normalized']
-            df_final = df[keep_cols].rename(columns=cols)
+            df_final = df[list(cols.keys())].rename(columns=cols)
 
             with get_db_connection() as conn:
                 df_to_postgres(df_final, 'scoring_to_date', conn)
@@ -428,10 +442,7 @@ def fetch_and_update_bangers_stats():
                 df['player_name_normalized'] = df['skaterFullName'].apply(normalize_name)
 
             cols = {'playerId': 'nhlplayerid', 'skaterFullName': 'skaterFullName', 'teamAbbrevs': 'teamAbbrevs', 'blocksPerGame': 'blocksPerGame', 'hitsPerGame': 'hitsPerGame'}
-
-            # --- FIX: Keep Normalized Name ---
-            keep_cols = list(cols.keys()) + ['player_name_normalized']
-            df_final = df[keep_cols].rename(columns=cols)
+            df_final = df[list(cols.keys())].rename(columns=cols)
 
             with get_db_connection() as conn:
                 df_to_postgres(df_final, 'bangers_to_date', conn)
@@ -460,16 +471,22 @@ def fetch_and_update_goalie_stats():
             if 'goalieFullName' in df.columns:
                 df['player_name_normalized'] = df['goalieFullName'].apply(normalize_name)
 
+            # --- FIX: Convert stats to numeric and calculate Per Game ---
+            numeric_cols = ['gamesPlayed', 'wins', 'losses', 'saves', 'shotsAgainst', 'goalsAgainst', 'shutouts']
+            for col in numeric_cols:
+                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+
+            # Calculate Per Game (Totals -> Averages)
+            for col in ['wins', 'losses', 'saves', 'shotsAgainst', 'goalsAgainst', 'shutouts']:
+                df[col] = np.where(df['gamesPlayed'] > 0, df[col] / df['gamesPlayed'], 0)
+
             cols = {
                 'playerId': 'nhlplayerid', 'goalieFullName': 'goalieFullName', 'teamAbbrevs': 'teamAbbrevs',
                 'gamesStarted': 'gamesStarted', 'gamesPlayed': 'gamesPlayed', 'goalsAgainstAverage': 'goalsAgainstAverage',
                 'losses': 'losses', 'savePct': 'savePct', 'saves': 'saves', 'shotsAgainst': 'shotsAgainst',
                 'shutouts': 'shutouts', 'wins': 'wins', 'goalsAgainst': 'goalsAgainst'
             }
-
-            # --- FIX: Keep Normalized Name ---
-            keep_cols = list(cols.keys()) + ['player_name_normalized']
-            df_final = df[keep_cols].rename(columns=cols)
+            df_final = df[list(cols.keys())].rename(columns=cols)
 
             with get_db_connection() as conn:
                 # Fetch standings for Start %
@@ -480,6 +497,7 @@ def fetch_and_update_goalie_stats():
                 else:
                     df_final['startpct'] = 0
 
+                # Clean up merge cols
                 if 'team_tricode' in df_final.columns: del df_final['team_tricode']
                 if 'team_gp' in df_final.columns: del df_final['team_gp']
 

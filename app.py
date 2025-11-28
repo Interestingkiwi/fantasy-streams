@@ -3289,7 +3289,7 @@ def get_roster_data():
                 except ValueError:
                     return jsonify({'error': 'Invalid week number format.'}), 400
 
-                # 1. Setup Categories (League Specific)
+                # 1. Setup Categories
                 cursor.execute("""
                     SELECT category, scoring_group
                     FROM scoring
@@ -3305,14 +3305,14 @@ def get_roster_data():
                 checked_categories = data.get('categories') or all_scoring_categories
                 unchecked_categories = [cat for cat in all_scoring_categories if cat not in checked_categories]
 
-                # 2. Get Team ID (League Specific)
+                # 2. Get Team ID
                 cursor.execute("SELECT team_id FROM teams WHERE league_id = %s AND name = %s", (league_id, team_name))
                 team_id_row = cursor.fetchone()
                 if not team_id_row:
                     return jsonify({'error': f'Team not found: {team_name}'}), 404
                 team_id = team_id_row['team_id']
 
-                # 3. Get Week Dates (League Specific)
+                # 3. Get Week Dates
                 cursor.execute("SELECT start_date, end_date FROM weeks WHERE league_id = %s AND week_num = %s", (league_id, week_num))
                 week_dates = cursor.fetchone()
                 if not week_dates:
@@ -3337,7 +3337,7 @@ def get_roster_data():
                     cursor.execute("SELECT game_date, home_team, away_team FROM schedule WHERE game_date >= %s AND game_date <= %s", (week_next['start_date'], week_next['end_date']))
                     schedule_next_week = cursor.fetchall()
 
-                # 5. Get Team Stats Map (Global)
+                # 5. Get Team Stats Map
                 team_stats_map = {}
                 cursor.execute("SELECT * FROM team_stats_summary")
                 for row in cursor.fetchall():
@@ -3348,17 +3348,18 @@ def get_roster_data():
                     if row['team_tricode'] in team_stats_map:
                         team_stats_map[row['team_tricode']].update(dict(row))
 
-                # 6. Get Base Roster (Pass League ID!)
+                # 6. Get Base Roster
                 active_players = _get_ranked_roster_for_week(cursor, team_id, week_num, team_stats_map, league_id, sourcing)
 
-                # 7. Get All Players (League Specific Roster + Global Player Data)
+                # 7. Get All Players (Fixed Join Logic)
                 cursor.execute("""
                     SELECT
                         p.player_id, p.player_name, p.player_team as team,
                         rp.eligible_positions, p.player_name_normalized, p.status
                     FROM rosters_tall r
                     JOIN rostered_players rp ON r.player_id = rp.player_id AND r.league_id = rp.league_id
-                    JOIN players p ON rp.player_id = p.player_id
+                    -- FIX: Cast rp.player_id to TEXT
+                    JOIN players p ON CAST(rp.player_id AS TEXT) = p.player_id
                     WHERE r.league_id = %s AND r.team_id = %s
                 """, (league_id, team_id))
 
@@ -3380,10 +3381,11 @@ def get_roster_data():
                             all_players.append(added)
                             existing_ids.add(int(added.get('player_id', 0)))
 
-                # 8. Fetch Stats & Ranks (Global Table)
+                # 8. Fetch Stats & Ranks
                 cat_rank_columns = [f"{cat}_cat_rank" for cat in all_scoring_categories]
-                # Quote columns for Postgres safety
-                raw_stat_columns = [f'"{cat}"' for cat in all_scoring_categories]
+
+                # FIX: Do NOT double-quote column names here, helper does it
+                raw_stat_columns = list(all_scoring_categories)
 
                 all_cols = list(set(cat_rank_columns + raw_stat_columns))
                 pp_stat_columns = [
@@ -3396,9 +3398,11 @@ def get_roster_data():
                 player_stats = {}
 
                 if valid_names:
+                    # Manually quote columns for the SQL query here
+                    quoted_cols = [f'"{c}"' for c in (all_cols + pp_stat_columns)]
                     placeholders = ','.join(['%s'] * len(valid_names))
-                    # Query Global Stat Table
-                    query = f"SELECT player_name_normalized, {', '.join(all_cols + pp_stat_columns)} FROM {stat_table} WHERE player_name_normalized IN ({placeholders})"
+
+                    query = f"SELECT player_name_normalized, {', '.join(quoted_cols)} FROM {stat_table} WHERE player_name_normalized IN ({placeholders})"
                     cursor.execute(query, valid_names)
                     player_stats = {row['player_name_normalized']: dict(row) for row in cursor.fetchall()}
 
@@ -3407,13 +3411,12 @@ def get_roster_data():
                 active_player_map = {p['player_name']: p for p in active_players}
 
                 for player in all_players:
-                    # A. Schedule & Opponents
                     if player['player_name'] in active_player_map:
                         source = active_player_map[player['player_name']]
                         for k in ['total_rank', 'game_dates_this_week', 'games_this_week', 'games_next_week', 'opponents_list', 'opponent_stats_this_week']:
                             player[k] = source.get(k, [])
                     else:
-                        # Simulated/New Players logic
+                        # Simulated player logic
                         player['games_this_week'] = []
                         player['game_dates_this_week'] = []
                         player['games_next_week'] = []
@@ -3445,7 +3448,6 @@ def get_roster_data():
                                 g_date = datetime.strptime(g['game_date'], '%Y-%m-%d').date()
                                 player['games_next_week'].append(g_date.strftime('%a'))
 
-                    # B. Stats & Ranks
                     p_data = player_stats.get(player.get('player_name_normalized'))
                     new_total_rank = 0
                     if p_data:
@@ -3464,7 +3466,7 @@ def get_roster_data():
                     if player.get('player_id'):
                         player_custom_rank_map[int(player['player_id'])] = player['total_rank']
 
-                # 10. Final Lineup/Usage Calc (League Specific Settings)
+                # 10. Final Lineup
                 cursor.execute("SELECT position, position_count FROM lineup_settings WHERE league_id = %s AND position NOT IN ('BN', 'IR', 'IR+')", (league_id,))
                 lineup_settings = {row['position']: row['position_count'] for row in cursor.fetchall()}
 
