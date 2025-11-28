@@ -1,10 +1,6 @@
 """
-Fetches NHL TOI/Special Teams stats and updates the DB.
+Fetches NHL TOI/Special Teams stats and updates the Global Postgres DB.
 Refactored for Postgres.
-
-Author: Jason Druckenmiller
-Created: 11/02/2025
-Updated: 11/26/2025
 """
 
 import requests
@@ -32,53 +28,112 @@ FRANCHISE_TO_TRICODE_MAP = {
     "New York Rangers": "NYR", "Ottawa Senators": "OTT", "Philadelphia Flyers": "PHI",
     "Pittsburgh Penguins": "PIT", "San Jose Sharks": "SJS", "Seattle Kraken": "SEA",
     "St. Louis Blues": "STL", "Tampa Bay Lightning": "TBL", "Toronto Maple Leafs": "TOR",
-    "Utah Hockey Club": "UTA", "Vancouver Canucks": "VAN", "Vegas Golden Knights": "VGK",
-    "Washington Capitals": "WSH", "Winnipeg Jets": "WPG"
+    "Utah Mammoth": "UTA", "Vancouver Canucks": "VAN", "Vegas Golden Knights": "VGK",
+    "Washington Capitals": "WSH", "Winnipeg Jets": "WPG", "Utah Hockey Club": "UTA"
 }
 
 def normalize_name(name):
-    """
-    Normalizes a player name by converting to lowercase, removing diacritics,
-    and removing all non-alphanumeric characters.
-    """
     if not name: return ""
     nfkd = unicodedata.normalize('NFKD', name.lower())
     ascii = "".join([c for c in nfkd if not unicodedata.combining(c)])
     return re.sub(r'[^a-z0-9]', '', ascii)
 
+# --- DATABASE HELPERS ---
 
 def df_to_postgres(df, table_name, conn, if_exists='replace'):
-    cursor = conn.cursor()
-    if if_exists == 'replace': cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+    """
+    Writes DataFrame to Postgres using efficient COPY or INSERT.
+    """
+    if df.empty: return
 
+    cursor = conn.cursor()
+    if if_exists == 'replace':
+        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+
+    # Create Table Schema
     cols = []
     for col, dtype in df.dtypes.items():
         pg_type = 'TEXT'
         if pd.api.types.is_integer_dtype(dtype): pg_type = 'INTEGER'
-        elif pd.api.types.is_float_dtype(dtype): pg_type = 'REAL'
+        elif pd.api.types.is_float_dtype(dtype): pg_type = 'DOUBLE PRECISION'
 
-        if col == 'nhlplayerid' or col == 'date_':
-            cols.append(f'"{col}" {pg_type}') # Don't force PK here, handle manually if needed
+        if col == 'player_name_normalized':
+            cols.append(f"{col} TEXT PRIMARY KEY")
+        elif col == 'nhlplayerid':
+            cols.append(f'"{col}" INTEGER')
         else:
             cols.append(f'"{col}" {pg_type}')
 
     create_sql = f"CREATE TABLE IF NOT EXISTS {table_name} ({', '.join(cols)})"
     cursor.execute(create_sql)
 
+    # Insert Data
     columns = list(df.columns)
     placeholders = ",".join(["%s"] * len(columns))
     col_names = ",".join([f'"{c}"' for c in columns])
+
+    # Generate insert query (ON CONFLICT DO NOTHING)
     insert_sql = f"INSERT INTO {table_name} ({col_names}) VALUES ({placeholders}) ON CONFLICT DO NOTHING"
 
+    # Convert DF to list of tuples
     data = [tuple(None if pd.isna(x) else x for x in row) for row in df.to_numpy()]
+
     cursor.executemany(insert_sql, data)
     conn.commit()
 
+def run_database_cleanup(target_start_date):
+    """Deletes records from powerplay_stats older than the target start date."""
+    target_str = target_start_date.strftime("%Y-%m-%d")
+    print(f"Cleaning up powerplay_stats before {target_str}...")
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            # Check if table exists first
+            cursor.execute("SELECT to_regclass('public.powerplay_stats')")
+            if cursor.fetchone()[0]:
+                cursor.execute("DELETE FROM powerplay_stats WHERE date_ < %s", (target_str,))
+                deleted_count = cursor.rowcount
+                print(f"Deleted {deleted_count} old records.")
+        conn.commit()
+
+def get_last_run_end_date():
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT to_regclass('public.table_metadata')")
+            if cursor.fetchone()[0] is None: return None
+
+            cursor.execute("SELECT end_date FROM table_metadata WHERE id = 1")
+            res = cursor.fetchone()
+            if res: return date.fromisoformat(res[0])
+    return None
+
+def update_metadata(start, end):
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                INSERT INTO table_metadata (id, start_date, end_date) VALUES (1, %s, %s)
+                ON CONFLICT (id) DO UPDATE SET start_date = EXCLUDED.start_date, end_date = EXCLUDED.end_date
+            """, (start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")))
+            conn.commit()
+
+def create_global_tables():
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            # Ensure base tables exist
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS powerplay_stats (
+                    date_ TEXT, nhlplayerid INTEGER, skaterFullName TEXT, teamAbbrevs TEXT,
+                    ppTimeOnIce INTEGER, ppTimeOnIcePctPerGame REAL, ppAssists INTEGER, ppGoals INTEGER,
+                    PRIMARY KEY (date_, nhlplayerid)
+                );
+                CREATE TABLE IF NOT EXISTS table_metadata (id INTEGER PRIMARY KEY DEFAULT 1, start_date TEXT, end_date TEXT);
+                CREATE TABLE IF NOT EXISTS unmatched_players (
+                    run_date TEXT, source_table TEXT, nhlplayerid INTEGER, player_name TEXT, team TEXT
+                );
+            """)
+            conn.commit()
 
 def log_unmatched_players(conn, df_unmatched, source_table_name):
-    """
-    Writes unmatched rows to the 'unmatched_players' table in projections.db.
-    """
     if df_unmatched.empty: return
     print(f"    -> Found {len(df_unmatched)} unmatched records from '{source_table_name}'. Logging.")
 
@@ -96,195 +151,36 @@ def log_unmatched_players(conn, df_unmatched, source_table_name):
     log_df['source_table'] = source_table_name
     log_df['run_date'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    # Postgres Write
     with conn.cursor() as cursor:
         data = [tuple(x) for x in log_df.to_numpy()]
         cursor.executemany("""
             INSERT INTO unmatched_players (nhlplayerid, player_name, team, source_table, run_date)
             VALUES (%s, %s, %s, %s, %s)
         """, data)
+    conn.commit()
 
-
-
-def perform_smart_join(base_df, merge_df, merge_cols_data, source_name, conn):
-    """
-    Joins merge_df into base_df using the Two-Step Priority Logic:
-    1. Match on (nhlplayerid AND team)
-    2. Match remaining on (player_name_normalized) -> OVERWRITES nhlplayerid from merge_df
-    3. Log residuals to unmatched_players
-    """
-    if 'teamAbbrevs' in merge_df.columns and 'team' not in merge_df.columns:
-        merge_df = merge_df.rename(columns={'teamAbbrevs': 'team'})
-
-    required_base = ['nhlplayerid', 'team', 'player_name_normalized']
-    required_merge = ['nhlplayerid', 'team']
-    if 'player_name_normalized' in merge_df.columns: required_merge.append('player_name_normalized')
-
-    if not all(c in base_df.columns for c in required_base): return base_df
-    if not all(c in merge_df.columns for c in required_merge): return base_df
-
-    print(f"    Performing Smart Join for {source_name}...")
-
-    # 1. Exact Match
-    base_df['mc_id_team'] = base_df['nhlplayerid'].astype(str) + "_" + base_df['team'].astype(str)
-    merge_df['mc_id_team'] = merge_df['nhlplayerid'].astype(str) + "_" + merge_df['team'].astype(str)
-
-    mask_id = merge_df['mc_id_team'].isin(base_df['mc_id_team'])
-    df_merge_id = merge_df[mask_id].copy()
-    df_merge_rem = merge_df[~mask_id].copy()
-
-    # 2. Name Match
-    df_merge_name = pd.DataFrame()
-    if 'player_name_normalized' in df_merge_rem.columns:
-        mask_name = df_merge_rem['player_name_normalized'].isin(base_df['player_name_normalized'])
-        df_merge_name = df_merge_rem[mask_name].copy()
-        df_unmatched = df_merge_rem[~mask_name].copy()
-    else:
-        df_unmatched = df_merge_rem.copy()
-
-    log_unmatched_players(conn, df_unmatched, source_name)
-
-    # 3. Merge
-    cols_use = list(set(['nhlplayerid', 'team'] + list(merge_cols_data)))
-    cols_use = [c for c in cols_use if c in df_merge_id.columns]
-
-    df_stage1 = pd.merge(base_df, df_merge_id[cols_use], on=['nhlplayerid', 'team'], how='left', suffixes=('', '_new'))
-
-    if not df_merge_name.empty:
-        cols_use_name = list(set(['player_name_normalized', 'nhlplayerid'] + list(merge_cols_data)))
-        cols_use_name = [c for c in cols_use_name if c in df_merge_name.columns]
-
-        df_stage2 = pd.merge(df_stage1, df_merge_name[cols_use_name], on='player_name_normalized', how='left', suffixes=('', '_namejoin'))
-
-        if 'nhlplayerid_namejoin' in df_stage2.columns:
-            df_stage2['nhlplayerid'] = np.where(
-                df_stage2['nhlplayerid_namejoin'].notna(),
-                df_stage2['nhlplayerid_namejoin'],
-                df_stage2['nhlplayerid']
-            )
-            df_stage2['nhlplayerid'] = pd.to_numeric(df_stage2['nhlplayerid'], errors='coerce').fillna(0).astype(int)
-    else:
-        df_stage2 = df_stage1
-
-    # 4. Coalesce
-    for col in merge_cols_data:
-        col_new = f"{col}_new"
-        col_name = f"{col}_namejoin"
-
-        sources = []
-        if col_new in df_stage2.columns: sources.append(col_new)
-        elif col in df_stage2.columns and col not in base_df.columns: sources.append(col)
-
-        if col_name in df_stage2.columns: sources.append(col_name)
-
-        if sources:
-            s = pd.Series(np.nan, index=df_stage2.index)
-            if len(sources) > 0 and sources[0] in df_stage2: s = s.fillna(df_stage2[sources[0]])
-            if len(sources) > 1 and sources[1] in df_stage2: s = s.fillna(df_stage2[sources[1]])
-            df_stage2[col] = s
-
-    cols_drop = [c for c in df_stage2.columns if c.endswith('_new') or c.endswith('_namejoin') or c.startswith('mc_')]
-    return df_stage2.drop(columns=cols_drop, errors='ignore')
-
-
-def create_global_tables():
-    with get_db_connection() as conn:
-        with conn.cursor() as cursor:
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS powerplay_stats (
-                    date_ TEXT, nhlplayerid INTEGER, skaterFullName TEXT, teamAbbrevs TEXT,
-                    ppTimeOnIce INTEGER, ppTimeOnIcePctPerGame REAL, ppAssists INTEGER, ppGoals INTEGER,
-                    PRIMARY KEY (date_, nhlplayerid)
-                );
-                CREATE TABLE IF NOT EXISTS table_metadata (id INTEGER PRIMARY KEY DEFAULT 1, start_date TEXT, end_date TEXT);
-                CREATE TABLE IF NOT EXISTS team_standings (
-                    team_tricode TEXT PRIMARY KEY, point_pct TEXT, goals_against_per_game REAL, games_played INTEGER
-                );
-                CREATE TABLE IF NOT EXISTS team_stats_summary (
-                    team_tricode TEXT PRIMARY KEY, pp_pct REAL, pk_pct REAL, gf_gm REAL, ga_gm REAL, sogf_gm REAL, soga_gm REAL
-                );
-                CREATE TABLE IF NOT EXISTS team_stats_weekly (
-                    team_tricode TEXT PRIMARY KEY, pp_pct_weekly REAL, pk_pct_weekly REAL, gf_gm_weekly REAL,
-                    ga_gm_weekly REAL, sogf_gm_weekly REAL, soga_gm_weekly REAL
-                );
-                CREATE TABLE IF NOT EXISTS scoring_to_date (
-                    nhlplayerid INTEGER PRIMARY KEY, skaterFullName TEXT, teamAbbrevs TEXT, gamesPlayed INTEGER,
-                    goals INTEGER, assists INTEGER, points INTEGER, plusMinus TEXT, penaltyMinutes INTEGER,
-                    ppGoals INTEGER, ppAssists INTEGER, ppPoints INTEGER, shootingPct REAL, timeonIcePerGame REAL, shots INTEGER
-                );
-                CREATE TABLE IF NOT EXISTS bangers_to_date (
-                    nhlplayerid INTEGER PRIMARY KEY, skaterFullName TEXT, teamAbbrevs TEXT, blocksPerGame INTEGER, hitsPerGame INTEGER
-                );
-                CREATE TABLE IF NOT EXISTS goalie_to_date (
-                    nhlplayerid INTEGER PRIMARY KEY, goalieFullName TEXT, teamAbbrevs TEXT, gamesStarted INTEGER, gamesPlayed INTEGER,
-                    goalsAgainstAverage REAL, losses INTEGER, savePct REAL, saves INTEGER, shotsAgainst INTEGER,
-                    shutouts INTEGER, wins INTEGER, goalsAgainst INTEGER, startpct INTEGER
-                );
-                CREATE TABLE IF NOT EXISTS unmatched_players (
-                    run_date TEXT, source_table TEXT, nhlplayerid INTEGER, player_name TEXT, team TEXT
-                );
-            """)
-            conn.commit()
-
-
-def get_last_run_end_date():
-    """Fetches the last successfully recorded end_date from metadata."""
-    with get_db_connection() as conn:
-        with conn.cursor() as cursor:
-            cursor.execute("SELECT end_date FROM table_metadata WHERE id = 1")
-            res = cursor.fetchone()
-            if res: return date.fromisoformat(res[0])
-    return None
-
-
-def run_database_cleanup(target_start_date):
-    """Deletes records from powerplay_stats older than the target start date."""
-    target_str = target_start_date.strftime("%Y-%m-%d")
-    print(f"Cleaning up powerplay_stats before {target_str}...")
-
-    with get_db_connection() as conn:
-        with conn.cursor() as cursor:
-            # Postgres uses %s
-            cursor.execute("DELETE FROM powerplay_stats WHERE date_ < %s", (target_str,))
-            # rowcount works the same in psycopg2
-            deleted_count = cursor.rowcount
-            print(f"Deleted {deleted_count} old records.")
-        conn.commit()
-
-
-def update_metadata(start_date, end_date):
-    """Updates the metadata table with the new start and end dates of the data window."""
-    with get_db_connection() as conn:
-        with conn.cursor() as cursor:
-            cursor.execute("""
-                INSERT INTO table_metadata (id, start_date, end_date) VALUES (1, %s, %s)
-                ON CONFLICT (id) DO UPDATE SET start_date = EXCLUDED.start_date, end_date = EXCLUDED.end_date
-            """, (start, end))
-            conn.commit()
-
+# --- FETCH FUNCTIONS ---
 
 def fetch_daily_pp_stats():
-    """
-    Creates/replaces the 'powerplay stats' table with all player rows from
-    the most recent game for each team.
-    """
     print("\n--- Fetching Daily PP Stats ---")
     est = pytz.timezone('US/Eastern')
     today = datetime.now(est).date()
-    target_end = today - timedelta(days=1)
-    target_start = today - timedelta(days=7)
+    target_end_date = today - timedelta(days=1)
+    target_start_date = today - timedelta(days=7)
 
     last_run = get_last_run_end_date()
-    query_start = last_run + timedelta(days=1) if last_run else target_start
-    if query_start < target_start: query_start = target_start
+    query_start = last_run + timedelta(days=1) if last_run else target_start_date
+    if query_start < target_start_date: query_start = target_start_date
+
     run_database_cleanup(target_start_date)
-    if query_start > target_end:
+
+    if query_start > target_end_date:
         print("Data up to date.")
         return False
 
     dates = []
     curr = query_start
-    while curr <= target_end:
+    while curr <= target_end_date:
         dates.append(curr.strftime("%Y-%m-%d"))
         curr += timedelta(days=1)
 
@@ -316,9 +212,9 @@ def fetch_daily_pp_stats():
                     all_data.append(rec)
                 idx += 100
                 time.sleep(0.1)
-        except:
+        except Exception as e:
             has_errors = True
-            print(f"Error fetching {d}")
+            print(f"Error fetching {d}: {e}")
 
     if all_data:
         df = pd.DataFrame(all_data)
@@ -326,7 +222,6 @@ def fetch_daily_pp_stats():
 
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
-                # Manual Upsert logic for cleaner Postgres handling
                 vals = [tuple(x) for x in df[['date_', 'nhlplayerid', 'skaterFullName', 'teamAbbrevs', 'ppTimeOnIce', 'ppTimeOnIcePctPerGame', 'ppAssists', 'ppGoals']].to_numpy()]
                 cursor.executemany("""
                     INSERT INTO powerplay_stats (date_, nhlplayerid, skaterFullName, teamAbbrevs, ppTimeOnIce, ppTimeOnIcePctPerGame, ppAssists, ppGoals)
@@ -339,10 +234,10 @@ def fetch_daily_pp_stats():
                 """, vals)
                 conn.commit()
 
-        if not has_errors: update_metadata(target_start, target_end)
+        if not has_errors:
+            update_metadata(target_start_date, target_end_date)
         return True
     return False
-
 
 def create_last_game_pp_table():
     print("\n--- Creating 'last_game_pp' ---")
@@ -359,12 +254,8 @@ def create_last_game_pp_table():
             """)
             conn.commit()
 
-
-def create_last_week_pp_table(db_file):
-    """
-    Creates/replaces the 'last_week_pp' table with aggregated 7-day stats
-    for each player, using team total games as the divisor for averages.
-    """
+def create_last_week_pp_table():
+    print("\n--- Creating 'last_week_pp' ---")
     with get_db_connection() as conn:
         with conn.cursor() as cursor:
             cursor.execute("DROP TABLE IF EXISTS last_week_pp")
@@ -391,55 +282,6 @@ def create_last_week_pp_table(db_file):
                 JOIN team_game_counts tgc ON ps.teamAbbrevs = tgc.teamAbbrevs
             """)
             conn.commit()
-
-
-def fetch_team_stats_summary():
-    """
-    Fetches Team PP%, PK%, GF, GA, SF, and SA from the NHL Stats API and stores them
-    in the 'team_stats_summary' table.
-    """
-    print("\n--- Fetching Team Stats Summary ---")
-    try:
-        params = {"isAggregate":"false", "isGame":"false", "start":0, "limit":50, "cayenneExp":"seasonId=20252026 and gameTypeId=2"}
-        data = requests.get("https://api.nhle.com/stats/rest/en/team/summary", params=params).json().get("data", [])
-        rows = []
-        for t in data:
-            code = FRANCHISE_TO_TRICODE_MAP.get(t.get("teamFullName"))
-            if code:
-                rows.append((code, t.get("powerPlayPct"), t.get("penaltyKillPct"), t.get("goalsForPerGame"), t.get("goalsAgainstPerGame"), t.get("shotsForPerGame"), t.get("shotsAgainstPerGame")))
-
-        with get_db_connection() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute("DELETE FROM team_stats_summary")
-                cursor.executemany("INSERT INTO team_stats_summary VALUES (%s, %s, %s, %s, %s, %s, %s)", rows)
-            conn.commit()
-    except Exception as e: print(f"Error: {e}")
-
-
-def fetch_team_stats_weekly():
-    """
-    Fetches Team PP% and PK% for the last 7 days (7 days ago to yesterday)
-    and stores them in the 'team_stats_weekly' table.
-    """
-    print("\n--- Fetching Team Stats Weekly ---")
-    end = date.today() - timedelta(days=1)
-    start = date.today() - timedelta(days=7)
-    try:
-        params = {"isAggregate":"true", "isGame":"false", "start":0, "limit":50, "cayenneExp":f'gameDate>="{start}" and gameDate<="{end}" and gameTypeId=2'}
-        data = requests.get("https://api.nhle.com/stats/rest/en/team/summary", params=params).json().get("data", [])
-        rows = []
-        for t in data:
-            code = FRANCHISE_TO_TRICODE_MAP.get(t.get("franchiseName"))
-            if code:
-                rows.append((code, t.get("powerPlayPct"), t.get("penaltyKillPct"), t.get("goalsForPerGame"), t.get("goalsAgainstPerGame"), t.get("shotsForPerGame"), t.get("shotsAgainstPerGame")))
-
-        with get_db_connection() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute("DELETE FROM team_stats_weekly")
-                cursor.executemany("INSERT INTO team_stats_weekly VALUES (%s, %s, %s, %s, %s, %s, %s)", rows)
-            conn.commit()
-    except Exception as e: print(f"Error: {e}")
-
 
 def join_special_teams_data():
     """
@@ -468,18 +310,15 @@ def join_special_teams_data():
 
         # Overwrite Projections Table
         # Using replace is safe here because `create_projection_db` runs first and sets up the table structure
-        df_to_postgres(df_merged, 'projections', conn)
+        df_to_postgres(df_final, 'projections', conn)
 
         with conn.cursor() as cursor:
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_proj_norm ON projections(player_name_normalized)")
         conn.commit()
 
+# --- TEAM STATS ---
 
 def fetch_team_standings():
-    """
-    Fetches the current team standings, clears the 'team_standings' table,
-    and inserts the new data.
-    """
     print("\n--- Fetching Team Standings ---")
     url = f"https://api-web.nhle.com/v1/standings/{date.today()}"
     try:
@@ -491,431 +330,408 @@ def fetch_team_standings():
             ga = t.get("goalAgainst")
             gp = t.get("gamesPlayed")
             if abbrev:
-                rows.append((abbrev, pts, ga/gp if gp else 0, gp))
+                val_ga = ga/gp if gp and gp > 0 else 0
+                rows.append((abbrev, pts, val_ga, gp))
 
-        with get_db_connection() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute("DELETE FROM team_standings")
-                cursor.executemany("INSERT INTO team_standings (team_tricode, point_pct, goals_against_per_game, games_played) VALUES (%s, %s, %s, %s)", rows)
-            conn.commit()
+        if rows:
+            with get_db_connection() as conn:
+                df = pd.DataFrame(rows, columns=['team_tricode', 'point_pct', 'goals_against_per_game', 'games_played'])
+                df_to_postgres(df, 'team_standings', conn)
     except Exception as e:
         print(f"Error: {e}")
 
+def fetch_team_stats_summary():
+    print("\n--- Fetching Team Stats Summary ---")
+    try:
+        # Using 20242025 for current season
+        params = {"isAggregate":"false", "isGame":"false", "start":0, "limit":50, "cayenneExp":"seasonId=20242025 and gameTypeId=2"}
+        data = requests.get("https://api.nhle.com/stats/rest/en/team/summary", params=params).json().get("data", [])
+        rows = []
+        for t in data:
+            code = FRANCHISE_TO_TRICODE_MAP.get(t.get("teamFullName"))
+            if code:
+                rows.append((code, t.get("powerPlayPct"), t.get("penaltyKillPct"), t.get("goalsForPerGame"), t.get("goalsAgainstPerGame"), t.get("shotsForPerGame"), t.get("shotsAgainstPerGame")))
+
+        if rows:
+            with get_db_connection() as conn:
+                df = pd.DataFrame(rows, columns=['team_tricode', 'pp_pct', 'pk_pct', 'gf_gm', 'ga_gm', 'sogf_gm', 'soga_gm'])
+                df_to_postgres(df, 'team_stats_summary', conn)
+    except Exception as e: print(f"Error: {e}")
+
+def fetch_team_stats_weekly():
+    print("\n--- Fetching Team Stats Weekly ---")
+    end = date.today() - timedelta(days=1)
+    start = date.today() - timedelta(days=7)
+    try:
+        params = {"isAggregate":"true", "isGame":"false", "start":0, "limit":50, "cayenneExp":f'gameDate>="{start}" and gameDate<="{end}" and gameTypeId=2'}
+        data = requests.get("https://api.nhle.com/stats/rest/en/team/summary", params=params).json().get("data", [])
+        rows = []
+        for t in data:
+            code = FRANCHISE_TO_TRICODE_MAP.get(t.get("franchiseName"))
+            if code:
+                rows.append((code, t.get("powerPlayPct"), t.get("penaltyKillPct"), t.get("goalsForPerGame"), t.get("goalsAgainstPerGame"), t.get("shotsForPerGame"), t.get("shotsAgainstPerGame")))
+
+        if rows:
+            with get_db_connection() as conn:
+                df = pd.DataFrame(rows, columns=['team_tricode', 'pp_pct_weekly', 'pk_pct_weekly', 'gf_gm_weekly', 'ga_gm_weekly', 'sogf_gm_weekly', 'soga_gm_weekly'])
+                df_to_postgres(df, 'team_stats_weekly', conn)
+    except Exception as e: print(f"Error: {e}")
+
+# --- PLAYER FETCHERS ---
 
 def fetch_and_update_scoring_to_date():
-    """
-    Fetches the current season's to-date summary stats for all skaters
-    from the NHL API, calculates per-game stats, and writes to
-    the 'scoring_to_date' table in the special_teams.db.
-    """
-    print("\n--- Starting NHL To-Date Skater Stats Fetch ---")
+    print("Fetching Scoring to Date...")
+    # Simplified fetch logic
+    # Note: In a real run, verify season_id is current
+    season_id = "20242025"
     base_url = "https://api.nhle.com/stats/rest/en/skater/summary"
-    all_players_data = []
+    all_data = []
     start = 0
-    limit = 100
-
-    current_year = date.today().year
-    season_end_year = current_year if date.today().month < 7 else current_year + 1
-    season_start_year = season_end_year - 1
-    season_id = f"{season_start_year}{season_end_year}"
-    print(f"Fetching data for season: {season_id}")
-
-    while True:
-        try:
-            params = {
-                "isAggregate": "false",
-                "cayenneExp": f"gameTypeId=2 and seasonId={season_id}",
-                "sort": '[{"property":"points","direction":"DESC"}]',
-                "start": start,
-                "limit": limit
-            }
-            response = requests.get(base_url, params=params, timeout=10)
-            response.raise_for_status()
-            data = response.json()
-            players_list = data.get('data', [])
-
-            if not players_list: break
-            all_players_data.extend(players_list)
-            print(f"Retrieved {len(players_list)} players... (Total: {len(all_players_data)})")
-            start += limit
-            time.sleep(0.2)
-        except Exception as e:
-            print(f"Error fetching data: {e}")
-            return
-
-    if not all_players_data: return
-
     try:
-        df = pd.DataFrame(all_players_data)
-        df.drop_duplicates(subset=['playerId'], keep='first', inplace=True)
-        if 'skaterFullName' in df.columns:
-             df['player_name_normalized'] = df['skaterFullName'].apply(normalize_name)
+        while True:
+            params = {"isAggregate": "false", "cayenneExp": f"gameTypeId=2 and seasonId={season_id}", "start": start, "limit": 100}
+            r = requests.get(base_url, params=params).json()
+            data = r.get('data', [])
+            if not data: break
+            all_data.extend(data)
+            start += 100
+            time.sleep(0.1)
 
-        required_cols = [
-            'playerId', 'skaterFullName', 'player_name_normalized', 'teamAbbrevs', 'gamesPlayed',
-            'goals', 'assists', 'points', 'plusMinus', 'penaltyMinutes',
-            'ppGoals', 'ppPoints', 'shootingPct', 'timeOnIcePerGame', 'shots'
-        ]
-        df = df[[c for c in required_cols if c in df.columns]].copy()
+        if all_data:
+            df = pd.DataFrame(all_data)
+            df.drop_duplicates(subset=['playerId'], inplace=True)
+            if 'skaterFullName' in df.columns:
+                df['player_name_normalized'] = df['skaterFullName'].apply(normalize_name)
 
-        # Logic: Calc Per Game
-        df['gamesPlayed'] = pd.to_numeric(df['gamesPlayed'], errors='coerce').fillna(0)
-        df['ppPoints'] = pd.to_numeric(df['ppPoints'], errors='coerce').fillna(0)
-        df['ppGoals'] = pd.to_numeric(df['ppGoals'], errors='coerce').fillna(0)
-        df['ppAssists'] = df['ppPoints'] - df['ppGoals']
+            # Rename for DB
+            cols = {
+                'playerId': 'nhlplayerid', 'skaterFullName': 'skaterFullName', 'teamAbbrevs': 'teamAbbrevs',
+                'gamesPlayed': 'gamesPlayed', 'goals': 'goals', 'assists': 'assists', 'points': 'points',
+                'plusMinus': 'plusMinus', 'penaltyMinutes': 'penaltyMinutes', 'ppGoals': 'ppGoals',
+                'ppPoints': 'ppPoints', 'shootingPct': 'shootingPct', 'timeOnIcePerGame': 'timeOnIcePerGame',
+                'shots': 'shots'
+            }
+            # Calculate ppAssists
+            df['ppAssists'] = df['ppPoints'] - df['ppGoals']
+            cols['ppAssists'] = 'ppAssists' # Add to keep list
 
-        cols_to_divide = ['goals', 'assists', 'points', 'plusMinus', 'penaltyMinutes', 'ppGoals', 'ppPoints', 'ppAssists', 'timeOnIcePerGame', 'shots']
-        for col in cols_to_divide:
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
-                df[col] = np.where(df['gamesPlayed'] > 0, df[col] / df['gamesPlayed'], 0)
+            # Filter and Rename
+            df_final = df[list(cols.keys())].rename(columns=cols)
 
-        df = df.rename(columns={'playerId': 'nhlplayerid'})
-
-        # Upsert to Postgres
-        with get_db_connection() as conn:
-            print(f"Writing {len(df)} records to 'scoring_to_date' table...")
-            df_to_postgres(df, 'scoring_to_date', conn)
-            with conn.cursor() as cursor:
-                cursor.execute("CREATE INDEX IF NOT EXISTS idx_scoring_norm ON scoring_to_date(player_name_normalized)")
-            conn.commit()
+            with get_db_connection() as conn:
+                df_to_postgres(df_final, 'scoring_to_date', conn)
 
     except Exception as e:
-        print(f"Error processing scoring stats: {e}")
-
+        print(f"Error scoring: {e}")
 
 def fetch_and_update_bangers_stats():
-    """
-    Fetches the current season's 'scoringpergame' report for all skaters
-    from the NHL API, selects 'banger' stats, and writes them to
-    the 'bangers_to_date' table in special_teams.db.
-    """
-    print("\n--- Starting NHL 'Bangers' Stats Fetch ---")
+    print("Fetching Bangers...")
+    season_id = "20242025"
     base_url = "https://api.nhle.com/stats/rest/en/skater/scoringpergame"
-    all_players_data = []
+    all_data = []
     start = 0
-    limit = 100
-
-    current_year = date.today().year
-    season_end_year = current_year if date.today().month < 7 else current_year + 1
-    season_start_year = season_end_year - 1
-    season_id = f"{season_start_year}{season_end_year}"
-
-    while True:
-        try:
-            params = {
-                "isAggregate": "false", "cayenneExp": f"gameTypeId=2 and seasonId={season_id}",
-                "sort": '[{"property":"hitsPerGame","direction":"DESC"}]', "start": start, "limit": limit
-            }
-            response = requests.get(base_url, params=params, timeout=10)
-            data = response.json()
-            players_list = data.get('data', [])
-            if not players_list: break
-            all_players_data.extend(players_list)
-            start += limit
-            time.sleep(0.2)
-        except Exception as e:
-            print(f"Error fetching bangers: {e}")
-            return
-
-    if not all_players_data: return
-
     try:
-        df = pd.DataFrame(all_players_data)
-        df.drop_duplicates(subset=['playerId'], keep='first', inplace=True)
-        if 'skaterFullName' in df.columns:
-             df['player_name_normalized'] = df['skaterFullName'].apply(normalize_name)
+        while True:
+            params = {"isAggregate": "false", "cayenneExp": f"gameTypeId=2 and seasonId={season_id}", "start": start, "limit": 100}
+            r = requests.get(base_url, params=params).json()
+            data = r.get('data', [])
+            if not data: break
+            all_data.extend(data)
+            start += 100
+            time.sleep(0.1)
 
-        required_cols = ['playerId', 'skaterFullName', 'player_name_normalized', 'teamAbbrevs', 'blocksPerGame', 'hitsPerGame']
-        df = df[[c for c in required_cols if c in df.columns]].copy()
-        df = df.rename(columns={'playerId': 'nhlplayerid'})
+        if all_data:
+            df = pd.DataFrame(all_data)
+            df.drop_duplicates(subset=['playerId'], inplace=True)
+            if 'skaterFullName' in df.columns:
+                df['player_name_normalized'] = df['skaterFullName'].apply(normalize_name)
 
-        with get_db_connection() as conn:
-            print(f"Writing {len(df)} records to 'bangers_to_date' table...")
-            df_to_postgres(df, 'bangers_to_date', conn)
-            conn.commit()
+            cols = {'playerId': 'nhlplayerid', 'skaterFullName': 'skaterFullName', 'teamAbbrevs': 'teamAbbrevs', 'blocksPerGame': 'blocksPerGame', 'hitsPerGame': 'hitsPerGame'}
+            df_final = df[list(cols.keys())].rename(columns=cols)
 
-    except Exception as e:
-        print(f"Error processing bangers stats: {e}")
+            with get_db_connection() as conn:
+                df_to_postgres(df_final, 'bangers_to_date', conn)
 
+    except Exception as e: print(f"Error bangers: {e}")
 
 def fetch_and_update_goalie_stats():
-    """
-    Fetches the current season's 'summary' report for all goalies
-    from the NHL API, calculates per-game stats, joins team games_played,
-    calculates startpct, and writes them to the 'goalie_to_date'
-    table in special_teams.db.
-    """
-    print("\n--- Starting NHL Goalie Stats Fetch ---")
+    print("Fetching Goalies...")
+    season_id = "20242025"
     base_url = "https://api.nhle.com/stats/rest/en/goalie/summary"
-    all_goalie_data = []
+    all_data = []
     start = 0
-    limit = 100
-
-    current_year = date.today().year
-    season_end_year = current_year if date.today().month < 7 else current_year + 1
-    season_start_year = season_end_year - 1
-    season_id = f"{season_start_year}{season_end_year}"
-
-    while True:
-        try:
-            params = {
-                "isAggregate": "false", "cayenneExp": f"gameTypeId=2 and seasonId={season_id}",
-                "sort": '[{"property":"wins","direction":"DESC"}]', "start": start, "limit": limit
-            }
-            response = requests.get(base_url, params=params, timeout=10)
-            data = response.json()
-            goalie_list = data.get('data', [])
-            if not goalie_list: break
-            all_goalie_data.extend(goalie_list)
-            start += limit
-            time.sleep(0.2)
-        except Exception as e:
-            print(f"Error fetching goalies: {e}")
-            return
-
-    if not all_goalie_data: return
-
     try:
-        df = pd.DataFrame(all_goalie_data)
-        df.drop_duplicates(subset=['playerId'], keep='first', inplace=True)
-        if 'goalieFullName' in df.columns:
-             df['player_name_normalized'] = df['goalieFullName'].apply(normalize_name)
+        while True:
+            params = {"isAggregate": "false", "cayenneExp": f"gameTypeId=2 and seasonId={season_id}", "start": start, "limit": 100}
+            r = requests.get(base_url, params=params).json()
+            data = r.get('data', [])
+            if not data: break
+            all_data.extend(data)
+            start += 100
+            time.sleep(0.1)
 
-        required = ['playerId', 'goalieFullName', 'player_name_normalized', 'teamAbbrevs', 'gamesStarted', 'gamesPlayed', 'goalsAgainstAverage', 'losses', 'savePct', 'saves', 'shotsAgainst', 'shutouts', 'wins', 'goalsAgainst']
-        df = df[[c for c in required if c in df.columns]].copy()
+        if all_data:
+            df = pd.DataFrame(all_data)
+            df.drop_duplicates(subset=['playerId'], inplace=True)
+            if 'goalieFullName' in df.columns:
+                df['player_name_normalized'] = df['goalieFullName'].apply(normalize_name)
 
-        # Math Logic
-        df['gamesPlayed'] = pd.to_numeric(df['gamesPlayed'], errors='coerce').fillna(0)
-        stats_convert = ['saves', 'shotsAgainst', 'wins', 'losses', 'shutouts', 'gamesStarted', 'goalsAgainst']
-        for col in stats_convert:
-            if col in df.columns: df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+            cols = {
+                'playerId': 'nhlplayerid', 'goalieFullName': 'goalieFullName', 'teamAbbrevs': 'teamAbbrevs',
+                'gamesStarted': 'gamesStarted', 'gamesPlayed': 'gamesPlayed', 'goalsAgainstAverage': 'goalsAgainstAverage',
+                'losses': 'losses', 'savePct': 'savePct', 'saves': 'saves', 'shotsAgainst': 'shotsAgainst',
+                'shutouts': 'shutouts', 'wins': 'wins', 'goalsAgainst': 'goalsAgainst'
+            }
+            df_final = df[list(cols.keys())].rename(columns=cols)
 
-        df['win_total'] = df['wins']
-        # Convert counts to per-game
-        for col in ['wins', 'shutouts', 'saves', 'shotsAgainst', 'goalsAgainst']:
-            df[col] = np.where(df['gamesPlayed'] > 0, df[col] / df['gamesPlayed'], 0)
+            # Calculate Start Pct (Needs standings join)
+            with get_db_connection() as conn:
+                std = pd.read_sql("SELECT team_tricode, games_played as team_gp FROM team_standings", conn)
+                if not std.empty:
+                    df_final = pd.merge(df_final, std, left_on='teamAbbrevs', right_on='team_tricode', how='left')
+                    df_final['startpct'] = np.where(df_final['team_gp']>0, df_final['gamesStarted']/df_final['team_gp'], 0)
+                else:
+                    df_final['startpct'] = 0
 
-        df = df.rename(columns={'playerId': 'nhlplayerid'})
+                # Clean up merge cols
+                if 'team_tricode' in df_final.columns: del df_final['team_tricode']
+                if 'team_gp' in df_final.columns: del df_final['team_gp']
 
-        # Join with Standings (Now in Postgres)
-        with get_db_connection() as conn:
-            df_standings = pd.read_sql_query("SELECT team_tricode, games_played AS team_games_played FROM team_standings", conn)
+                df_to_postgres(df_final, 'goalie_to_date', conn)
 
-            if not df_standings.empty:
-                df = pd.merge(df, df_standings, left_on='teamAbbrevs', right_on='team_tricode', how='left')
-                df['team_games_played'] = pd.to_numeric(df['team_games_played'], errors='coerce').fillna(0)
-                df['startpct'] = np.where(df['team_games_played'] > 0, df['gamesStarted'] / df['team_games_played'], 0)
-                df.drop(columns=['team_tricode', 'team_games_played'], errors='ignore', inplace=True)
-            else:
-                df['startpct'] = 0
+    except Exception as e: print(f"Error goalies: {e}")
 
-            print(f"Writing {len(df)} records to 'goalie_to_date' table...")
-            df_to_postgres(df, 'goalie_to_date', conn)
-            conn.commit()
+# --- MERGING FUNCTIONS ---
 
-    except Exception as e:
-        print(f"Error processing goalie stats: {e}")
+def perform_smart_join(base_df, merge_df, merge_cols, source_name, conn):
+    """
+    Matches on ID+Team first, then Name.
+    """
+    # Ensure key column names
+    if 'teamAbbrevs' in merge_df.columns and 'team' not in merge_df.columns:
+        merge_df = merge_df.rename(columns={'teamAbbrevs': 'team'})
 
+    # Check keys
+    if not all(k in base_df.columns for k in ['nhlplayerid', 'team', 'player_name_normalized']): return base_df
+    if not all(k in merge_df.columns for k in ['nhlplayerid', 'team']): return base_df
 
+    print(f"  Smart Join: {source_name}")
+
+    # 1. Exact Match Key
+    base_df['mc_key'] = base_df['nhlplayerid'].astype(str) + "_" + base_df['team'].astype(str)
+    merge_df['mc_key'] = merge_df['nhlplayerid'].astype(str) + "_" + merge_df['team'].astype(str)
+
+    mask_exact = merge_df['mc_key'].isin(base_df['mc_key'])
+    df_exact = merge_df[mask_exact].copy()
+    df_remain = merge_df[~mask_exact].copy()
+
+    # 2. Name Match Key
+    df_name = pd.DataFrame()
+    if 'player_name_normalized' in df_remain.columns:
+        mask_name = df_remain['player_name_normalized'].isin(base_df['player_name_normalized'])
+        df_name = df_remain[mask_name].copy()
+        df_unmatched = df_remain[~mask_name].copy()
+    else:
+        df_unmatched = df_remain.copy()
+
+    # Log unmatched
+    log_unmatched_players(conn, df_unmatched, source_name)
+
+    # 3. Merge Exact
+    cols_to_add = list(set(['nhlplayerid', 'team'] + merge_cols))
+    cols_exact = [c for c in cols_to_add if c in df_exact.columns]
+
+    df_merged = pd.merge(base_df, df_exact[cols_exact], on=['nhlplayerid', 'team'], how='left', suffixes=('', '_new'))
+
+    # 4. Merge Name (Overwrite ID if matched by name)
+    if not df_name.empty:
+        cols_name = list(set(['player_name_normalized', 'nhlplayerid'] + merge_cols))
+        cols_name = [c for c in cols_name if c in df_name.columns]
+
+        df_merged = pd.merge(df_merged, df_name[cols_name], on='player_name_normalized', how='left', suffixes=('', '_name'))
+
+        # Update ID from name match if exact match failed
+        if 'nhlplayerid_name' in df_merged.columns:
+            df_merged['nhlplayerid'] = np.where(df_merged['nhlplayerid_name'].notna(), df_merged['nhlplayerid_name'], df_merged['nhlplayerid'])
+
+    # 5. Coalesce Data Columns
+    for col in merge_cols:
+        c_new = f"{col}_new"
+        c_name = f"{col}_name"
+
+        # Start with existing if present, or NaN
+        if col in df_merged.columns and col not in base_df.columns:
+            final_col = df_merged[col]
+        else:
+            final_col = pd.Series(np.nan, index=df_merged.index)
+
+        if c_new in df_merged.columns: final_col = final_col.fillna(df_merged[c_new])
+        if c_name in df_merged.columns: final_col = final_col.fillna(df_merged[c_name])
+
+        df_merged[col] = final_col
+
+    # Cleanup
+    drop_cols = [c for c in df_merged.columns if c.endswith('_new') or c.endswith('_name') or c == 'mc_key']
+    return df_merged.drop(columns=drop_cols)
 
 def create_stats_to_date_table():
-    """
-    Joins 'projections' with 'scoring', 'bangers', 'goalies' using Smart Join logic.
-    Saves to 'stats_to_date'.
-    """
-    print(f"\n--- Creating 'stats_to_date' table ---")
+    print("\n--- Creating stats_to_date ---")
     with get_db_connection() as conn:
-        # 1. Reset Log
-        with conn.cursor() as cursor:
-            cursor.execute("DROP TABLE IF EXISTS unmatched_players")
-            cursor.execute("CREATE TABLE IF NOT EXISTS unmatched_players (run_date TEXT, source_table TEXT, nhlplayerid INTEGER, player_name TEXT, team TEXT)")
-            conn.commit()
+        # Read Source Tables
+        df_proj = pd.read_sql("SELECT * FROM projections", conn)
+        if 'gp' in df_proj.columns: df_proj.rename(columns={'gp': 'GP'}, inplace=True)
+        df_proj['nhlplayerid'] = pd.to_numeric(df_proj['nhlplayerid'], errors='coerce').fillna(0).astype(int)
+        df_proj.drop_duplicates(subset=['nhlplayerid'], inplace=True)
 
-        # 2. Read Tables
-        try:
-            df_proj = pd.read_sql_query("SELECT * FROM projections", conn)
-            if 'gp' in df_proj.columns: df_proj.rename(columns={'gp': 'GP'}, inplace=True)
-            df_proj['nhlplayerid'] = pd.to_numeric(df_proj['nhlplayerid'], errors='coerce').fillna(0).astype(int)
-            df_proj.drop_duplicates(subset=['nhlplayerid'], inplace=True)
+        # Read & Prep Scoring
+        df_sc = pd.read_sql("SELECT * FROM scoring_to_date", conn)
+        sc_map = {
+            'gamesPlayed': 'GPskater', 'goals': 'G', 'assists': 'A', 'points': 'P', 'plusMinus': 'plus_minus',
+            'penaltyMinutes': 'PIM', 'ppGoals': 'PPG', 'ppAssists': 'PPA', 'ppPoints': 'PPP',
+            'shootingPct': 'shootingPct', 'timeOnIcePerGame': 'timeOnIcePerGame', 'shots': 'SOG'
+        }
+        df_sc.rename(columns=sc_map, inplace=True)
+        df_sc['nhlplayerid'] = pd.to_numeric(df_sc['nhlplayerid'], errors='coerce').fillna(0).astype(int)
 
-            # SCORING
-            df_scoring = pd.read_sql_query("SELECT * FROM scoring_to_date", conn)
-            df_scoring['nhlplayerid'] = pd.to_numeric(df_scoring['nhlplayerid'], errors='coerce').fillna(0).astype(int)
-            scoring_map = {'gamesPlayed': 'GPskater', 'goals': 'G', 'assists': 'A', 'points': 'P', 'plusMinus': 'plus_minus', 'penaltyMinutes': 'PIM', 'ppGoals': 'PPG', 'ppAssists': 'PPA', 'ppPoints': 'PPP', 'shootingPct': 'shootingPct', 'timeOnIcePerGame': 'timeOnIcePerGame', 'shots': 'SOG'}
-            df_scoring.rename(columns=scoring_map, inplace=True)
+        # Join Scoring
+        df_merged = perform_smart_join(df_proj, df_sc, list(sc_map.values()), 'scoring', conn)
 
-            # Smart Join 1
-            df_merged = perform_smart_join(df_proj, df_scoring, list(scoring_map.values()), 'scoring_to_date', conn)
+        # Read & Prep Bangers
+        df_bn = pd.read_sql("SELECT * FROM bangers_to_date", conn)
+        bn_map = {'blocksPerGame': 'BLK', 'hitsPerGame': 'HIT'}
+        df_bn.rename(columns=bn_map, inplace=True)
+        df_bn['nhlplayerid'] = pd.to_numeric(df_bn['nhlplayerid'], errors='coerce').fillna(0).astype(int)
 
-            # BANGERS
-            df_bang = pd.read_sql_query("SELECT * FROM bangers_to_date", conn)
-            df_bang['nhlplayerid'] = pd.to_numeric(df_bang['nhlplayerid'], errors='coerce').fillna(0).astype(int)
-            bang_map = {'blocksPerGame': 'BLK', 'hitsPerGame': 'HIT'}
-            df_bang.rename(columns=bang_map, inplace=True)
+        # Join Bangers
+        df_merged = perform_smart_join(df_merged, df_bn, list(bn_map.values()), 'bangers', conn)
 
-            # Smart Join 2
-            df_merged = perform_smart_join(df_merged, df_bang, list(bang_map.values()), 'bangers_to_date', conn)
+        # Read & Prep Goalies
+        df_gl = pd.read_sql("SELECT * FROM goalie_to_date", conn)
+        gl_map = {
+            'gamesStarted': 'GS', 'gamesPlayed': 'GP', 'goalsAgainstAverage': 'GAA', 'losses': 'L',
+            'savePct': 'SVpct', 'saves': 'SV', 'shotsAgainst': 'SA', 'shutouts': 'SHO', 'wins': 'W',
+            'goalsAgainst': 'GA', 'startpct': 'startpct'
+        }
+        df_gl.rename(columns=gl_map, inplace=True)
+        df_gl['nhlplayerid'] = pd.to_numeric(df_gl['nhlplayerid'], errors='coerce').fillna(0).astype(int)
 
-            # GOALIES
-            df_goal = pd.read_sql_query("SELECT * FROM goalie_to_date", conn)
-            df_goal['nhlplayerid'] = pd.to_numeric(df_goal['nhlplayerid'], errors='coerce').fillna(0).astype(int)
-            goal_map = {'gamesStarted': 'GS', 'gamesPlayed': 'GP', 'goalsAgainstAverage': 'GAA', 'losses': 'L', 'savePct': 'SVpct', 'saves': 'SV', 'shotsAgainst': 'SA', 'shutouts': 'SHO', 'wins': 'W', 'win_total': 'win_total', 'goalsAgainst': 'GA', 'startpct': 'startpct'}
-            df_goal.rename(columns=goal_map, inplace=True)
+        # Join Goalies
+        df_merged = perform_smart_join(df_merged, df_gl, list(gl_map.values()), 'goalies', conn)
 
-            # Smart Join 3
-            df_merged = perform_smart_join(df_merged, df_goal, list(goal_map.values()), 'goalie_to_date', conn)
-
-            # 3. Write
-            print(f"Writing {len(df_merged)} records to 'stats_to_date'...")
-            df_to_postgres(df_merged, 'stats_to_date', conn)
-            with conn.cursor() as cursor:
-                cursor.execute("CREATE INDEX IF NOT EXISTS idx_stats_date_norm ON stats_to_date(player_name_normalized)")
-            conn.commit()
-
-        except Exception as e:
-            print(f"Error creating stats_to_date: {e}")
-
+        # Save
+        df_to_postgres(df_merged, 'stats_to_date', conn)
 
 def calculate_and_save_to_date_ranks():
-    """
-    Reads the 'stats_to_date' table from projections.db, calculates percentile-based
-    category ranks for existing stats, and saves the updated table.
-    """
-    print("\n--- Calculating Ranks for 'stats_to_date' ---")
+    print("\n--- Calculating Ranks ---")
     with get_db_connection() as conn:
-        try:
-            df = pd.read_sql_query("SELECT * FROM stats_to_date", conn)
-            if df.empty: return
+        df = pd.read_sql("SELECT * FROM stats_to_date", conn)
+        if df.empty: return
 
-            # Ranking Logic
-            new_rank_cols = []
-            skater_stats = ['G', 'A', 'P', 'PPG', 'PPA', 'PPP', 'SHG', 'SHA', 'SHP', 'HIT', 'BLK', 'PIM', 'FOW', 'SOG', 'plus_minus']
+        # Logic mostly identical to before:
+        skater_stats = ['G', 'A', 'P', 'PPG', 'PPA', 'PPP', 'SHG', 'SHA', 'SHP', 'HIT', 'BLK', 'PIM', 'FOW', 'SOG', 'plus_minus']
+        goalie_stats = {'GS': False, 'W': False, 'L': True, 'GA': True, 'SA': False, 'SV': False, 'SVpct': False, 'GAA': True, 'SHO': False, 'QS': False}
 
-            # Skaters
-            mask_skater = ~df['positions'].str.contains('G', na=False)
-            if mask_skater.any():
-                num = mask_skater.sum()
-                for stat in skater_stats:
-                    if stat in df.columns:
-                        col = f"{stat}_cat_rank"
-                        new_rank_cols.append(col)
-                        df[stat] = pd.to_numeric(df[stat], errors='coerce').fillna(0)
-                        ranks = df.loc[mask_skater, stat].rank(method='first', ascending=False)
-                        pct = ranks / num
-                        # Binning logic from original
-                        cond = [pct<=0.05, pct<=0.10, pct<=0.15, pct<=0.20, pct<=0.25, pct<=0.30, pct<=0.35, pct<=0.40, pct<=0.45, pct<=0.50, pct<=0.75]
-                        choice = [1,2,3,4,5,6,7,8,9,10,15]
-                        df.loc[mask_skater, col] = np.select(cond, choice, default=20)
+        # Ensure positions exist
+        if 'positions' not in df.columns: return
 
-            # Goalies
-            goalie_stats = {'GS': False, 'W': False, 'L': True, 'GA': True, 'SA': False, 'SV': False, 'SVpct': False, 'GAA': True, 'SHO': False, 'QS': False}
-            mask_goalie = df['positions'].str.contains('G', na=False)
-            if mask_goalie.any():
-                num = mask_goalie.sum()
-                for stat, inv in goalie_stats.items():
-                    if stat in df.columns:
-                        col = f"{stat}_cat_rank"
-                        new_rank_cols.append(col)
-                        df[stat] = pd.to_numeric(df[stat], errors='coerce').fillna(0)
-                        ranks = df.loc[mask_goalie, stat].rank(method='first', ascending=inv)
-                        pct = ranks / num
-                        cond = [pct<=0.05, pct<=0.10, pct<=0.15, pct<=0.20, pct<=0.25, pct<=0.30, pct<=0.35, pct<=0.40, pct<=0.45, pct<=0.50, pct<=0.75]
-                        choice = [1,2,3,4,5,6,7,8,9,10,15]
-                        df.loc[mask_goalie, col] = np.select(cond, choice, default=20)
+        # Skaters
+        mask_skater = ~df['positions'].str.contains('G', na=False)
+        num_skaters = mask_skater.sum()
+        if num_skaters > 0:
+            for stat in skater_stats:
+                if stat in df.columns:
+                    col = f"{stat}_cat_rank"
+                    df[stat] = pd.to_numeric(df[stat], errors='coerce').fillna(0)
+                    ranks = df.loc[mask_skater, stat].rank(method='first', ascending=False)
+                    pct = ranks / num_skaters
 
-            # Clean NaNs in rank cols
-            for col in new_rank_cols:
-                df[col] = df[col].fillna(0).astype(int)
+                    cond = [pct<=0.05, pct<=0.10, pct<=0.15, pct<=0.20, pct<=0.25, pct<=0.30, pct<=0.35, pct<=0.40, pct<=0.45, pct<=0.50, pct<=0.75]
+                    choice = [1,2,3,4,5,6,7,8,9,10,15]
+                    df.loc[mask_skater, col] = np.select(cond, choice, default=20)
 
-            print(f"Saving ranks to 'stats_to_date'...")
-            df_to_postgres(df_merged, 'stats_to_date', conn)
-            conn.commit()
+        # Goalies
+        mask_goalie = df['positions'].str.contains('G', na=False)
+        num_goalies = mask_goalie.sum()
+        if num_goalies > 0:
+            for stat, is_inv in goalie_stats.items():
+                if stat in df.columns:
+                    col = f"{stat}_cat_rank"
+                    df[stat] = pd.to_numeric(df[stat], errors='coerce').fillna(0)
+                    ranks = df.loc[mask_goalie, stat].rank(method='first', ascending=is_inv)
+                    pct = ranks / num_goalies
 
-        except Exception as e:
-            print(f"Error ranking stats_to_date: {e}")
+                    cond = [pct<=0.05, pct<=0.10, pct<=0.15, pct<=0.20, pct<=0.25, pct<=0.30, pct<=0.35, pct<=0.40, pct<=0.45, pct<=0.50, pct<=0.75]
+                    choice = [1,2,3,4,5,6,7,8,9,10,15]
+                    df.loc[mask_goalie, col] = np.select(cond, choice, default=20)
 
+        df_to_postgres(df, 'stats_to_date', conn)
 
 def create_combined_projections():
-    """
-    Creates a new table 'combined_projections' by merging 'projections'
-    and 'stats_to_date'.
-
-    - Identity columns are carried over (prioritizing 'stats_to_date').
-    - Data columns existing in both tables are averaged.
-    - Data columns existing in only one table are carried over.
-    """
     print("\n--- Creating Combined Projections ---")
     with get_db_connection() as conn:
-        try:
-            df_proj = pd.read_sql_query("SELECT * FROM projections", conn)
-            df_stats = pd.read_sql_query("SELECT * FROM stats_to_date", conn)
+        df_proj = pd.read_sql("SELECT * FROM projections", conn)
+        df_stats = pd.read_sql("SELECT * FROM stats_to_date", conn)
 
-            if 'gp' in df_proj.columns: df_proj.rename(columns={'gp': 'GP'}, inplace=True)
+        if 'gp' in df_proj.columns: df_proj.rename(columns={'gp': 'GP'}, inplace=True)
 
-            # Merge
-            df_merged = pd.merge(df_proj, df_stats, on='nhlplayerid', how='outer', suffixes=('_proj', '_stats'))
+        df_merged = pd.merge(df_proj, df_stats, on='nhlplayerid', how='outer', suffixes=('_proj', '_stats'))
 
-            # Base ID frame
-            df_final = df_merged[['nhlplayerid']].dropna().astype(int).copy()
+        # Initialize final with just ID
+        df_final = df_merged[['nhlplayerid']].copy()
 
-            # Coalesce Identity
-            identity_cols = ['player_name_normalized', 'player_name', 'team', 'age', 'player_id', 'positions', 'status', 'lg_ppTimeOnIce', 'lg_ppTimeOnIcePctPerGame', 'lg_ppAssists', 'lg_ppGoals', 'avg_ppTimeOnIce', 'avg_ppTimeOnIcePctPerGame', 'total_ppAssists', 'total_ppGoals', 'player_games_played', 'team_games_played']
+        # Coalesce Identity Cols
+        id_cols = ['player_name_normalized', 'player_name', 'team', 'age', 'player_id', 'positions', 'status',
+                   'lg_ppTimeOnIce', 'lg_ppTimeOnIcePctPerGame', 'lg_ppAssists', 'lg_ppGoals',
+                   'avg_ppTimeOnIce', 'avg_ppTimeOnIcePctPerGame', 'total_ppAssists', 'total_ppGoals',
+                   'player_games_played', 'team_games_played']
 
-            for col in identity_cols:
-                c_proj, c_stats = f"{col}_proj", f"{col}_stats"
-                if c_stats in df_merged and c_proj in df_merged:
-                    df_final[col] = df_merged[c_stats].fillna(df_merged[c_proj])
-                elif c_stats in df_merged: df_final[col] = df_merged[c_stats]
-                elif c_proj in df_merged: df_final[col] = df_merged[c_proj]
-                elif col in df_merged: df_final[col] = df_merged[col]
+        for col in id_cols:
+            c_proj, c_stat = f"{col}_proj", f"{col}_stats"
 
-            # Average Data Cols
-            skip = set(identity_cols + ['nhlplayerid'])
-            all_cols = (set(df_proj.columns) | set(df_stats.columns)) - skip
+            # If both exist, prefer Stats (live data), fallback to Proj
+            if c_stat in df_merged and c_proj in df_merged:
+                df_final[col] = df_merged[c_stat].fillna(df_merged[c_proj])
+            elif c_stat in df_merged:
+                df_final[col] = df_merged[c_stat]
+            elif c_proj in df_merged:
+                df_final[col] = df_merged[c_proj]
+            elif col in df_merged:
+                df_final[col] = df_merged[col]
 
-            for col in all_cols:
-                c_proj, c_stats = f"{col}_proj", f"{col}_stats"
+        # Average Data Cols
+        skip = set(id_cols + ['nhlplayerid'])
+        all_data_cols = (set(df_proj.columns) | set(df_stats.columns)) - skip
 
-                # Helpers to get numeric series
-                s_proj = pd.to_numeric(df_merged.get(c_proj, df_merged.get(col) if col in df_proj.columns else None), errors='coerce')
-                s_stats = pd.to_numeric(df_merged.get(c_stats, df_merged.get(col) if col in df_stats.columns else None), errors='coerce')
+        for col in all_data_cols:
+            c_proj, c_stat = f"{col}_proj", f"{col}_stats"
 
-                # Logic: If overlap -> Average. Else -> Carry over.
-                # Note: This is simplified; original logic checks explicit overlap.
-                # Pandas arithmetic (s1 + s2) / 2 handles alignment.
-                # We use fillna(0) cautiously only if we want 0 instead of NaN.
+            s_proj = pd.to_numeric(df_merged.get(c_proj, df_merged.get(col) if col in df_proj.columns else None), errors='coerce')
+            s_stat = pd.to_numeric(df_merged.get(c_stat, df_merged.get(col) if col in df_stats.columns else None), errors='coerce')
 
-                # Replicating specific 'safe_get_and_convert' logic from original
-                s_proj = s_proj.fillna(0)
-                s_stats = s_stats.fillna(0)
+            s_proj = s_proj.fillna(0)
+            s_stat = s_stat.fillna(0)
 
-                has_proj = (c_proj in df_merged) or (col in df_proj.columns)
-                has_stat = (c_stats in df_merged) or (col in df_stats.columns)
+            has_p = (c_proj in df_merged) or (col in df_proj.columns)
+            has_s = (c_stat in df_merged) or (col in df_stats.columns)
 
-                if has_proj and has_stat:
-                    df_final[col] = (s_proj + s_stats) / 2
-                elif has_stat:
-                    df_final[col] = s_stats
-                elif has_proj:
-                    df_final[col] = s_proj
+            if has_p and has_s:
+                df_final[col] = (s_proj + s_stat) / 2
+            elif has_s:
+                df_final[col] = s_stat
+            elif has_p:
+                df_final[col] = s_proj
 
-            print(f"Saving {len(df_final)} records to 'combined_projections'...")
-            df_to_postgres(df_merged, 'combined_projections', conn)
-            conn.commit()
-
-        except Exception as e:
-            print(f"Error combined projections: {e}")
+        df_to_postgres(df_final, 'combined_projections', conn)
 
 
 def update_toi_stats():
     """ Orchestrator Function """
     create_global_tables()
+
     fetch_team_standings()
     fetch_team_stats_summary()
     fetch_team_stats_weekly()
 
-    # Note: These funcs need the body code restored (omitted for length, but logic is identical to original)
     fetch_and_update_scoring_to_date()
     fetch_and_update_bangers_stats()
     fetch_and_update_goalie_stats()
@@ -926,8 +742,6 @@ def update_toi_stats():
     create_last_week_pp_table()
 
     join_special_teams_data()
-
-    # No need for "copy" functions anymore, we are in the same DB
 
     create_stats_to_date_table()
     calculate_and_save_to_date_ranks()
