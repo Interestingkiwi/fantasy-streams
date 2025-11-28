@@ -131,8 +131,8 @@ def create_global_tables():
             # Ensure base tables exist
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS powerplay_stats (
-                    date_ TEXT, nhlplayerid INTEGER, "skaterFullName" TEXT, "teamAbbrevs" TEXT,
-                    "ppTimeOnIce" INTEGER, "ppTimeOnIcePctPerGame" REAL, "ppAssists" INTEGER, "ppGoals" INTEGER,
+                    date_ TEXT, nhlplayerid INTEGER, skaterFullName TEXT, teamAbbrevs TEXT,
+                    ppTimeOnIce INTEGER, ppTimeOnIcePctPerGame REAL, ppAssists INTEGER, ppGoals INTEGER,
                     PRIMARY KEY (date_, nhlplayerid)
                 );
                 CREATE TABLE IF NOT EXISTS table_metadata (id INTEGER PRIMARY KEY DEFAULT 1, start_date TEXT, end_date TEXT);
@@ -234,15 +234,14 @@ def fetch_daily_pp_stats():
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
                 vals = [tuple(x) for x in df[['date_', 'nhlplayerid', 'skaterFullName', 'teamAbbrevs', 'ppTimeOnIce', 'ppTimeOnIcePctPerGame', 'ppAssists', 'ppGoals']].to_numpy()]
-                # Use Quoted Columns in INSERT
                 cursor.executemany("""
-                    INSERT INTO powerplay_stats (date_, nhlplayerid, "skaterFullName", "teamAbbrevs", "ppTimeOnIce", "ppTimeOnIcePctPerGame", "ppAssists", "ppGoals")
+                    INSERT INTO powerplay_stats (date_, nhlplayerid, skaterFullName, teamAbbrevs, ppTimeOnIce, ppTimeOnIcePctPerGame, ppAssists, ppGoals)
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (date_, nhlplayerid) DO UPDATE SET
-                        "ppTimeOnIce" = EXCLUDED."ppTimeOnIce",
-                        "ppTimeOnIcePctPerGame" = EXCLUDED."ppTimeOnIcePctPerGame",
-                        "ppAssists" = EXCLUDED."ppAssists",
-                        "ppGoals" = EXCLUDED."ppGoals"
+                        ppTimeOnIce = EXCLUDED.ppTimeOnIce,
+                        ppTimeOnIcePctPerGame = EXCLUDED.ppTimeOnIcePctPerGame,
+                        ppAssists = EXCLUDED.ppAssists,
+                        ppGoals = EXCLUDED.ppGoals
                 """, vals)
                 conn.commit()
 
@@ -256,20 +255,20 @@ def create_last_game_pp_table():
     with get_db_connection() as conn:
         with conn.cursor() as cursor:
             cursor.execute("DROP TABLE IF EXISTS last_game_pp")
-            # FIX: Quote Aliases
+            # FIX: Removed quotes from source columns (teamAbbrevs), kept quotes on Aliases
             cursor.execute("""
                 CREATE TABLE last_game_pp AS
                 SELECT
                     t1.nhlplayerid,
-                    t1."ppTimeOnIce" as "lg_ppTimeOnIce",
-                    t1."ppTimeOnIcePctPerGame" as "lg_ppTimeOnIcePctPerGame",
-                    t1."ppAssists" as "lg_ppAssists",
-                    t1."ppGoals" as "lg_ppGoals"
+                    t1.ppTimeOnIce as "lg_ppTimeOnIce",
+                    t1.ppTimeOnIcePctPerGame as "lg_ppTimeOnIcePctPerGame",
+                    t1.ppAssists as "lg_ppAssists",
+                    t1.ppGoals as "lg_ppGoals"
                 FROM powerplay_stats t1
                 INNER JOIN (
-                    SELECT "teamAbbrevs", MAX(date_) as max_date
-                    FROM powerplay_stats GROUP BY "teamAbbrevs"
-                ) t2 ON t1."teamAbbrevs" = t2."teamAbbrevs" AND t1.date_ = t2.max_date
+                    SELECT teamAbbrevs, MAX(date_) as max_date
+                    FROM powerplay_stats GROUP BY teamAbbrevs
+                ) t2 ON t1.teamAbbrevs = t2.teamAbbrevs AND t1.date_ = t2.max_date
             """)
             conn.commit()
 
@@ -278,23 +277,23 @@ def create_last_week_pp_table():
     with get_db_connection() as conn:
         with conn.cursor() as cursor:
             cursor.execute("DROP TABLE IF EXISTS last_week_pp")
-            # FIX: Quote Aliases
+            # FIX: Removed quotes from source columns (teamAbbrevs, skaterFullName, etc)
             cursor.execute("""
                 CREATE TABLE last_week_pp AS
                 WITH team_game_counts AS (
-                    SELECT "teamAbbrevs", COUNT(DISTINCT date_) as team_games_played
-                    FROM powerplay_stats GROUP BY "teamAbbrevs"
+                    SELECT teamAbbrevs, COUNT(DISTINCT date_) as team_games_played
+                    FROM powerplay_stats GROUP BY teamAbbrevs
                 ),
                 player_sums AS (
-                    SELECT nhlplayerid, "teamAbbrevs", MAX("skaterFullName") as "skaterFullName",
-                    SUM("ppTimeOnIce") as total_ppTimeOnIce,
-                    SUM("ppTimeOnIcePctPerGame") as total_ppTimeOnIcePctPerGame,
-                    SUM("ppAssists") as total_ppAssists,
-                    SUM("ppGoals") as total_ppGoals,
+                    SELECT nhlplayerid, teamAbbrevs, MAX(skaterFullName) as "skaterFullName",
+                    SUM(ppTimeOnIce) as total_ppTimeOnIce,
+                    SUM(ppTimeOnIcePctPerGame) as total_ppTimeOnIcePctPerGame,
+                    SUM(ppAssists) as total_ppAssists,
+                    SUM(ppGoals) as total_ppGoals,
                     COUNT(date_) as player_games_played
-                    FROM powerplay_stats GROUP BY nhlplayerid, "teamAbbrevs"
+                    FROM powerplay_stats GROUP BY nhlplayerid, teamAbbrevs
                 )
-                SELECT ps.nhlplayerid, ps."skaterFullName", ps."teamAbbrevs",
+                SELECT ps.nhlplayerid, ps."skaterFullName", ps.teamAbbrevs,
                     CAST(ps.total_ppTimeOnIce AS REAL) / tgc.team_games_played AS "avg_ppTimeOnIce",
                     CAST(ps.total_ppTimeOnIcePctPerGame AS REAL) / tgc.team_games_played AS "avg_ppTimeOnIcePctPerGame",
                     ps.total_ppAssists as "total_ppAssists",
@@ -302,7 +301,7 @@ def create_last_week_pp_table():
                     ps.player_games_played as "player_games_played",
                     tgc.team_games_played as "team_games_played"
                 FROM player_sums ps
-                JOIN team_game_counts tgc ON ps."teamAbbrevs" = tgc."teamAbbrevs"
+                JOIN team_game_counts tgc ON ps.teamAbbrevs = tgc.teamAbbrevs
             """)
             conn.commit()
 
@@ -463,6 +462,15 @@ def fetch_and_update_goalie_stats():
             df.drop_duplicates(subset=['playerId'], inplace=True)
             if 'goalieFullName' in df.columns:
                 df['player_name_normalized'] = df['goalieFullName'].apply(normalize_name)
+
+            # --- FIX: Convert stats to numeric and calculate Per Game ---
+            numeric_cols = ['gamesPlayed', 'wins', 'losses', 'saves', 'shotsAgainst', 'goalsAgainst', 'shutouts']
+            for col in numeric_cols:
+                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+
+            # Calculate Per Game (Totals -> Averages)
+            for col in ['wins', 'losses', 'saves', 'shotsAgainst', 'goalsAgainst', 'shutouts']:
+                df[col] = np.where(df['gamesPlayed'] > 0, df[col] / df['gamesPlayed'], 0)
 
             cols = {
                 'playerId': 'nhlplayerid', 'goalieFullName': 'goalieFullName', 'teamAbbrevs': 'teamAbbrevs',
@@ -663,11 +671,14 @@ def calculate_and_save_to_date_ranks():
         df = read_sql_postgres("SELECT * FROM stats_to_date", conn)
         if df.empty: return
 
+        # Logic mostly identical to before:
         skater_stats = ['G', 'A', 'P', 'PPG', 'PPA', 'PPP', 'SHG', 'SHA', 'SHP', 'HIT', 'BLK', 'PIM', 'FOW', 'SOG', 'plus_minus']
         goalie_stats = {'GS': False, 'W': False, 'L': True, 'GA': True, 'SA': False, 'SV': False, 'SVpct': False, 'GAA': True, 'SHO': False, 'QS': False}
 
+        # Ensure positions exist
         if 'positions' not in df.columns: return
 
+        # Skaters
         mask_skater = ~df['positions'].str.contains('G', na=False)
         num_skaters = mask_skater.sum()
         if num_skaters > 0:
@@ -677,10 +688,12 @@ def calculate_and_save_to_date_ranks():
                     df[stat] = pd.to_numeric(df[stat], errors='coerce').fillna(0)
                     ranks = df.loc[mask_skater, stat].rank(method='first', ascending=False)
                     pct = ranks / num_skaters
+
                     cond = [pct<=0.05, pct<=0.10, pct<=0.15, pct<=0.20, pct<=0.25, pct<=0.30, pct<=0.35, pct<=0.40, pct<=0.45, pct<=0.50, pct<=0.75]
                     choice = [1,2,3,4,5,6,7,8,9,10,15]
                     df.loc[mask_skater, col] = np.select(cond, choice, default=20)
 
+        # Goalies
         mask_goalie = df['positions'].str.contains('G', na=False)
         num_goalies = mask_goalie.sum()
         if num_goalies > 0:
@@ -690,6 +703,7 @@ def calculate_and_save_to_date_ranks():
                     df[stat] = pd.to_numeric(df[stat], errors='coerce').fillna(0)
                     ranks = df.loc[mask_goalie, stat].rank(method='first', ascending=is_inv)
                     pct = ranks / num_goalies
+
                     cond = [pct<=0.05, pct<=0.10, pct<=0.15, pct<=0.20, pct<=0.25, pct<=0.30, pct<=0.35, pct<=0.40, pct<=0.45, pct<=0.50, pct<=0.75]
                     choice = [1,2,3,4,5,6,7,8,9,10,15]
                     df.loc[mask_goalie, col] = np.select(cond, choice, default=20)
@@ -742,18 +756,30 @@ def create_combined_projections():
         for col in all_data_cols:
             c_proj, c_stat = f"{col}_proj", f"{col}_stats"
 
-            # FIX: Force Series creation even if column missing
-            s_proj = pd.Series(0, index=df_merged.index)
-            if c_proj in df_merged: s_proj = pd.to_numeric(df_merged[c_proj], errors='coerce')
-            elif col in df_proj.columns and col in df_merged: s_proj = pd.to_numeric(df_merged[col], errors='coerce')
+            # Use helper to get numeric series, forced to 0 if missing
+            # This ensures they are Series, not scalars.
 
-            s_stat = pd.Series(0, index=df_merged.index)
-            if c_stat in df_merged: s_stat = pd.to_numeric(df_merged[c_stat], errors='coerce')
-            elif col in df_stats.columns and col in df_merged: s_stat = pd.to_numeric(df_merged[col], errors='coerce')
+            # 1. Get Projections Series
+            if c_proj in df_merged:
+                s_proj = pd.to_numeric(df_merged[c_proj], errors='coerce')
+            elif col in df_proj.columns and col in df_merged:
+                s_proj = pd.to_numeric(df_merged[col], errors='coerce')
+            else:
+                s_proj = pd.Series(0.0, index=df_merged.index)
 
+            # 2. Get Stats Series
+            if c_stat in df_merged:
+                s_stat = pd.to_numeric(df_merged[c_stat], errors='coerce')
+            elif col in df_stats.columns and col in df_merged:
+                s_stat = pd.to_numeric(df_merged[col], errors='coerce')
+            else:
+                s_stat = pd.Series(0.0, index=df_merged.index)
+
+            # 3. Fill NaNs
             s_proj = s_proj.fillna(0)
             s_stat = s_stat.fillna(0)
 
+            # 4. Merge Logic
             has_p = (c_proj in df_merged) or (col in df_proj.columns)
             has_s = (c_stat in df_merged) or (col in df_stats.columns)
 
