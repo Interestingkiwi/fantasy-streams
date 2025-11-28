@@ -484,12 +484,6 @@ class DBFinalizer:
 def _create_tables(cursor, logger):
     logger.info("Creating database tables if they don't exist...")
 
-    # --- CRITICAL FIX: Drop Config Tables to enforce correct schema constraints ---
-    # This fixes the 'no unique or exclusion constraint' error.
-    # These are safe to drop because they are repopulated from Yahoo API immediately after.
-    tables_to_reset = ['lineup_settings', 'league_info', 'scoring', 'weeks', 'matchups']
-    for table in tables_to_reset:
-        cursor.execute(f"DROP TABLE IF EXISTS {table} CASCADE")
     # ------------------------------------------------------------------------------
 
     # Tables with league_id in PK
