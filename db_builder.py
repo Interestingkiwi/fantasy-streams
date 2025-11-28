@@ -523,7 +523,7 @@ def _create_tables(cursor, logger):
             position_id SERIAL PRIMARY KEY,
             position TEXT NOT NULL,
             position_count INTEGER NOT NULL,
-            UNIQUE (league_id, position)
+            PRIMARY KEY (league_id, position)
         )
     ''')
     cursor.execute('''
