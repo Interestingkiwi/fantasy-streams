@@ -9,9 +9,12 @@ import os
 import re
 import csv
 import unicodedata
-import requests # <--- Added
-import time     # <--- Added
-from datetime import date, timedelta # <--- Added timedelta
+import requests
+import time
+import json  # <--- Added back
+from datetime import date, timedelta
+from collections import defaultdict, Counter  # <--- Added back
+import numpy as np
 
 # Add parent dir to path so we can import database
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -27,7 +30,6 @@ PROJ2_GOALIE_FILE = os.path.join(SEED_DATA_DIR, 'proj2g.csv')
 
 START_DATE = date(2025, 10, 7)
 END_DATE = date(2026, 4, 17)
-NHL_TEAM_COUNT = 32
 
 TEAM_TRICODE_MAP = {
     "TB": "TBL", "NJ": "NJD", "SJ": "SJS", "LA": "LAK", "T.B": "TBL",
@@ -228,7 +230,13 @@ def process_separate_files_to_table(cursor, skater_csv_file, goalie_csv_file, ta
             stat_indices = [i for i, h in enumerate(header_lower) if h not in stats_exclude and h.strip() != '']
 
             for row in reader:
-                if not row or (pos_idx < len(row) and 'G' in row[pos_idx]): continue
+                # Check for 'positions' AND 'position' to be safe
+                pos_idx = -1
+                if 'positions' in header_lower: pos_idx = header_lower.index('positions')
+                elif 'position' in header_lower: pos_idx = header_lower.index('position')
+
+                if not row or (pos_idx != -1 and pos_idx < len(row) and 'G' in row[pos_idx]): continue
+
                 calculate_per_game_stats(row, gp_idx, stat_indices)
                 player_name = row[p_name_idx]
                 if not player_name: continue
@@ -284,7 +292,7 @@ def process_separate_files_to_table(cursor, skater_csv_file, goalie_csv_file, ta
     final_headers = [k for k in list(all_keys) if k and k.strip() != ""]
     if 'player_name_normalized' in final_headers: final_headers.remove('player_name_normalized')
 
-    # --- FIX: Force Metadata Columns to TEXT to avoid type errors ---
+    # FIX: Force Metadata Columns to TEXT to avoid type errors
     text_cols = ['player_name', 'positions', 'position', 'team', 'playerid', 'fantasy_team', 'salary', 'age', 'rank', 'gp_org', 'gp', 'total_toi']
 
     cols_def = []
@@ -307,6 +315,7 @@ def process_separate_files_to_table(cursor, skater_csv_file, goalie_csv_file, ta
 
     rows_to_insert = []
     for norm, data in player_data.items():
+        # FIX: Convert empty strings to None for ALL columns
         clean_row = []
         for h in insert_headers:
             val = data.get(h, None)
