@@ -30,6 +30,7 @@ PROJ2_GOALIE_FILE = os.path.join(SEED_DATA_DIR, 'proj2g.csv')
 
 START_DATE = date(2025, 10, 7)
 END_DATE = date(2026, 4, 17)
+NHL_TEAM_COUNT = 32
 
 TEAM_TRICODE_MAP = {
     "TB": "TBL", "NJ": "NJD", "SJ": "SJS", "LA": "LAK", "T.B": "TBL",
