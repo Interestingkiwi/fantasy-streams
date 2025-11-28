@@ -304,15 +304,13 @@ app.register_blueprint(api_v1_blueprint)
 def get_stat_source_table(sourcing_key):
     """
     Returns the correct, safe table name based on the sourcing key.
-    Defaults to 'joined_player_stats' for safety.
     """
     if sourcing_key == 'todate':
-        return 'joined_player_stats_real'
+        return 'stats_to_date'          # Changed from joined_player_stats_real
     elif sourcing_key == 'combined':
-        return 'joined_player_stats_combined'
+        return 'combined_projections'   # Changed from joined_player_stats_combined
     else:
-        # Default to 'projected' (the original table)
-        return 'joined_player_stats'
+        return 'projections'
 
 
 def get_db_connection_for_league(league_id):
@@ -3541,7 +3539,7 @@ def get_free_agent_data():
                 request_data = request.get_json(silent=True) or {}
                 sourcing = request_data.get('sourcing', 'projected')
 
-                # 1. Get Categories (League Specific)
+                # 1. Get Categories
                 cursor.execute("SELECT category, scoring_group FROM scoring WHERE league_id = %s ORDER BY scoring_group DESC, stat_id", (league_id,))
                 all_categories_raw = cursor.fetchall()
 
@@ -3555,8 +3553,11 @@ def get_free_agent_data():
 
                 unchecked_categories = [cat for cat in all_scoring_categories if cat not in checked_categories]
                 all_cat_rank_columns = [f"{cat}_cat_rank" for cat in all_scoring_categories]
-                raw_stat_columns = [f'"{cat}"' for cat in all_scoring_categories]
-                all_cols = list(set(all_cat_rank_columns + raw_stat_columns))
+
+                # --- FIX: DO NOT QUOTE HERE (Helper handles it) ---
+                # Was: [f'"{cat}"' ...] -> New: [cat ...]
+                raw_stat_columns = [cat for cat in all_scoring_categories]
+                # --------------------------------------------------
 
                 # 2. Determine Target Week
                 selected_week_str = request_data.get('selected_week')
@@ -3568,20 +3569,16 @@ def get_free_agent_data():
                         cursor.execute("SELECT 1 FROM weeks WHERE league_id = %s AND week_num = %s", (league_id, target_week))
                         if not cursor.fetchone():
                             target_week = None
-                            logging.warn(f"Selected week '{selected_week_str}' not found. Falling back.")
                     except ValueError:
-                        logging.warn(f"Invalid week '{selected_week_str}'. Falling back.")
+                        pass
 
                 if target_week is None:
                     today = date.today().isoformat()
                     cursor.execute("SELECT week_num FROM weeks WHERE league_id = %s AND start_date <= %s AND end_date >= %s", (league_id, today, today))
                     current_week_row = cursor.fetchone()
                     target_week = current_week_row['week_num'] if current_week_row else 1
-                    logging.info(f"Using default week: {target_week}")
-                else:
-                    logging.info(f"Using selected week: {target_week}")
 
-                # 3. Team Stats Map (Global Tables)
+                # 3. Team Stats Map
                 team_stats_map = {}
                 cursor.execute("SELECT * FROM team_stats_summary")
                 for row in cursor.fetchall():
@@ -3593,7 +3590,7 @@ def get_free_agent_data():
                     if team_tricode in team_stats_map:
                         team_stats_map[team_tricode].update(dict(row))
 
-                # 4. Fetch Available Players (League Specific Filters)
+                # 4. Fetch Available Players
                 cursor.execute("SELECT player_id FROM waiver_players WHERE league_id = %s", (league_id,))
                 waiver_player_ids = [row['player_id'] for row in cursor.fetchall()]
                 waiver_players = _get_ranked_players(cursor, waiver_player_ids, all_cat_rank_columns, raw_stat_columns, target_week, team_stats_map, league_id, sourcing)
@@ -3624,7 +3621,6 @@ def get_free_agent_data():
                 simulated_moves = request_data.get('simulated_moves', [])
 
                 if selected_team_name:
-                    # League Specific Team Lookup
                     cursor.execute("SELECT team_id FROM teams WHERE league_id = %s AND name = %s", (league_id, selected_team_name))
                     team_row = cursor.fetchone()
 
@@ -3644,11 +3640,9 @@ def get_free_agent_data():
                                 if day >= today_obj:
                                     days_in_week_data.append(day.isoformat())
 
-                            # League Specific Settings
                             cursor.execute("SELECT position, position_count FROM lineup_settings WHERE league_id = %s AND position NOT IN ('BN', 'IR', 'IR+')", (league_id,))
                             lineup_settings = {row['position']: row['position_count'] for row in cursor.fetchall()}
 
-                            # Pass League ID
                             team_ranked_roster = _get_ranked_roster_for_week(cursor, team_id, target_week, team_stats_map, league_id, sourcing)
 
                             unused_roster_spots = _calculate_unused_spots(days_in_week, team_ranked_roster, lineup_settings, simulated_moves)
@@ -3669,7 +3663,7 @@ def get_free_agent_data():
     except Exception as e:
         logging.error(f"Error fetching free agent data: {e}", exc_info=True)
         return jsonify({'error': f"An error occurred: {e}"}), 500
-
+        
 
 def _get_team_goalie_stats(cursor, team_id, start_date_str, end_date_str, league_id):
     # 1. Get Aggregated Live Stats
