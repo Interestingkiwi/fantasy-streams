@@ -916,15 +916,15 @@ def _create_rosters_tall(cursor, conn, league_id, logger):
             );
         """)
         cursor.execute("DELETE FROM rosters_tall WHERE league_id = %s", (league_id,))
-
-        cols = ", ".join([f"p{i}" for i in range(1, 30)])
+        cols = ", ".join([f"(p{i})" for i in range(1, 30)])
         sql = f"""
             INSERT INTO rosters_tall (league_id, team_id, player_id)
             SELECT r.league_id, r.team_id, u.player_id
             FROM rosters r
-            CROSS JOIN LATERAL (VALUES ({cols})) AS u(player_id)
+            CROSS JOIN LATERAL (VALUES {cols}) AS u(player_id)
             WHERE r.league_id = %s AND u.player_id IS NOT NULL;
         """
+
         cursor.execute(sql, (league_id,))
         conn.commit()
     except Exception as e:
