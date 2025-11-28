@@ -84,7 +84,7 @@ def run_task(build_id, log_file_path, options, data):
 
     try:
         if not data.get('dev_mode'):
-            # --- FIX: FETCH & REFRESH TOKEN FROM DB FIRST ---
+            # --- STEP 1: FETCH CREDENTIALS FROM DB ---
             guid = data['token'].get('xoauth_yahoo_guid')
 
             db_creds = None
@@ -117,12 +117,12 @@ def run_task(build_id, log_file_path, options, data):
                     "xoauth_yahoo_guid": data['token'].get('xoauth_yahoo_guid')
                 }
 
-            # 2. Perform Refresh
+            # --- STEP 2: REFRESH TOKEN ---
             temp_dir = os.path.join(tempfile.gettempdir(), 'temp_creds')
             os.makedirs(temp_dir, exist_ok=True)
             temp_file_path = os.path.join(temp_dir, f"thread_{build_id}.json")
 
-            # Force expiry to ensure refresh happens
+            # CRITICAL FIX: Force expiry so it ALWAYS refreshes
             creds['token_time'] = time.time() - 4000
 
             with open(temp_file_path, 'w') as f:
@@ -130,23 +130,20 @@ def run_task(build_id, log_file_path, options, data):
 
             logger.info("Validating/Refreshing token...")
             sc = OAuth2(None, None, from_file=temp_file_path)
-
-            # Force refresh check
             sc.refresh_access_token()
 
             if not sc.token_is_valid():
                  raise Exception("Token refresh failed. User may need to re-authenticate.")
 
-            # 3. Read Fresh Creds & Update DB
+            # --- STEP 3: READ & FIX TOKEN ---
             with open(temp_file_path, 'r') as f:
                 new_creds = json.load(f)
 
-            # --- FIX: Inject GUID so yfpy doesn't crash ---
+            # CRITICAL FIX: Inject 'guid' key for yfpy
             if 'guid' not in new_creds:
                 new_creds['guid'] = new_creds.get('xoauth_yahoo_guid') or guid
-            # ----------------------------------------------
 
-            # Save back to DB
+            # --- STEP 4: SAVE TO DB ---
             with get_db_connection() as conn:
                 with conn.cursor() as cursor:
                     cursor.execute("""
@@ -166,7 +163,7 @@ def run_task(build_id, log_file_path, options, data):
                 conn.commit()
             logger.info("Token refreshed and saved to DB.")
 
-            # 4. Initialize Libraries with FRESH Creds
+            # --- STEP 5: INIT LIBRARIES ---
             logger.info("Initializing Yahoo APIs with fresh token...")
 
             yq = YahooFantasySportsQuery(
