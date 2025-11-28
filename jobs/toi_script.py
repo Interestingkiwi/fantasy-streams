@@ -319,8 +319,8 @@ def fetch_team_standings():
 def fetch_team_stats_summary():
     print("\n--- Fetching Team Stats Summary ---")
     try:
-        # Using 20242025 for current season
-        params = {"isAggregate":"false", "isGame":"false", "start":0, "limit":50, "cayenneExp":"seasonId=20242025 and gameTypeId=2"}
+
+        params = {"isAggregate":"false", "isGame":"false", "start":0, "limit":50, "cayenneExp":"seasonId=20252026 and gameTypeId=2"}
         data = requests.get("https://api.nhle.com/stats/rest/en/team/summary", params=params).json().get("data", [])
         rows = []
         for t in data:
@@ -357,9 +357,7 @@ def fetch_team_stats_weekly():
 
 def fetch_and_update_scoring_to_date():
     print("Fetching Scoring to Date...")
-    # Simplified fetch logic
-    # Note: In a real run, verify season_id is current
-    season_id = "20242025"
+    season_id = "20252026"
     base_url = "https://api.nhle.com/stats/rest/en/skater/summary"
     all_data = []
     start = 0
@@ -402,7 +400,7 @@ def fetch_and_update_scoring_to_date():
 
 def fetch_and_update_bangers_stats():
     print("Fetching Bangers...")
-    season_id = "20242025"
+    season_id = "20252026"
     base_url = "https://api.nhle.com/stats/rest/en/skater/scoringpergame"
     all_data = []
     start = 0
@@ -432,7 +430,7 @@ def fetch_and_update_bangers_stats():
 
 def fetch_and_update_goalie_stats():
     print("Fetching Goalies...")
-    season_id = "20242025"
+    season_id = "20252026"
     base_url = "https://api.nhle.com/stats/rest/en/goalie/summary"
     all_data = []
     start = 0
@@ -534,7 +532,6 @@ def perform_smart_join(base_df, merge_df, merge_cols, source_name, conn):
         c_name = f"{col}_name"
 
         # Start with existing if present, or NaN
-        # FIX: Handle scalar vs series for empty columns
         if col in df_merged.columns and col not in base_df.columns:
             final_col = df_merged[col]
         else:
@@ -583,6 +580,12 @@ def join_special_teams_data():
 def create_stats_to_date_table():
     print("\n--- Creating stats_to_date ---")
     with get_db_connection() as conn:
+        # --- NEW: Clear Unmatched Log ---
+        with conn.cursor() as cursor:
+            cursor.execute("TRUNCATE TABLE unmatched_players")
+        conn.commit()
+        # -------------------------------
+
         # Read Source Tables
         df_proj = read_sql_postgres("SELECT * FROM projections", conn)
         if 'gp' in df_proj.columns: df_proj.rename(columns={'gp': 'GP'}, inplace=True)
@@ -694,22 +697,15 @@ def create_combined_projections():
         for col in id_cols:
             c_proj, c_stat = f"{col}_proj", f"{col}_stats"
 
-            # FIX: Safer check for columns
-            s_proj = None
-            if c_proj in df_merged: s_proj = df_merged[c_proj]
-            elif col in df_merged: s_proj = df_merged[col]
-
-            s_stat = None
-            if c_stat in df_merged: s_stat = df_merged[c_stat]
-            elif col in df_merged: s_stat = df_merged[col]
-
-            # Coalesce
-            if s_stat is not None and s_proj is not None:
-                df_final[col] = s_stat.fillna(s_proj)
-            elif s_stat is not None:
-                df_final[col] = s_stat
-            elif s_proj is not None:
-                df_final[col] = s_proj
+            # If both exist, prefer Stats (live data), fallback to Proj
+            if c_stat in df_merged and c_proj in df_merged:
+                df_final[col] = df_merged[c_stat].fillna(df_merged[c_proj])
+            elif c_stat in df_merged:
+                df_final[col] = df_merged[c_stat]
+            elif c_proj in df_merged:
+                df_final[col] = df_merged[c_proj]
+            elif col in df_merged:
+                df_final[col] = df_merged[col]
 
         # Average Data Cols
         skip = set(id_cols + ['nhlplayerid'])
@@ -718,14 +714,8 @@ def create_combined_projections():
         for col in all_data_cols:
             c_proj, c_stat = f"{col}_proj", f"{col}_stats"
 
-            # FIX: Force Series creation even if column missing
-            s_proj = pd.Series(0, index=df_merged.index)
-            if c_proj in df_merged: s_proj = pd.to_numeric(df_merged[c_proj], errors='coerce')
-            elif col in df_proj.columns and col in df_merged: s_proj = pd.to_numeric(df_merged[col], errors='coerce')
-
-            s_stat = pd.Series(0, index=df_merged.index)
-            if c_stat in df_merged: s_stat = pd.to_numeric(df_merged[c_stat], errors='coerce')
-            elif col in df_stats.columns and col in df_merged: s_stat = pd.to_numeric(df_merged[col], errors='coerce')
+            s_proj = pd.to_numeric(df_merged.get(c_proj, df_merged.get(col) if col in df_proj.columns else None), errors='coerce')
+            s_stat = pd.to_numeric(df_merged.get(c_stat, df_merged.get(col) if col in df_stats.columns else None), errors='coerce')
 
             s_proj = s_proj.fillna(0)
             s_stat = s_stat.fillna(0)
