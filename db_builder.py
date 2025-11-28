@@ -122,6 +122,9 @@ def run_task(build_id, log_file_path, options, data):
             os.makedirs(temp_dir, exist_ok=True)
             temp_file_path = os.path.join(temp_dir, f"thread_{build_id}.json")
 
+            # Force expiry to ensure refresh happens
+            creds['token_time'] = time.time() - 4000
+
             with open(temp_file_path, 'w') as f:
                 json.dump(creds, f)
 
@@ -137,6 +140,11 @@ def run_task(build_id, log_file_path, options, data):
             # 3. Read Fresh Creds & Update DB
             with open(temp_file_path, 'r') as f:
                 new_creds = json.load(f)
+
+            # --- FIX: Inject GUID so yfpy doesn't crash ---
+            if 'guid' not in new_creds:
+                new_creds['guid'] = new_creds.get('xoauth_yahoo_guid') or guid
+            # ----------------------------------------------
 
             # Save back to DB
             with get_db_connection() as conn:
@@ -292,6 +300,7 @@ class DBFinalizer:
             29: 'GP/S', 30: 'GP/G', 33: 'TOI/S', 34: 'TOI/S/Gm'
         }
 
+        # Get player name map (GLOBAL TABLE)
         cursor.execute("SELECT player_id, player_name_normalized FROM players")
         player_norm_name_map = dict(cursor.fetchall())
 
@@ -407,8 +416,6 @@ class DBFinalizer:
         player_norm_name_map = dict(cursor.fetchall())
 
         stats_to_insert = []
-        player_string_pattern = re.compile(r"ID: (\d+), Name: .*, Stats: (\[.*\])")
-        pos_pattern = re.compile(r"([a-zA-Z]+)")
         bench_roster_columns = ['b1', 'b2', 'b3', 'b4', 'b5', 'b6', 'b7', 'b8', 'b9',
                                 'b10', 'b11', 'b12', 'b13', 'b14', 'b15', 'b16', 'b17', 'b18', 'b19',
                                 'i1', 'i2', 'i3', 'i4', 'i5']
@@ -463,6 +470,7 @@ class DBFinalizer:
             """, stats_to_insert)
             self.conn.commit()
 
+
 # --- Helper Functions ---
 
 def _create_tables(cursor, logger):
@@ -470,6 +478,7 @@ def _create_tables(cursor, logger):
 
     # --- CRITICAL FIX: Drop Config Tables to enforce correct schema constraints ---
     # This fixes the 'no unique or exclusion constraint' error.
+    # These are safe to drop because they are repopulated from Yahoo API immediately after.
     tables_to_reset = ['lineup_settings', 'league_info', 'scoring', 'weeks', 'matchups']
     for table in tables_to_reset:
         cursor.execute(f"DROP TABLE IF EXISTS {table} CASCADE")
@@ -523,7 +532,7 @@ def _create_tables(cursor, logger):
             position_id SERIAL PRIMARY KEY,
             position TEXT NOT NULL,
             position_count INTEGER NOT NULL,
-            PRIMARY KEY (league_id, position)
+            UNIQUE (league_id, position)
         )
     ''')
     cursor.execute('''
