@@ -18,6 +18,7 @@ import threading
 import json
 import tempfile
 from database import get_db_connection
+import sys
 
 db_build_status = {"running": False, "error": None, "current_build_id": None}
 db_build_status_lock = threading.Lock()
