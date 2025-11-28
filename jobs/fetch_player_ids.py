@@ -16,7 +16,7 @@ import json
 import tempfile
 import time
 from yfpy.query import YahooFantasySportsQuery
-from yahoo_oauth import OAuth2  # <--- Added for refresh logic
+from yahoo_oauth import OAuth2
 import psycopg2.extras
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -71,7 +71,7 @@ def initialize_yahoo_query(league_id, consumer_key=None, consumer_secret=None):
         "xoauth_yahoo_guid": token_data['guid']
     }
 
-    # 3. REFRESH TOKEN LOGIC (Added)
+    # 3. REFRESH TOKEN LOGIC
     temp_path = os.path.join(tempfile.gettempdir(), f"token_refresh_{league_id}.json")
     try:
         # Write current creds to temp file
@@ -89,6 +89,12 @@ def initialize_yahoo_query(league_id, consumer_key=None, consumer_secret=None):
         # Read back fresh creds
         with open(temp_path, 'r') as f:
             new_creds = json.load(f)
+
+        # --- FIX: Ensure 'guid' exists for yfpy ---
+        # The library might save it as 'xoauth_yahoo_guid', but yfpy needs 'guid'
+        if 'guid' not in new_creds:
+            new_creds['guid'] = new_creds.get('xoauth_yahoo_guid', token_data['guid'])
+        # ------------------------------------------
 
         # 4. UPDATE DATABASE with fresh token
         with get_db_connection() as conn:
