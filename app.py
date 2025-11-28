@@ -520,12 +520,12 @@ def _get_ranked_roster_for_week(cursor, team_id, week_num, team_stats_map, leagu
         FROM rosters_tall r
         JOIN rostered_players rp
             ON r.player_id = rp.player_id
-            AND rp.league_id = r.league_id -- Join on League ID too
+            AND rp.league_id = r.league_id
         JOIN players p
-            ON rp.player_id = p.player_id
-        WHERE r.league_id = %s  -- <--- Filter by League
-          AND r.team_id = %s    -- <--- Filter by Team
-    """, (league_id, team_id))  # Pass both params
+            ON CAST(rp.player_id AS TEXT) = p.player_id
+        WHERE r.league_id = %s
+          AND r.team_id = %s
+    """, (league_id, team_id))
 
     players_raw = cursor.fetchall()
     players = decode_dict_values([dict(row) for row in players_raw])
@@ -1004,11 +1004,11 @@ def build_player_query_base(source_table):
         JOIN {source_table} proj
             ON p.player_name_normalized = proj.player_name_normalized
         LEFT JOIN free_agents fa
-            ON p.player_id = fa.player_id AND fa.league_id = %s
+            ON p.player_id = CAST(fa.player_id AS TEXT) AND fa.league_id = %s
         LEFT JOIN waiver_players w
-            ON p.player_id = w.player_id AND w.league_id = %s
+            ON p.player_id = CAST(w.player_id AS TEXT) AND w.league_id = %s
         LEFT JOIN rostered_players r
-            ON p.player_id = r.player_id AND r.league_id = %s
+            ON p.player_id = CAST(r.player_id AS TEXT) AND r.league_id = %s
     """
 
 
@@ -2845,7 +2845,7 @@ def get_trade_helper_league_roster_data():
 
                 # We specifically want rosters_tall joined with the player data
                 # The helper gives us 'p' and 'r' aliases.
-                query = f"""
+                query = """
                     SELECT
                         p.player_id, p.player_name, p.player_team as team,
                         p.player_name_normalized,
@@ -2853,7 +2853,7 @@ def get_trade_helper_league_roster_data():
                         rt.team_id as fantasy_team_id
                     FROM rosters_tall rt
                     JOIN rostered_players r ON rt.player_id = r.player_id AND r.league_id = rt.league_id
-                    JOIN players p ON r.player_id = p.player_id
+                    JOIN players p ON CAST(r.player_id AS TEXT) = p.player_id
                     WHERE rt.league_id = %s
                 """
                 cursor.execute(query, (league_id,))
