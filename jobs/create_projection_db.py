@@ -9,7 +9,9 @@ import os
 import re
 import csv
 import unicodedata
-from datetime import date
+import requests # <--- Added
+import time     # <--- Added
+from datetime import date, timedelta # <--- Added timedelta
 
 # Add parent dir to path so we can import database
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -25,6 +27,7 @@ PROJ2_GOALIE_FILE = os.path.join(SEED_DATA_DIR, 'proj2g.csv')
 
 START_DATE = date(2025, 10, 7)
 END_DATE = date(2026, 4, 17)
+NHL_TEAM_COUNT = 32
 
 TEAM_TRICODE_MAP = {
     "TB": "TBL", "NJ": "NJD", "SJ": "SJS", "LA": "LAK", "T.B": "TBL",
@@ -197,7 +200,6 @@ def df_to_postgres(df, table_name, conn, if_exists='replace'):
     placeholders = ",".join(["%s"] * len(columns))
     col_names = ",".join([f'"{c}"' for c in columns])
 
-    # Handle NaN -> None conversion
     data = [tuple(None if pd.isna(x) else x for x in row) for row in df_clean.to_numpy()]
 
     cursor.executemany(f"INSERT INTO {table_name} ({col_names}) VALUES ({placeholders}) ON CONFLICT DO NOTHING", data)
@@ -305,7 +307,6 @@ def process_separate_files_to_table(cursor, skater_csv_file, goalie_csv_file, ta
 
     rows_to_insert = []
     for norm, data in player_data.items():
-        # --- FIX: Convert empty strings to None for ALL columns ---
         clean_row = []
         for h in insert_headers:
             val = data.get(h, None)
@@ -381,6 +382,7 @@ def join_yahoo_ids(conn, cursor):
     df_to_postgres(df_final, 'projections', conn)
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_proj_norm ON projections(player_name_normalized)")
 
+# RESTORED: Full Schedule Fetcher
 def get_full_nhl_schedule(start_date, end_date):
     all_games = {}
     curr = start_date

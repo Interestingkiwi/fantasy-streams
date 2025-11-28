@@ -40,6 +40,15 @@ def normalize_name(name):
 
 # --- DATABASE HELPERS ---
 
+def read_sql_postgres(query, conn):
+    with conn.cursor() as cursor:
+        cursor.execute(query)
+        if cursor.description:
+            columns = [desc[0] for desc in cursor.description]
+            data = cursor.fetchall()
+            return pd.DataFrame(data, columns=columns)
+        return pd.DataFrame()
+
 def df_to_postgres(df, table_name, conn, if_exists='replace'):
     """
     Writes DataFrame to Postgres using efficient COPY or INSERT.
@@ -80,22 +89,6 @@ def df_to_postgres(df, table_name, conn, if_exists='replace'):
 
     cursor.executemany(insert_sql, data)
     conn.commit()
-
-
-def read_sql_postgres(query, conn):
-    """
-    Reads data from Postgres into a DataFrame using a raw psycopg2 connection.
-    Replaces pd.read_sql() to avoid SQLAlchemy warnings.
-    """
-    with conn.cursor() as cursor:
-        cursor.execute(query)
-        # Get column names
-        if cursor.description:
-            columns = [desc[0] for desc in cursor.description]
-            data = cursor.fetchall()
-            return pd.DataFrame(data, columns=columns)
-        return pd.DataFrame()
-
 
 def run_database_cleanup(target_start_date):
     """Deletes records from powerplay_stats older than the target start date."""
@@ -299,39 +292,6 @@ def create_last_week_pp_table():
             """)
             conn.commit()
 
-def join_special_teams_data():
-    """
-    Joins data from last_game_pp and last_week_pp (from special_teams.db)
-    into the main projections table (in projections.db).
-    """
-    print("\n--- Joining Special Teams into Projections ---")
-    with get_db_connection() as conn:
-        # Load Projections
-        df_proj = read_sql_postgres("SELECT * FROM projections", conn)
-        if df_proj.empty: return
-
-        # Load Last Game
-        df_lg = read_sql_postgres("SELECT nhlplayerid, ppTimeOnIce as lg_ppTimeOnIce, ppTimeOnIcePctPerGame as lg_ppTimeOnIcePctPerGame, ppAssists as lg_ppAssists, ppGoals as lg_ppGoals FROM last_game_pp", conn)
-
-        # Load Last Week
-        df_lw = read_sql_postgres("SELECT nhlplayerid, avg_ppTimeOnIce, avg_ppTimeOnIcePctPerGame, total_ppAssists, total_ppGoals, player_games_played, team_games_played FROM last_week_pp", conn)
-
-        # Merge
-        df_final = pd.merge(df_proj, df_lg, on='nhlplayerid', how='left')
-        df_final = pd.merge(df_final, df_lw, on='nhlplayerid', how='left')
-
-        # Clean Types
-        if 'nhlplayerid' in df_final.columns:
-            df_final['nhlplayerid'] = pd.to_numeric(df_final['nhlplayerid'], errors='coerce').astype('Int64')
-
-        # Overwrite Projections Table
-        # Using replace is safe here because `create_projection_db` runs first and sets up the table structure
-        df_to_postgres(df_final, 'projections', conn)
-
-        with conn.cursor() as cursor:
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_proj_norm ON projections(player_name_normalized)")
-        conn.commit()
-
 # --- TEAM STATS ---
 
 def fetch_team_standings():
@@ -500,8 +460,8 @@ def fetch_and_update_goalie_stats():
             }
             df_final = df[list(cols.keys())].rename(columns=cols)
 
-            # Calculate Start Pct (Needs standings join)
             with get_db_connection() as conn:
+                # Fetch standings for Start %
                 std = read_sql_postgres("SELECT team_tricode, games_played as team_gp FROM team_standings", conn)
                 if not std.empty:
                     df_final = pd.merge(df_final, std, left_on='teamAbbrevs', right_on='team_tricode', how='left')
@@ -523,11 +483,9 @@ def perform_smart_join(base_df, merge_df, merge_cols, source_name, conn):
     """
     Matches on ID+Team first, then Name.
     """
-    # Ensure key column names
     if 'teamAbbrevs' in merge_df.columns and 'team' not in merge_df.columns:
         merge_df = merge_df.rename(columns={'teamAbbrevs': 'team'})
 
-    # Check keys
     if not all(k in base_df.columns for k in ['nhlplayerid', 'team', 'player_name_normalized']): return base_df
     if not all(k in merge_df.columns for k in ['nhlplayerid', 'team']): return base_df
 
@@ -576,6 +534,7 @@ def perform_smart_join(base_df, merge_df, merge_cols, source_name, conn):
         c_name = f"{col}_name"
 
         # Start with existing if present, or NaN
+        # FIX: Handle scalar vs series for empty columns
         if col in df_merged.columns and col not in base_df.columns:
             final_col = df_merged[col]
         else:
@@ -589,6 +548,37 @@ def perform_smart_join(base_df, merge_df, merge_cols, source_name, conn):
     # Cleanup
     drop_cols = [c for c in df_merged.columns if c.endswith('_new') or c.endswith('_name') or c == 'mc_key']
     return df_merged.drop(columns=drop_cols)
+
+def join_special_teams_data():
+    """
+    Joins data from last_game_pp and last_week_pp into the main projections table.
+    """
+    print("\n--- Joining Special Teams into Projections ---")
+    with get_db_connection() as conn:
+        # Check if projections exist
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT to_regclass('public.projections')")
+            if not cursor.fetchone()[0]:
+                print("Table 'projections' missing. Skipping special teams join.")
+                return
+
+        df_proj = read_sql_postgres("SELECT * FROM projections", conn)
+        if df_proj.empty: return
+
+        df_lg = read_sql_postgres("SELECT nhlplayerid, ppTimeOnIce as lg_ppTimeOnIce, ppTimeOnIcePctPerGame as lg_ppTimeOnIcePctPerGame, ppAssists as lg_ppAssists, ppGoals as lg_ppGoals FROM last_game_pp", conn)
+        df_lw = read_sql_postgres("SELECT nhlplayerid, avg_ppTimeOnIce, avg_ppTimeOnIcePctPerGame, total_ppAssists, total_ppGoals, player_games_played, team_games_played FROM last_week_pp", conn)
+
+        df_final = pd.merge(df_proj, df_lg, on='nhlplayerid', how='left')
+        df_final = pd.merge(df_final, df_lw, on='nhlplayerid', how='left')
+
+        if 'nhlplayerid' in df_final.columns:
+            df_final['nhlplayerid'] = pd.to_numeric(df_final['nhlplayerid'], errors='coerce').astype('Int64')
+
+        df_to_postgres(df_final, 'projections', conn)
+
+        with conn.cursor() as cursor:
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_proj_norm ON projections(player_name_normalized)")
+        conn.commit()
 
 def create_stats_to_date_table():
     print("\n--- Creating stats_to_date ---")
@@ -704,15 +694,22 @@ def create_combined_projections():
         for col in id_cols:
             c_proj, c_stat = f"{col}_proj", f"{col}_stats"
 
-            # If both exist, prefer Stats (live data), fallback to Proj
-            if c_stat in df_merged and c_proj in df_merged:
-                df_final[col] = df_merged[c_stat].fillna(df_merged[c_proj])
-            elif c_stat in df_merged:
-                df_final[col] = df_merged[c_stat]
-            elif c_proj in df_merged:
-                df_final[col] = df_merged[c_proj]
-            elif col in df_merged:
-                df_final[col] = df_merged[col]
+            # FIX: Safer check for columns
+            s_proj = None
+            if c_proj in df_merged: s_proj = df_merged[c_proj]
+            elif col in df_merged: s_proj = df_merged[col]
+
+            s_stat = None
+            if c_stat in df_merged: s_stat = df_merged[c_stat]
+            elif col in df_merged: s_stat = df_merged[col]
+
+            # Coalesce
+            if s_stat is not None and s_proj is not None:
+                df_final[col] = s_stat.fillna(s_proj)
+            elif s_stat is not None:
+                df_final[col] = s_stat
+            elif s_proj is not None:
+                df_final[col] = s_proj
 
         # Average Data Cols
         skip = set(id_cols + ['nhlplayerid'])
@@ -721,8 +718,14 @@ def create_combined_projections():
         for col in all_data_cols:
             c_proj, c_stat = f"{col}_proj", f"{col}_stats"
 
-            s_proj = pd.to_numeric(df_merged.get(c_proj, df_merged.get(col) if col in df_proj.columns else None), errors='coerce')
-            s_stat = pd.to_numeric(df_merged.get(c_stat, df_merged.get(col) if col in df_stats.columns else None), errors='coerce')
+            # FIX: Force Series creation even if column missing
+            s_proj = pd.Series(0, index=df_merged.index)
+            if c_proj in df_merged: s_proj = pd.to_numeric(df_merged[c_proj], errors='coerce')
+            elif col in df_proj.columns and col in df_merged: s_proj = pd.to_numeric(df_merged[col], errors='coerce')
+
+            s_stat = pd.Series(0, index=df_merged.index)
+            if c_stat in df_merged: s_stat = pd.to_numeric(df_merged[c_stat], errors='coerce')
+            elif col in df_stats.columns and col in df_merged: s_stat = pd.to_numeric(df_merged[col], errors='coerce')
 
             s_proj = s_proj.fillna(0)
             s_stat = s_stat.fillna(0)
