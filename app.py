@@ -1284,7 +1284,6 @@ def get_matchup_stats():
                 days_in_week = [(start_date_obj + timedelta(days=i)) for i in range((end_date_obj - start_date_obj).days + 1)]
 
                 # 5. Prepare Categories
-                # (Re-fetch scoring categories just to be safe/consistent with original logic flow)
                 cursor.execute("SELECT category FROM scoring WHERE league_id = %s", (league_id,))
                 scoring_categories = [row['category'] for row in cursor.fetchall()]
 
@@ -1317,8 +1316,6 @@ def get_matchup_stats():
                 }
 
                 # Process Live Stats
-                # Note: RealDictCursor returns rows where keys are column names.
-                # We cast team_id to str for comparison just to be safe.
                 for row in live_stats_raw:
                     t_id = str(row['team_id'])
                     team_key = 'team1' if t_id == str(team1_id) else 'team2'
@@ -1339,7 +1336,6 @@ def get_matchup_stats():
                 stats['team2']['row'] = copy.deepcopy(stats['team2']['live'])
 
                 # 8. Fetch Team Stats Map (Global Tables)
-                # These tables (team_stats_summary, team_stats_weekly) are GLOBAL, so no league_id needed.
                 team_stats_map = {}
                 cursor.execute("SELECT * FROM team_stats_summary")
                 for row in cursor.fetchall():
@@ -1352,13 +1348,10 @@ def get_matchup_stats():
                         team_stats_map[tricode].update(dict(row))
 
                 # 9. Get Ranked Rosters (Pass League ID!)
-                # Note: You must update _get_ranked_roster_for_week to accept league_id (as discussed previously)
                 team1_ranked_roster = _get_ranked_roster_for_week(cursor, team1_id, week_num, team_stats_map, league_id, sourcing)
                 team2_ranked_roster = _get_ranked_roster_for_week(cursor, team2_id, week_num, team_stats_map, league_id, sourcing)
 
                 # 10. Simulated Moves & Optimal Lineups
-                # (This logic is pure python/math and relies on the objects returned above, so it stays mostly the same)
-
                 today = date.today()
                 projection_start_date = max(today, start_date_obj)
                 current_date = projection_start_date
@@ -1382,50 +1375,38 @@ def get_matchup_stats():
                     stats['game_counts']['team2_remaining'] += len(team2_starters)
 
                     # Fetch Projections for Starters
-                    all_starter_ids = [p['player_id'] for p in team1_starters + team2_starters]
+                    starter_names = [p['player_name_normalized'] for p in team1_starters + team2_starters if p.get('player_name_normalized')]
 
-                    if all_starter_ids:
-                        # Query the GLOBAL stat table
-                        placeholders = ','.join(['%s'] * len(all_starter_ids))
-                        # Note: stat_table comes from get_stat_source_table (e.g., 'projections')
-                        # It is GLOBAL, so no league_id filter needed here.
-                        # But we need to map player_id to normalized_name if the table key is normalized_name
+                    if starter_names:
+                        placeholders = ','.join(['%s'] * len(starter_names))
 
-                        # Actually, your projection tables key on 'player_name_normalized'.
-                        # You need to get normalized names for these IDs first, OR join.
-                        # Assuming starter objects have 'player_name_normalized' (they should from _get_ranked_roster):
+                        # --- FIX: Quote columns for Postgres ---
+                        quoted_cats = [f'"{c}"' for c in projection_cats]
 
-                        # Let's collect normalized names instead of IDs for the query
-                        starter_names = [p['player_name_normalized'] for p in team1_starters + team2_starters if p.get('player_name_normalized')]
+                        query = f"SELECT player_name_normalized, {', '.join(quoted_cats)} FROM {stat_table} WHERE player_name_normalized IN ({placeholders})"
+                        cursor.execute(query, tuple(starter_names))
 
-                        if starter_names:
-                            placeholders = ','.join(['%s'] * len(starter_names))
-                            # We query by Normalized Name
-                            query = f"SELECT player_name_normalized, {', '.join(projection_cats)} FROM {stat_table} WHERE player_name_normalized IN ({placeholders})"
-                            cursor.execute(query, tuple(starter_names))
+                        # Map results
+                        proj_map = {row['player_name_normalized']: dict(row) for row in cursor.fetchall()}
 
-                            # Map results
-                            proj_map = {row['player_name_normalized']: dict(row) for row in cursor.fetchall()}
+                        # Apply stats
+                        for starter in team1_starters:
+                            norm = starter.get('player_name_normalized')
+                            if norm in proj_map:
+                                p_stats = proj_map[norm]
+                                for cat in projection_cats:
+                                    stats['team1']['row'][cat] += (p_stats.get(cat) or 0)
+                                if 'G' in (starter.get('eligible_positions') or starter.get('positions', '')):
+                                    stats['team1']['row']['TOI/G'] += 60
 
-                            # Apply stats
-                            for starter in team1_starters:
-                                norm = starter.get('player_name_normalized')
-                                if norm in proj_map:
-                                    p_stats = proj_map[norm]
-                                    for cat in projection_cats:
-                                        stats['team1']['row'][cat] += (p_stats.get(cat) or 0)
-                                    # Add Goalie Minutes if needed
-                                    if 'G' in (starter.get('eligible_positions') or starter.get('positions', '')):
-                                        stats['team1']['row']['TOI/G'] += 60
-
-                            for starter in team2_starters:
-                                norm = starter.get('player_name_normalized')
-                                if norm in proj_map:
-                                    p_stats = proj_map[norm]
-                                    for cat in projection_cats:
-                                        stats['team2']['row'][cat] += (p_stats.get(cat) or 0)
-                                    if 'G' in (starter.get('eligible_positions') or starter.get('positions', '')):
-                                        stats['team2']['row']['TOI/G'] += 60
+                        for starter in team2_starters:
+                            norm = starter.get('player_name_normalized')
+                            if norm in proj_map:
+                                p_stats = proj_map[norm]
+                                for cat in projection_cats:
+                                    stats['team2']['row'][cat] += (p_stats.get(cat) or 0)
+                                if 'G' in (starter.get('eligible_positions') or starter.get('positions', '')):
+                                    stats['team2']['row']['TOI/G'] += 60
 
                     current_date += timedelta(days=1)
 
@@ -3663,7 +3644,7 @@ def get_free_agent_data():
     except Exception as e:
         logging.error(f"Error fetching free agent data: {e}", exc_info=True)
         return jsonify({'error': f"An error occurred: {e}"}), 500
-        
+
 
 def _get_team_goalie_stats(cursor, team_id, start_date_str, end_date_str, league_id):
     # 1. Get Aggregated Live Stats
