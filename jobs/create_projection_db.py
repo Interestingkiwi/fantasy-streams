@@ -221,7 +221,7 @@ def process_separate_files_to_table(cursor, skater_csv_file, goalie_csv_file, ta
                 pos_idx = header_lower.index('positions')
             except ValueError as e: raise ValueError(f"Missing column in {skater_csv_file}: {e}")
 
-            stats_exclude = ['player name', 'age', 'positions', 'team', 'salary', 'gp org', 'gp', 'toi org es', 'toi org pp', 'toi org pk', 'toi es', 'toi pp', 'toi pk', 'total toi', 'rank', 'playerid', 'fantasy team']
+            stats_exclude = ['player name', 'age', 'position', 'positions', 'team', 'salary', 'gp org', 'gp', 'toi org es', 'toi org pp', 'toi org pk', 'toi es', 'toi pp', 'toi pk', 'total toi', 'rank', 'playerid', 'fantasy team']
             stat_indices = [i for i, h in enumerate(header_lower) if h not in stats_exclude and h.strip() != '']
 
             for row in reader:
@@ -252,7 +252,7 @@ def process_separate_files_to_table(cursor, skater_csv_file, goalie_csv_file, ta
                 gp_idx = header_lower.index('gs')
             except ValueError as e: raise ValueError(f"Missing column in {goalie_csv_file}: {e}")
 
-            stats_exclude = ['player name', 'team', 'age', 'position', 'salary', 'gs', 'sv%', 'gaa', 'rank', 'playerid', 'fantasy team']
+            stats_exclude = ['player name', 'team', 'age', 'position', 'positions', 'salary', 'gs', 'sv%', 'gaa', 'rank', 'playerid', 'fantasy team']
             stat_indices = [i for i, h in enumerate(header_lower) if h not in stats_exclude and h.strip() != '']
 
             for row in reader:

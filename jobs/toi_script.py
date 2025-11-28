@@ -1,4 +1,4 @@
-"""
+read_sql_postgres"""
 Fetches NHL TOI/Special Teams stats and updates the Global Postgres DB.
 Refactored for Postgres.
 """
@@ -80,6 +80,22 @@ def df_to_postgres(df, table_name, conn, if_exists='replace'):
 
     cursor.executemany(insert_sql, data)
     conn.commit()
+
+
+def read_sql_postgres(query, conn):
+    """
+    Reads data from Postgres into a DataFrame using a raw psycopg2 connection.
+    Replaces pd.read_sql() to avoid SQLAlchemy warnings.
+    """
+    with conn.cursor() as cursor:
+        cursor.execute(query)
+        # Get column names
+        if cursor.description:
+            columns = [desc[0] for desc in cursor.description]
+            data = cursor.fetchall()
+            return pd.DataFrame(data, columns=columns)
+        return pd.DataFrame()
+
 
 def run_database_cleanup(target_start_date):
     """Deletes records from powerplay_stats older than the target start date."""
@@ -291,14 +307,14 @@ def join_special_teams_data():
     print("\n--- Joining Special Teams into Projections ---")
     with get_db_connection() as conn:
         # Load Projections
-        df_proj = pd.read_sql_query("SELECT * FROM projections", conn)
+        df_proj = read_sql_postgres("SELECT * FROM projections", conn)
         if df_proj.empty: return
 
         # Load Last Game
-        df_lg = pd.read_sql_query("SELECT nhlplayerid, ppTimeOnIce as lg_ppTimeOnIce, ppTimeOnIcePctPerGame as lg_ppTimeOnIcePctPerGame, ppAssists as lg_ppAssists, ppGoals as lg_ppGoals FROM last_game_pp", conn)
+        df_lg = read_sql_postgres("SELECT nhlplayerid, ppTimeOnIce as lg_ppTimeOnIce, ppTimeOnIcePctPerGame as lg_ppTimeOnIcePctPerGame, ppAssists as lg_ppAssists, ppGoals as lg_ppGoals FROM last_game_pp", conn)
 
         # Load Last Week
-        df_lw = pd.read_sql_query("SELECT nhlplayerid, avg_ppTimeOnIce, avg_ppTimeOnIcePctPerGame, total_ppAssists, total_ppGoals, player_games_played, team_games_played FROM last_week_pp", conn)
+        df_lw = read_sql_postgres("SELECT nhlplayerid, avg_ppTimeOnIce, avg_ppTimeOnIcePctPerGame, total_ppAssists, total_ppGoals, player_games_played, team_games_played FROM last_week_pp", conn)
 
         # Merge
         df_final = pd.merge(df_proj, df_lg, on='nhlplayerid', how='left')
@@ -486,7 +502,7 @@ def fetch_and_update_goalie_stats():
 
             # Calculate Start Pct (Needs standings join)
             with get_db_connection() as conn:
-                std = pd.read_sql("SELECT team_tricode, games_played as team_gp FROM team_standings", conn)
+                std = read_sql_postgres("SELECT team_tricode, games_played as team_gp FROM team_standings", conn)
                 if not std.empty:
                     df_final = pd.merge(df_final, std, left_on='teamAbbrevs', right_on='team_tricode', how='left')
                     df_final['startpct'] = np.where(df_final['team_gp']>0, df_final['gamesStarted']/df_final['team_gp'], 0)
@@ -578,13 +594,13 @@ def create_stats_to_date_table():
     print("\n--- Creating stats_to_date ---")
     with get_db_connection() as conn:
         # Read Source Tables
-        df_proj = pd.read_sql("SELECT * FROM projections", conn)
+        df_proj = read_sql_postgres("SELECT * FROM projections", conn)
         if 'gp' in df_proj.columns: df_proj.rename(columns={'gp': 'GP'}, inplace=True)
         df_proj['nhlplayerid'] = pd.to_numeric(df_proj['nhlplayerid'], errors='coerce').fillna(0).astype(int)
         df_proj.drop_duplicates(subset=['nhlplayerid'], inplace=True)
 
         # Read & Prep Scoring
-        df_sc = pd.read_sql("SELECT * FROM scoring_to_date", conn)
+        df_sc = read_sql_postgres("SELECT * FROM scoring_to_date", conn)
         sc_map = {
             'gamesPlayed': 'GPskater', 'goals': 'G', 'assists': 'A', 'points': 'P', 'plusMinus': 'plus_minus',
             'penaltyMinutes': 'PIM', 'ppGoals': 'PPG', 'ppAssists': 'PPA', 'ppPoints': 'PPP',
@@ -597,7 +613,7 @@ def create_stats_to_date_table():
         df_merged = perform_smart_join(df_proj, df_sc, list(sc_map.values()), 'scoring', conn)
 
         # Read & Prep Bangers
-        df_bn = pd.read_sql("SELECT * FROM bangers_to_date", conn)
+        df_bn = read_sql_postgres("SELECT * FROM bangers_to_date", conn)
         bn_map = {'blocksPerGame': 'BLK', 'hitsPerGame': 'HIT'}
         df_bn.rename(columns=bn_map, inplace=True)
         df_bn['nhlplayerid'] = pd.to_numeric(df_bn['nhlplayerid'], errors='coerce').fillna(0).astype(int)
@@ -606,7 +622,7 @@ def create_stats_to_date_table():
         df_merged = perform_smart_join(df_merged, df_bn, list(bn_map.values()), 'bangers', conn)
 
         # Read & Prep Goalies
-        df_gl = pd.read_sql("SELECT * FROM goalie_to_date", conn)
+        df_gl = read_sql_postgres("SELECT * FROM goalie_to_date", conn)
         gl_map = {
             'gamesStarted': 'GS', 'gamesPlayed': 'GP', 'goalsAgainstAverage': 'GAA', 'losses': 'L',
             'savePct': 'SVpct', 'saves': 'SV', 'shotsAgainst': 'SA', 'shutouts': 'SHO', 'wins': 'W',
@@ -624,7 +640,7 @@ def create_stats_to_date_table():
 def calculate_and_save_to_date_ranks():
     print("\n--- Calculating Ranks ---")
     with get_db_connection() as conn:
-        df = pd.read_sql("SELECT * FROM stats_to_date", conn)
+        df = read_sql_postgres("SELECT * FROM stats_to_date", conn)
         if df.empty: return
 
         # Logic mostly identical to before:
@@ -669,8 +685,8 @@ def calculate_and_save_to_date_ranks():
 def create_combined_projections():
     print("\n--- Creating Combined Projections ---")
     with get_db_connection() as conn:
-        df_proj = pd.read_sql("SELECT * FROM projections", conn)
-        df_stats = pd.read_sql("SELECT * FROM stats_to_date", conn)
+        df_proj = read_sql_postgres("SELECT * FROM projections", conn)
+        df_stats = read_sql_postgres("SELECT * FROM stats_to_date", conn)
 
         if 'gp' in df_proj.columns: df_proj.rename(columns={'gp': 'GP'}, inplace=True)
 
