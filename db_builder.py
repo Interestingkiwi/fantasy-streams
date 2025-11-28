@@ -122,7 +122,7 @@ def run_task(build_id, log_file_path, options, data):
             os.makedirs(temp_dir, exist_ok=True)
             temp_file_path = os.path.join(temp_dir, f"thread_{build_id}.json")
 
-            # CRITICAL FIX: Force expiry so it ALWAYS refreshes
+            # Force expiry so it ALWAYS refreshes
             creds['token_time'] = time.time() - 4000
 
             with open(temp_file_path, 'w') as f:
@@ -139,7 +139,7 @@ def run_task(build_id, log_file_path, options, data):
             with open(temp_file_path, 'r') as f:
                 new_creds = json.load(f)
 
-            # CRITICAL FIX: Inject 'guid' key for yfpy
+            # Inject 'guid' key for yfpy
             if 'guid' not in new_creds:
                 new_creds['guid'] = new_creds.get('xoauth_yahoo_guid') or guid
 
@@ -364,8 +364,10 @@ class DBFinalizer:
 
     def parse_and_store_bench_stats(self):
         cursor = self.conn.cursor()
+
         cursor.execute("SELECT to_regclass('public.daily_lineups_dump');")
-        if cursor.fetchone()[0] is None: return
+        if cursor.fetchone()[0] is None:
+            return
 
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS daily_bench_stats (
@@ -399,7 +401,8 @@ class DBFinalizer:
         column_names = [desc[0] for desc in cursor.description]
         all_lineups = cursor.fetchall()
 
-        if not all_lineups: return
+        if not all_lineups:
+            return
 
         stat_map = {
             1: 'G', 2: 'A', 3: 'P', 4: '+/-', 5: 'PIM', 6: 'PPG', 7: 'PPA', 8: 'PPP',
@@ -413,6 +416,12 @@ class DBFinalizer:
         player_norm_name_map = dict(cursor.fetchall())
 
         stats_to_insert = []
+
+        # --- FIX START: Added regex patterns ---
+        player_string_pattern = re.compile(r"ID: (\d+), Name: .*, Stats: (\[.*\])")
+        pos_pattern = re.compile(r"([a-zA-Z]+)")
+        # --- FIX END ---
+
         bench_roster_columns = ['b1', 'b2', 'b3', 'b4', 'b5', 'b6', 'b7', 'b8', 'b9',
                                 'b10', 'b11', 'b12', 'b13', 'b14', 'b15', 'b16', 'b17', 'b18', 'b19',
                                 'i1', 'i2', 'i3', 'i4', 'i5']
@@ -422,7 +431,8 @@ class DBFinalizer:
                 row_dict = dict(zip(column_names, row))
                 date_ = row_dict['date_']
                 team_id = row_dict['team_id']
-            except: continue
+            except:
+                continue
 
             for col in bench_roster_columns:
                 if col in row_dict and row_dict[col]:
@@ -452,7 +462,8 @@ class DBFinalizer:
                                     self.league_id, date_, team_id, player_id, player_name_normalized,
                                     lineup_pos, stat_id, category, stat_value
                                 ))
-                        except: pass
+                        except:
+                            pass
 
         if stats_to_insert:
             self.logger.info(f"Found {len(stats_to_insert)} bench stats.")
