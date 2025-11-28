@@ -74,6 +74,12 @@ def initialize_yahoo_query(league_id, consumer_key=None, consumer_secret=None):
     # 3. REFRESH TOKEN LOGIC
     temp_path = os.path.join(tempfile.gettempdir(), f"token_refresh_{league_id}.json")
     try:
+        # --- CRITICAL FIX: Force Expiry ---
+        # We trick the library into thinking the token expired 1 hour ago.
+        # This forces a network call to Yahoo to get a fresh token.
+        creds['token_time'] = time.time() - 3600
+        # ----------------------------------
+
         # Write current creds to temp file
         with open(temp_path, 'w') as f:
             json.dump(creds, f)
@@ -83,7 +89,7 @@ def initialize_yahoo_query(league_id, consumer_key=None, consumer_secret=None):
         sc.refresh_access_token()
 
         if not sc.token_is_valid():
-            logger.error("Token refresh failed.")
+            logger.error("Token refresh failed. User may need to re-login on the website.")
             return None
 
         # Read back fresh creds
@@ -91,10 +97,8 @@ def initialize_yahoo_query(league_id, consumer_key=None, consumer_secret=None):
             new_creds = json.load(f)
 
         # --- FIX: Ensure 'guid' exists for yfpy ---
-        # The library might save it as 'xoauth_yahoo_guid', but yfpy needs 'guid'
         if 'guid' not in new_creds:
             new_creds['guid'] = new_creds.get('xoauth_yahoo_guid', token_data['guid'])
-        # ------------------------------------------
 
         # 4. UPDATE DATABASE with fresh token
         with get_db_connection() as conn:
@@ -142,7 +146,13 @@ def initialize_yahoo_query(league_id, consumer_key=None, consumer_secret=None):
 
 def fetch_and_store_players(yq):
     logger.info("Fetching player info...")
-    players = yq.get_league_players()
+
+    # Add a safety check before making the big call
+    try:
+        players = yq.get_league_players()
+    except Exception as e:
+        logger.error(f"CRITICAL: Failed to fetch league players from Yahoo. This usually means the token is invalid despite refresh. Error: {e}")
+        return
 
     TEAM_TRICODE_MAP = {"TB": "TBL", "NJ": "NJD", "SJ": "SJS", "LA": "LAK", "MON": "MTL", "WAS": "WSH"}
     data = []
@@ -161,6 +171,10 @@ def fetch_and_store_players(yq):
 
             data.append((pid, p.name.full, team, p.display_position, p.status, norm))
         except: pass
+
+    if not data:
+        logger.warning("No players found/parsed.")
+        return
 
     with get_db_connection() as conn:
         with conn.cursor() as cursor:
