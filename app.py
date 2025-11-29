@@ -1646,12 +1646,13 @@ def _calculate_bench_optimization(cursor, team_id, week_num, start_date, end_dat
         # Query BOTH tables (League Specific)
         logging.info("Querying for ALL player stats (starters and bench)...")
 
+        # --- FIX: Added CAST(... AS TEXT) to both JOINs ---
         cursor.execute("""
             SELECT
                 d.date_, d.player_id, d.lineup_pos, d.category, d.stat_value,
                 p.player_name, p.positions
             FROM daily_player_stats d
-            JOIN players p ON d.player_id = p.player_id
+            JOIN players p ON CAST(d.player_id AS TEXT) = p.player_id
             WHERE d.league_id = %s AND d.team_id = %s AND d.date_ >= %s AND d.date_ <= %s
 
             UNION ALL
@@ -1660,7 +1661,7 @@ def _calculate_bench_optimization(cursor, team_id, week_num, start_date, end_dat
                 b.date_, b.player_id, b.lineup_pos, b.category, b.stat_value,
                 p.player_name, p.positions
             FROM daily_bench_stats b
-            JOIN players p ON b.player_id = p.player_id
+            JOIN players p ON CAST(b.player_id AS TEXT) = p.player_id
             WHERE b.league_id = %s AND b.team_id = %s AND b.date_ >= %s AND b.date_ <= %s
 
             ORDER BY 1, 2
@@ -1698,7 +1699,6 @@ def _calculate_bench_optimization(cursor, team_id, week_num, start_date, end_dat
         logging.info(f"Simulating days: {week_dates}")
 
         for day in week_dates:
-            logging.info(f"--- Simulating Day: {day} ---")
             performances = daily_player_performances[day]
 
             starters = [p for p in performances.values() if p['lineup_pos'] in starter_positions]
