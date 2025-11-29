@@ -866,7 +866,13 @@ def _update_league_matchups(yq, cursor, league_id, playoff_start_week, logger):
             matchups = yq.get_league_matchups_by_week(start_week)
             for m in matchups:
                 # Assumes 2 teams per matchup
-                data.append((league_id, start_week, m.teams[0].name, m.teams[1].name))
+                t1_name = m.teams[0].name
+                if isinstance(t1_name, bytes): t1_name = t1_name.decode('utf-8')
+
+                t2_name = m.teams[1].name
+                if isinstance(t2_name, bytes): t2_name = t2_name.decode('utf-8')
+
+                data.append((league_id, start_week, t1_name, t2_name))
             start_week += 1
 
         sql = """
@@ -934,21 +940,28 @@ def _create_rosters_tall(cursor, conn, league_id, logger):
 def _update_league_transactions(yq, cursor, league_id, logger):
     try:
         logger.info("Fetching transactions...")
-        # Note: Not deleting old transactions to keep history, but rely on PK to ignore dups
         transactions = yq.get_league_transactions()
         data = []
         processed = set()
 
         for t in transactions:
             if t.status == 'successful':
-                # Simplify timezone handling for brevity: assume UTC or handle in app
                 t_date = datetime.fromtimestamp(t.timestamp).strftime('%Y-%m-%d')
                 for p in t.players:
                     move = p.transaction_data.type
-                    team = p.transaction_data.destination_team_name if move == 'add' else p.transaction_data.source_team_name
+
+                    # Decode Player Name
+                    p_name = p.name.full
+                    if isinstance(p_name, bytes): p_name = p_name.decode('utf-8')
+
+                    # Decode Team Name
+                    raw_team_name = p.transaction_data.destination_team_name if move == 'add' else p.transaction_data.source_team_name
+                    if isinstance(raw_team_name, bytes):
+                        raw_team_name = raw_team_name.decode('utf-8')
+
                     key = (t.timestamp, p.player_id, move)
                     if key not in processed:
-                        data.append((league_id, t_date, p.player_id, p.name.full, team, move))
+                        data.append((league_id, t_date, p.player_id, p_name, raw_team_name, move))
                         processed.add(key)
 
         sql = """

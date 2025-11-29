@@ -25,7 +25,7 @@ def update_global_data():
     logger.info("--- Starting Global Data Update ---")
 
 
-    system_league_id = os.environ.get("LEAGUE_ID")
+    system_league_id = os.env iron.get("LEAGUE_ID")
 
     if system_league_id:
         try:

@@ -78,10 +78,14 @@ def run_league_updates():
 
     with get_db_connection() as conn:
         with conn.cursor() as cursor:
+#            cursor.execute("""
+#                SELECT l.league_id, u.* FROM league_updaters l
+#                JOIN users u ON l.user_guid = u.guid
+#                WHERE u.is_premium = TRUE
+#            """)
             cursor.execute("""
                 SELECT l.league_id, u.* FROM league_updaters l
                 JOIN users u ON l.user_guid = u.guid
-                WHERE u.is_premium = TRUE
             """)
             rows = cursor.fetchall()
 

@@ -1808,7 +1808,6 @@ def get_bench_points_data():
                 logging.info(f"Selected team: {team_name}, week: '{week}'")
 
                 # 1. Get team_id
-                # Added league_id filter and changed cast to simple comparison
                 cursor.execute("SELECT team_id FROM teams WHERE league_id = %s AND name = %s", (league_id, team_name))
                 team_id_row = cursor.fetchone()
 
@@ -1830,8 +1829,6 @@ def get_bench_points_data():
                     except (ValueError, TypeError):
                         return jsonify({'error': 'Invalid week format.'}), 400
 
-                    logging.info(f"Querying 'weeks' table for week_num = {week_num_int}")
-                    # Added league_id filter
                     cursor.execute("SELECT start_date, end_date FROM weeks WHERE league_id = %s AND week_num = %s", (league_id, week_num_int))
                     week_dates = cursor.fetchone()
 
@@ -1841,8 +1838,7 @@ def get_bench_points_data():
                         logging.info(f"Found week dates: {start_date} to {end_date}")
 
                     if start_date and end_date:
-                        logging.info(f"Querying 'matchups' for week = {week_num_int}, team = '{team_name}'")
-                        # Added league_id filter and updated placeholders
+                        # This query might fail to find rows if 'matchups' table has byte strings.
                         cursor.execute(
                             """
                             SELECT team1, team2 FROM matchups
@@ -1853,43 +1849,30 @@ def get_bench_points_data():
                         matchup_row = cursor.fetchone()
 
                         if matchup_row:
-                            # RealDictCursor returns dicts directly
                             opponent_name = matchup_row['team2'] if matchup_row['team1'] == team_name else matchup_row['team1']
-                            logging.info(f"Found opponent_name: {opponent_name}")
 
-                            # Added league_id filter
                             cursor.execute("SELECT team_id FROM teams WHERE league_id = %s AND name = %s", (league_id, opponent_name))
                             opponent_id_row = cursor.fetchone()
 
                             if opponent_id_row:
                                 opponent_id = opponent_id_row['team_id']
-                                logging.info(f"Found opponent_id: {opponent_id}")
 
-                                # Get original matchup results
-                                # IMPORTANT: You must update _get_live_matchup_stats to accept league_id
                                 matchup_data = _get_live_matchup_stats(cursor, team_id, opponent_id, start_date, end_date, league_id)
                                 matchup_data['opponent_name'] = opponent_name
-                                logging.info("Successfully generated base matchup_data.")
 
-                                # --- RUN OPTIMIZATION ---
-                                # IMPORTANT: You must update _calculate_bench_optimization to accept league_id
                                 optimized_matchup_data, swaps_log = _calculate_bench_optimization(
                                     cursor, team_id, week_num_int, start_date, end_date, matchup_data, league_id
                                 )
-                                # --- END OPTIMIZATION ---
                             else:
                                 logging.warning(f"Could not find team_id for opponent_name = {opponent_name}")
                         else:
-                            logging.warning(f"Query 2 FAILED: Could not find matchup_row for week = {week_num_int}")
+                            logging.warning(f"Query 2 FAILED: Could not find matchup_row for week = {week_num_int} (Check for byte-string issues in DB)")
                     else:
                         logging.warning("Query 1 FAILED: Could not find week_dates.")
-                else:
-                    logging.info("Week is 'all', skipping matchup data fetch.")
 
-                # --- 3. GET BENCH STATS (for the table) ---
-
+                # --- 3. GET BENCH STATS ---
                 logging.info("Proceeding to fetch bench stats for table display...")
-                # Added league_id filter
+
                 cursor.execute("SELECT category FROM scoring WHERE league_id = %s ORDER BY stat_id", (league_id,))
                 all_cats_raw = cursor.fetchall()
 
@@ -1899,11 +1882,12 @@ def get_bench_points_data():
                 skater_categories = [cat for cat in all_categories if cat not in known_goalie_stats]
 
                 sql_params = [league_id, team_id]
-                # Added league_id filter to daily_bench_stats
+
+                # --- FIX: CAST player_id to TEXT for join ---
                 sql_query = """
                     SELECT d.date_, d.player_id, p.player_name, p.positions, d.category, d.stat_value
                     FROM daily_bench_stats d
-                    JOIN players p ON d.player_id = p.player_id
+                    JOIN players p ON CAST(d.player_id AS TEXT) = p.player_id
                     WHERE d.league_id = %s AND d.team_id = %s
                 """
 
@@ -1912,15 +1896,12 @@ def get_bench_points_data():
                     sql_params.extend([start_date, end_date])
                 elif week != 'all':
                      sql_query += " AND 1=0"
-                else:
-                     pass
 
                 sql_query += " ORDER BY d.date_, p.player_name"
                 cursor.execute(sql_query, tuple(sql_params))
                 raw_stats = cursor.fetchall()
-                logging.info(f"Found {len(raw_stats)} raw bench stat rows for table.")
 
-                # Pivot the data
+                # Pivot and Format
                 daily_player_stats = defaultdict(lambda: defaultdict(float))
                 player_positions = {}
                 for row in raw_stats:
@@ -1930,22 +1911,19 @@ def get_bench_points_data():
 
                 skater_rows, goalie_rows = [], []
                 for (date_val, player_id, player_name), stats in daily_player_stats.items():
-                    if sum(stats.values()) == 0:
-                        continue
+                    if sum(stats.values()) == 0: continue
+
                     key = (date_val, player_id, player_name)
                     positions_str = player_positions.get(key, '')
                     base_row = {'Date': date_val, 'Player': player_name, 'Positions': positions_str}
+
                     is_goalie = 'G' in positions_str.split(',')
                     if is_goalie:
-                        for cat in goalie_categories:
-                            base_row[cat] = stats.get(cat, 0)
+                        for cat in goalie_categories: base_row[cat] = stats.get(cat, 0)
                         goalie_rows.append(base_row)
                     else:
-                        for cat in skater_categories:
-                            base_row[cat] = stats.get(cat, 0)
+                        for cat in skater_categories: base_row[cat] = stats.get(cat, 0)
                         skater_rows.append(base_row)
-
-                logging.info(f"Processed into {len(skater_rows)} skater and {len(goalie_rows)} goalie rows.")
 
                 return jsonify({
                     'skater_data': skater_rows,
@@ -3651,7 +3629,6 @@ def _get_team_goalie_stats(cursor, team_id, start_date_str, end_date_str, league
     # 1. Get Aggregated Live Stats
     goalie_categories = ['W', 'L', 'GA', 'SV', 'SA', 'SHO', 'TOI/G']
 
-    # Construct placeholder string for the IN clause (%s, %s, ...)
     placeholders = ','.join(['%s'] * len(goalie_categories))
 
     query = f"""
@@ -3664,13 +3641,11 @@ def _get_team_goalie_stats(cursor, team_id, start_date_str, end_date_str, league
         GROUP BY category
     """
 
-    # Parameters: league_id, start, end, team, *categories
     params = [league_id, start_date_str, end_date_str, team_id] + goalie_categories
     cursor.execute(query, tuple(params))
 
     live_stats_raw = cursor.fetchall()
 
-    # RealDictCursor returns dicts, so we access keys directly
     live_stats = {cat: 0 for cat in goalie_categories}
     for row in live_stats_raw:
         if row['category'] in live_stats:
@@ -3680,7 +3655,7 @@ def _get_team_goalie_stats(cursor, team_id, start_date_str, end_date_str, league
         live_stats['TOI/G'] += (live_stats['SHO'] * 60)
 
     # 2. Get Individual Goalie Starts
-    # Note: Joined with Global 'players' table (no league_id needed for 'p')
+    # FIX: Added CAST(d.player_id AS TEXT) to the JOIN
     cursor.execute(f"""
         SELECT
             d.player_id,
@@ -3689,7 +3664,7 @@ def _get_team_goalie_stats(cursor, team_id, start_date_str, end_date_str, league
             d.category,
             d.stat_value
         FROM daily_player_stats d
-        JOIN players p ON d.player_id = p.player_id
+        JOIN players p ON CAST(d.player_id AS TEXT) = p.player_id
         WHERE d.league_id = %s
           AND d.team_id = %s
           AND d.date_ >= %s AND d.date_ <= %s
@@ -3706,7 +3681,6 @@ def _get_team_goalie_stats(cursor, team_id, start_date_str, end_date_str, league
 
     individual_starts = []
     for (player_id, player_name, date_), stats in starts_data.items():
-        # Filter for actual starts (SA > 0 implies they played)
         if stats.get('SA', 0) > 0:
             start_record = {
                 "player_id": player_id,

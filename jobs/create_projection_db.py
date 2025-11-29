@@ -11,9 +11,9 @@ import csv
 import unicodedata
 import requests
 import time
-import json  # <--- Added back
+import json
 from datetime import date, timedelta
-from collections import defaultdict, Counter  # <--- Added back
+from collections import defaultdict, Counter
 import numpy as np
 
 # Add parent dir to path so we can import database
@@ -53,7 +53,8 @@ def sanitize_header(header_list):
         'blk': 'BLK', 'w': 'W', 'so': 'SHO', 'sho':'SHO', 'sv%': 'SVpct', 'svpct': 'SVpct',
         'ga': 'GA', 'plus_minus': 'plus_minus', 'shg': 'SHG', 'sha': 'SHA', 'shp': 'SHP',
         'pim': 'PIM', 'fow': 'FOW', 'fol': 'FOL', 'ppg': 'PPG', 'ppa': 'PPA',
-        'gaa': 'GAA', 'gs': 'GS', 'sv': 'SV', 'sa': 'SA', 'qs': 'QS', 'l':'L'
+        'gaa': 'GAA', 'gs': 'GS', 'sv': 'SV', 'sa': 'SA', 'qs': 'QS', 'l':'L',
+        'toi/g': 'TOI/G', 'timeonice': 'TOI/G', 'total_toi': 'Total TOI' # Added mapping
     }
     for h in header_list:
         clean_h = h.strip().lower()
@@ -182,7 +183,6 @@ def df_to_postgres(df, table_name, conn, if_exists='replace'):
 
     cols = []
     for col, dtype in df.dtypes.items():
-        # Clean column name
         if not col or col.strip() == "": continue
 
         pg_type = 'TEXT'
@@ -214,6 +214,7 @@ def process_separate_files_to_table(cursor, skater_csv_file, goalie_csv_file, ta
     print(f"\n--- Processing {target_table_name} ---")
     player_data = {}
 
+    # 1. Skaters
     if os.path.exists(skater_csv_file):
         with open(skater_csv_file, 'r', encoding='utf-8-sig') as f:
             reader = csv.reader(f)
@@ -224,14 +225,12 @@ def process_separate_files_to_table(cursor, skater_csv_file, goalie_csv_file, ta
             try:
                 p_name_idx = header_lower.index('player name')
                 gp_idx = header_lower.index('gp')
-                pos_idx = header_lower.index('positions')
             except ValueError as e: raise ValueError(f"Missing column in {skater_csv_file}: {e}")
 
             stats_exclude = ['player name', 'age', 'positions', 'position', 'team', 'salary', 'gp org', 'gp', 'toi org es', 'toi org pp', 'toi org pk', 'toi es', 'toi pp', 'toi pk', 'total toi', 'rank', 'playerid', 'fantasy team']
             stat_indices = [i for i, h in enumerate(header_lower) if h not in stats_exclude and h.strip() != '']
 
             for row in reader:
-                # Check for 'positions' AND 'position' to be safe
                 pos_idx = -1
                 if 'positions' in header_lower: pos_idx = header_lower.index('positions')
                 elif 'position' in header_lower: pos_idx = header_lower.index('position')
@@ -246,9 +245,20 @@ def process_separate_files_to_table(cursor, skater_csv_file, goalie_csv_file, ta
 
                 team = data_dict.get('team', '').upper()
                 data_dict['team'] = TEAM_TRICODE_MAP.get(team, team)
+
+                # --- FIX: Calculate TOI/G for Skaters ---
+                if 'TOI/G' not in data_dict and 'Total TOI' in data_dict:
+                    try:
+                         toi = float(data_dict['Total TOI'])
+                         gp = float(row[gp_index])
+                         if gp > 0: data_dict['TOI/G'] = round(toi / gp, 2)
+                    except: pass
+                # ----------------------------------------
+
                 player_data[norm] = data_dict
                 player_data[norm]['player_name_normalized'] = norm
 
+    # 2. Goalies
     if os.path.exists(goalie_csv_file):
         with open(goalie_csv_file, 'r', encoding='utf-8-sig') as f:
             reader = csv.reader(f)
@@ -276,6 +286,20 @@ def process_separate_files_to_table(cursor, skater_csv_file, goalie_csv_file, ta
                 data_dict['team'] = TEAM_TRICODE_MAP.get(team, team)
                 if 'positions' not in data_dict: data_dict['positions'] = 'G'
 
+                # --- FIX: Calculate TOI/G for Goalies ---
+                if 'TOI/G' not in data_dict and 'GA' in data_dict and 'GAA' in data_dict:
+                    try:
+                        ga = float(data_dict['GA'])
+                        gaa = float(data_dict['GAA'])
+                        # Attempt to find GP in row
+                        gp = float(row[gp_idx]) if gp_idx < len(row) else 0
+
+                        if gaa > 0 and gp > 0:
+                            total_mins = (ga * 60) / gaa
+                            data_dict['TOI/G'] = round(total_mins / gp, 2)
+                    except: pass
+                # ----------------------------------------
+
                 if norm in player_data:
                     player_data[norm].update(data_dict)
                 else:
@@ -289,11 +313,9 @@ def process_separate_files_to_table(cursor, skater_csv_file, goalie_csv_file, ta
     all_keys = set()
     for p in player_data.values(): all_keys.update(p.keys())
 
-    # Clean empty keys
     final_headers = [k for k in list(all_keys) if k and k.strip() != ""]
     if 'player_name_normalized' in final_headers: final_headers.remove('player_name_normalized')
 
-    # FIX: Force Metadata Columns to TEXT to avoid type errors
     text_cols = ['player_name', 'positions', 'position', 'team', 'playerid', 'fantasy_team', 'salary', 'age', 'rank', 'gp_org', 'gp', 'total_toi']
 
     cols_def = []
@@ -316,7 +338,6 @@ def process_separate_files_to_table(cursor, skater_csv_file, goalie_csv_file, ta
 
     rows_to_insert = []
     for norm, data in player_data.items():
-        # FIX: Convert empty strings to None for ALL columns
         clean_row = []
         for h in insert_headers:
             val = data.get(h, None)
@@ -379,7 +400,6 @@ def join_yahoo_ids(conn, cursor):
 
     df_final = pd.merge(df_proj, df_yahoo, on='player_name_normalized', how='left')
 
-    # Missing ID Log
     missing_mask = df_final['player_id'].isnull()
     df_missing = df_final[missing_mask][['player_name', 'player_name_normalized', 'team']]
     if not df_missing.empty:
@@ -392,7 +412,6 @@ def join_yahoo_ids(conn, cursor):
     df_to_postgres(df_final, 'projections', conn)
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_proj_norm ON projections(player_name_normalized)")
 
-# RESTORED: Full Schedule Fetcher
 def get_full_nhl_schedule(start_date, end_date):
     all_games = {}
     curr = start_date
