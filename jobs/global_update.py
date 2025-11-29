@@ -4,7 +4,7 @@ Runs: Player IDs -> Projections -> TOI -> Schedule
 
 Author: Jason Druckenmiller
 Created: 11/26/2025
-Updated: 11/26/2025
+Updated: 11/28/2025
 """
 
 import os
@@ -24,8 +24,9 @@ logger = logging.getLogger("global_updater")
 def update_global_data():
     logger.info("--- Starting Global Data Update ---")
 
-
-    system_league_id = os.env iron.get("LEAGUE_ID")
+    # 1. Fetch Players (System League ID)
+    # FIX: Corrected typo here
+    system_league_id = os.environ.get("LEAGUE_ID")
 
     if system_league_id:
         try:
