@@ -3824,6 +3824,7 @@ def update_db_route():
 
 @app.route('/api/download_db')
 def download_db():
+    import sqlite3
     league_id = session.get('league_id')
 
     # Handle Test DB (keep existing logic if you want, or remove)
