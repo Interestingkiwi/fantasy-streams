@@ -128,11 +128,11 @@ def update_metadata(start, end):
 def create_global_tables():
     with get_db_connection() as conn:
         with conn.cursor() as cursor:
-            # FIX: Removed quotes from column names to match DB lowercasing behavior
+            # Ensure base tables exist
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS powerplay_stats (
-                    date_ TEXT, nhlplayerid INTEGER, skaterFullName TEXT, teamAbbrevs TEXT,
-                    ppTimeOnIce INTEGER, ppTimeOnIcePctPerGame REAL, ppAssists INTEGER, ppGoals INTEGER,
+                    date_ TEXT, nhlplayerid INTEGER, "skaterFullName" TEXT, "teamAbbrevs" TEXT,
+                    "ppTimeOnIce" INTEGER, "ppTimeOnIcePctPerGame" REAL, "ppAssists" INTEGER, "ppGoals" INTEGER,
                     PRIMARY KEY (date_, nhlplayerid)
                 );
                 CREATE TABLE IF NOT EXISTS table_metadata (id INTEGER PRIMARY KEY DEFAULT 1, start_date TEXT, end_date TEXT);
@@ -234,15 +234,15 @@ def fetch_daily_pp_stats():
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
                 vals = [tuple(x) for x in df[['date_', 'nhlplayerid', 'skaterFullName', 'teamAbbrevs', 'ppTimeOnIce', 'ppTimeOnIcePctPerGame', 'ppAssists', 'ppGoals']].to_numpy()]
-                # FIX: Removed quotes from INSERT columns
+                # Use Quoted Columns in INSERT
                 cursor.executemany("""
-                    INSERT INTO powerplay_stats (date_, nhlplayerid, skaterFullName, teamAbbrevs, ppTimeOnIce, ppTimeOnIcePctPerGame, ppAssists, ppGoals)
+                    INSERT INTO powerplay_stats (date_, nhlplayerid, "skaterFullName", "teamAbbrevs", "ppTimeOnIce", "ppTimeOnIcePctPerGame", "ppAssists", "ppGoals")
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (date_, nhlplayerid) DO UPDATE SET
-                        ppTimeOnIce = EXCLUDED.ppTimeOnIce,
-                        ppTimeOnIcePctPerGame = EXCLUDED.ppTimeOnIcePctPerGame,
-                        ppAssists = EXCLUDED.ppAssists,
-                        ppGoals = EXCLUDED.ppGoals
+                        "ppTimeOnIce" = EXCLUDED."ppTimeOnIce",
+                        "ppTimeOnIcePctPerGame" = EXCLUDED."ppTimeOnIcePctPerGame",
+                        "ppAssists" = EXCLUDED."ppAssists",
+                        "ppGoals" = EXCLUDED."ppGoals"
                 """, vals)
                 conn.commit()
 
@@ -256,20 +256,20 @@ def create_last_game_pp_table():
     with get_db_connection() as conn:
         with conn.cursor() as cursor:
             cursor.execute("DROP TABLE IF EXISTS last_game_pp")
-            # FIX: Use UNQUOTED source columns (lowercase in DB) and QUOTED aliases
+            # FIX: Removed quotes from source columns (teamAbbrevs), kept quotes on Aliases
             cursor.execute("""
                 CREATE TABLE last_game_pp AS
                 SELECT
                     t1.nhlplayerid,
-                    t1.ppTimeOnIce as "lg_ppTimeOnIce",
-                    t1.ppTimeOnIcePctPerGame as "lg_ppTimeOnIcePctPerGame",
-                    t1.ppAssists as "lg_ppAssists",
-                    t1.ppGoals as "lg_ppGoals"
+                    t1."ppTimeOnIce" as "lg_ppTimeOnIce",
+                    t1."ppTimeOnIcePctPerGame" as "lg_ppTimeOnIcePctPerGame",
+                    t1."ppAssists" as "lg_ppAssists",
+                    t1."ppGoals" as "lg_ppGoals"
                 FROM powerplay_stats t1
                 INNER JOIN (
-                    SELECT teamAbbrevs, MAX(date_) as max_date
-                    FROM powerplay_stats GROUP BY teamAbbrevs
-                ) t2 ON t1.teamAbbrevs = t2.teamAbbrevs AND t1.date_ = t2.max_date
+                    SELECT "teamAbbrevs", MAX(date_) as max_date
+                    FROM powerplay_stats GROUP BY "teamAbbrevs"
+                ) t2 ON t1."teamAbbrevs" = t2."teamAbbrevs" AND t1.date_ = t2.max_date
             """)
             conn.commit()
 
@@ -278,21 +278,21 @@ def create_last_week_pp_table():
     with get_db_connection() as conn:
         with conn.cursor() as cursor:
             cursor.execute("DROP TABLE IF EXISTS last_week_pp")
-            # FIX: Use UNQUOTED source columns and QUOTED aliases
+            # FIX: Removed quotes from source columns (teamAbbrevs, skaterFullName, etc)
             cursor.execute("""
                 CREATE TABLE last_week_pp AS
                 WITH team_game_counts AS (
-                    SELECT teamAbbrevs, COUNT(DISTINCT date_) as team_games_played
-                    FROM powerplay_stats GROUP BY teamAbbrevs
+                    SELECT "teamAbbrevs", COUNT(DISTINCT date_) as team_games_played
+                    FROM powerplay_stats GROUP BY "teamAbbrevs"
                 ),
                 player_sums AS (
-                    SELECT nhlplayerid, teamAbbrevs, MAX(skaterFullName) as "skaterFullName",
-                    SUM(ppTimeOnIce) as total_ppTimeOnIce,
-                    SUM(ppTimeOnIcePctPerGame) as total_ppTimeOnIcePctPerGame,
-                    SUM(ppAssists) as total_ppAssists,
-                    SUM(ppGoals) as total_ppGoals,
+                    SELECT nhlplayerid, "teamAbbrevs", MAX("skaterFullName") as "skaterFullName",
+                    SUM("ppTimeOnIce") as total_ppTimeOnIce,
+                    SUM("ppTimeOnIcePctPerGame") as total_ppTimeOnIcePctPerGame,
+                    SUM("ppAssists") as total_ppAssists,
+                    SUM("ppGoals") as total_ppGoals,
                     COUNT(date_) as player_games_played
-                    FROM powerplay_stats GROUP BY nhlplayerid, teamAbbrevs
+                    FROM powerplay_stats GROUP BY nhlplayerid, "teamAbbrevs"
                 )
                 SELECT ps.nhlplayerid, ps."skaterFullName", ps.teamAbbrevs,
                     CAST(ps.total_ppTimeOnIce AS REAL) / tgc.team_games_played AS "avg_ppTimeOnIce",
@@ -302,7 +302,7 @@ def create_last_week_pp_table():
                     ps.player_games_played as "player_games_played",
                     tgc.team_games_played as "team_games_played"
                 FROM player_sums ps
-                JOIN team_game_counts tgc ON ps.teamAbbrevs = tgc.teamAbbrevs
+                JOIN team_game_counts tgc ON ps."teamAbbrevs" = tgc."teamAbbrevs"
             """)
             conn.commit()
 
@@ -407,6 +407,18 @@ def fetch_and_update_scoring_to_date():
             cols['timeOnIcePerGame'] = 'TOI/G'
             # ---------------------------------------------
 
+            # --- FIX: Explicitly Calculate Per Game Stats ---
+            numeric_cols = ['gamesPlayed', 'goals', 'assists', 'points', 'plusMinus', 'penaltyMinutes', 'ppGoals', 'ppPoints', 'shots']
+            for col in numeric_cols:
+                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+
+            cols_to_average = ['goals', 'assists', 'points', 'plusMinus', 'penaltyMinutes', 'ppGoals', 'ppPoints', 'shots']
+            df['gamesPlayed'] = df['gamesPlayed'].astype(float)
+            for col in cols_to_average:
+                df[col] = np.where(df['gamesPlayed'] > 0, df[col] / df['gamesPlayed'], 0.0)
+                df[col] = df[col].round(3) # Round for cleanliness
+            # ----------------------------------------------
+
             # Filter and Rename
             df_final = df[list(cols.keys())].rename(columns=cols)
 
@@ -473,29 +485,18 @@ def fetch_and_update_goalie_stats():
             for col in numeric_cols:
                 df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
 
-            # Calculate Per Game (Totals -> Averages)
+            # Calculate TOI/G (Total Minutes / GP) BEFORE dividing totals
+            # Total Minutes = (Total GA * 60) / GAA
+            total_ga = df['goalsAgainst']
+            gaa = df['goalsAgainstAverage']
+            gp = df['gamesPlayed']
+
+            df['total_mins'] = np.where(gaa > 0, (total_ga * 60) / gaa, 0)
+            df['TOI/G'] = np.where(gp > 0, df['total_mins'] / gp, 0.0).round(2)
+
+            # Now convert counts to per-game
             for col in ['wins', 'losses', 'saves', 'shotsAgainst', 'goalsAgainst', 'shutouts']:
-                df[col] = np.where(df['gamesPlayed'] > 0, df[col] / df['gamesPlayed'], 0)
-
-            # --- FIX: Calculate TOI/G ---
-            # Formula: (Goals Against * 60) / GAA / GP
-            # To handle zeros: if GAA > 0 and GP > 0
-            df['TOI/G'] = 0.0
-            mask = (df['goalsAgainstAverage'] > 0) & (df['gamesPlayed'] > 0)
-            # Note: 'goalsAgainst' is now per-game, so we need to undo or use raw.
-            # Actually, using formula: Total Mins = (Total GA * 60) / GAA.  TOI/G = Total Mins / GP.
-            # We already converted 'goalsAgainst' to per game above? Yes.
-            # So let's use the raw values.
-            # Re-fetching row for clarity or calculating before conversion is safer.
-
-            # Let's recalculate TOI/G using the RAW values we can recover or just assume standard 60 min game logic
-            # if we assume they play full games. But better to derive.
-            # Re-doing conversion logic cleanly:
-
-            # 1. Save Raw totals for calc
-            raw_ga = df['goalsAgainst'] * df['gamesPlayed'] # Approximate recovery or use raw data if available?
-            # Actually, let's just do the calc *before* the overwrite loop
-            # (See revised block below)
+                df[col] = np.where(gp > 0, df[col] / gp, 0.0).round(3)
 
             cols = {
                 'playerId': 'nhlplayerid', 'goalieFullName': 'goalieFullName', 'teamAbbrevs': 'teamAbbrevs',
@@ -504,26 +505,6 @@ def fetch_and_update_goalie_stats():
                 'shutouts': 'shutouts', 'wins': 'wins', 'goalsAgainst': 'goalsAgainst',
                 'TOI/G': 'TOI/G' # Add to map
             }
-
-            # --- CORRECT LOGIC BLOCK ---
-            # Convert to numeric first
-            for col in ['gamesPlayed', 'wins', 'losses', 'saves', 'shotsAgainst', 'goalsAgainst', 'shutouts', 'goalsAgainstAverage']:
-                 df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
-
-            # Calculate TOI/G (Total Minutes / GP)
-            # Total Minutes = (Total GA * 60) / GAA
-            total_ga = df['goalsAgainst']
-            gaa = df['goalsAgainstAverage']
-            gp = df['gamesPlayed']
-
-            df['total_mins'] = np.where(gaa > 0, (total_ga * 60) / gaa, 0)
-            df['TOI/G'] = np.where(gp > 0, df['total_mins'] / gp, 0)
-
-            # Now convert counts to per-game
-            for col in ['wins', 'losses', 'saves', 'shotsAgainst', 'goalsAgainst', 'shutouts']:
-                df[col] = np.where(gp > 0, df[col] / gp, 0)
-            # ---------------------------
-
             df_final = df[list(cols.keys())].rename(columns=cols)
 
             with get_db_connection() as conn:
@@ -699,7 +680,7 @@ def create_stats_to_date_table():
         gl_map = {
             'gamesStarted': 'GS', 'gamesPlayed': 'GP', 'goalsAgainstAverage': 'GAA', 'losses': 'L',
             'savePct': 'SVpct', 'saves': 'SV', 'shotsAgainst': 'SA', 'shutouts': 'SHO', 'wins': 'W',
-            'goalsAgainst': 'GA', 'startpct': 'startpct'
+            'goalsAgainst': 'GA', 'startpct': 'startpct', 'TOI/G': 'TOI/G'
         }
         df_gl.rename(columns=gl_map, inplace=True)
         df_gl['nhlplayerid'] = pd.to_numeric(df_gl['nhlplayerid'], errors='coerce').fillna(0).astype(int)
