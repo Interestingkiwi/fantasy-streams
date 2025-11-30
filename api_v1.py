@@ -59,7 +59,7 @@ def api_get_database_status(league_id):
                     "league_name": league_name,
                     "filename": f"yahoo-{league_id}.db", # Legacy placeholder
                     "last_updated_utc": last_updated_utc,
-                    "size_bytes": 0 # Legacy placeholder (Postgres doesn't have a file size)
+                    "size_bytes": 0 # Legacy placeholder
                 })
 
     except Exception as e:
