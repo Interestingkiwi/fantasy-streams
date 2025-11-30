@@ -940,25 +940,37 @@ def _create_rosters_tall(cursor, conn, league_id, logger):
 def _update_league_transactions(yq, cursor, league_id, logger):
     try:
         logger.info("Fetching transactions...")
+        cursor.execute("DELETE FROM transactions WHERE league_id = %s", (league_id,))
+        # -------------------------------------------------------------------
+
         transactions = yq.get_league_transactions()
         data = []
         processed = set()
 
+        # Define Timezone
+        pacific_tz = pytz.timezone('US/Pacific')
+
         for t in transactions:
             if t.status == 'successful':
-                t_date = datetime.fromtimestamp(t.timestamp).strftime('%Y-%m-%d')
+                # Convert Unix timestamp to aware UTC, then to Pacific
+                dt_utc = datetime.fromtimestamp(t.timestamp, pytz.utc)
+                dt_pacific = dt_utc.astimezone(pacific_tz)
+                t_date = dt_pacific.strftime('%Y-%m-%d')
+
                 for p in t.players:
                     move = p.transaction_data.type
 
                     # Decode Player Name
                     p_name = p.name.full
-                    if isinstance(p_name, bytes): p_name = p_name.decode('utf-8')
+                    if isinstance(p_name, bytes):
+                        p_name = p_name.decode('utf-8')
 
                     # Decode Team Name
                     raw_team_name = p.transaction_data.destination_team_name if move == 'add' else p.transaction_data.source_team_name
                     if isinstance(raw_team_name, bytes):
                         raw_team_name = raw_team_name.decode('utf-8')
 
+                    # Check uniqueness (timestamp + player + move)
                     key = (t.timestamp, p.player_id, move)
                     if key not in processed:
                         data.append((league_id, t_date, p.player_id, p_name, raw_team_name, move))

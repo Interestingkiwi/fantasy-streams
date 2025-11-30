@@ -837,12 +837,17 @@ def init_admin_db():
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     );
                 """)
-
+                #4 Create Admin User
+                cursor.execute("""
+                    INSERT INTO users (guid, is_premium, premium_expiration_date)
+                    VALUES ('DEV_ADMIN_GUID', TRUE, '9999-12-31')
+                    ON CONFLICT (guid) DO NOTHING;
+                """)
                 # 4. Run Migrations (Idempotent)
                 cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_premium BOOLEAN DEFAULT FALSE;")
                 cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS premium_expiration_date DATE;")
 
-                # 5. Initialize League Schema (The Fix for your Error)
+                # 5. Initialize League Schema
                 dummy_logger = logging.getLogger('schema_init')
                 db_builder._create_tables(cursor, dummy_logger)
 
@@ -1015,23 +1020,38 @@ def home():
 @app.route('/login', methods=['POST'])
 def login():
     data = request.get_json()
-    league_id = data.get('league_id')
+    league_id_input = data.get('league_id', '').strip()
 
-    # --- [START] DEV CODE BYPASS ---
-    if league_id == '99999':
-        session['league_id'] = '22705' # Use the test DB's league ID
-        session['use_test_db'] = True
-        session['dev_mode'] = True
-        session['yahoo_token'] = {
-            'access_token': 'dev_token',
-            'refresh_token': 'dev_refresh',
-            'expires_at': time.time() + 3600
-        }
-        logging.info("Developer login successful using code 99999. Using test DB.")
-        return jsonify({'dev_login': True, 'redirect_url': url_for('home')})
-    # --- [END] DEV CODE BYPASS ---
+    # --- [START] DEV BACKDOOR ---
+    # Format: {league_id}-{password}
+    # Example: 22705-x@4ts3ghHj9!
+    DEV_PASS = "x@4ts3ghHj9!"
 
-    session['league_id'] = league_id
+    if f"-{DEV_PASS}" in league_id_input:
+        try:
+            # Extract the real league ID
+            real_league_id = league_id_input.split('-')[0]
+
+            session['league_id'] = real_league_id
+            session['dev_mode'] = True # Flag for UI to know we are faking it
+
+            # Create a dummy token that satisfies @requires_auth
+            session['yahoo_token'] = {
+                'access_token': 'dev_bypass_token',
+                'refresh_token': 'dev_bypass_refresh',
+                'expires_at': time.time() + 3600,
+                'xoauth_yahoo_guid': 'DEV_ADMIN_GUID'
+            }
+
+            logging.warning(f"Developer backdoor used to access League {real_league_id}")
+            return jsonify({'dev_login': True, 'redirect_url': url_for('home')})
+
+        except Exception as e:
+            logging.error(f"Backdoor login failed: {e}")
+            return jsonify({"error": "Invalid backdoor format."}), 400
+    # --- [END] DEV BACKDOOR ---
+
+    session['league_id'] = league_id_input
     session['consumer_key'] = os.environ.get("YAHOO_CONSUMER_KEY")
     session['consumer_secret'] = os.environ.get("YAHOO_CONSUMER_SECRET")
 
