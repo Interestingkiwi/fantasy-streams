@@ -49,10 +49,10 @@ def read_sql_postgres(query, conn):
             return pd.DataFrame(data, columns=columns)
         return pd.DataFrame()
 
-def df_to_postgres(df, table_name, conn, if_exists='replace', lowercase_columns=True):
+def df_to_postgres(df, table_name, conn, if_exists='replace', lowercase_columns=True, primary_key=None):
     """
     Writes DataFrame to Postgres.
-    Prioritizes 'nhlplayerid' as Primary Key to handle duplicate names.
+    primary_key: The column name to use as PRIMARY KEY.
     """
     if df.empty:
         print(f"Warning: DataFrame for {table_name} is empty. Skipping write.")
@@ -61,6 +61,8 @@ def df_to_postgres(df, table_name, conn, if_exists='replace', lowercase_columns=
     # 1. Handle Case Sensitivity
     if lowercase_columns:
         df.columns = [c.lower() for c in df.columns]
+        if primary_key:
+            primary_key = primary_key.lower()
 
     cursor = conn.cursor()
     if if_exists == 'replace':
@@ -68,22 +70,14 @@ def df_to_postgres(df, table_name, conn, if_exists='replace', lowercase_columns=
 
     # 2. Create Table Schema
     cols = []
-    has_id_pk = False
-
-    # Check if we have an ID to use as PK
-    if 'nhlplayerid' in df.columns:
-        has_id_pk = True
-
     for col, dtype in df.dtypes.items():
         pg_type = 'TEXT'
         if pd.api.types.is_integer_dtype(dtype): pg_type = 'INTEGER'
         elif pd.api.types.is_float_dtype(dtype): pg_type = 'DOUBLE PRECISION'
 
-        # FIX: Use nhlplayerid as PK if available, otherwise fallback to name
-        if col == 'nhlplayerid' and has_id_pk:
-            cols.append(f'"{col}" INTEGER PRIMARY KEY')
-        elif col == 'player_name_normalized' and not has_id_pk:
-            cols.append(f'"{col}" TEXT PRIMARY KEY')
+        # Define Primary Key
+        if primary_key and col == primary_key:
+            cols.append(f'"{col}" {pg_type} PRIMARY KEY')
         else:
             cols.append(f'"{col}" {pg_type}')
 
@@ -93,18 +87,19 @@ def df_to_postgres(df, table_name, conn, if_exists='replace', lowercase_columns=
     # 3. Insert Data
     columns = list(df.columns)
     placeholders = ",".join(["%s"] * len(columns))
-    col_names = ",".join([f'"{c}"' for c in columns])
+    col_names = ",".join([f'"{c}"' for c in columns]) # Quoted
 
     data = [tuple(None if pd.isna(x) else x for x in row) for row in df.to_numpy()]
 
-    # On conflict, do nothing (first winner keeps spot if ID duplicated, which shouldn't happen with unique IDs)
-    insert_sql = f"INSERT INTO {table_name} ({col_names}) VALUES ({placeholders}) ON CONFLICT DO NOTHING"
+    # Handle conflict based on PK
+    conflict_clause = f"ON CONFLICT (\"{primary_key}\") DO NOTHING" if primary_key else ""
+
+    insert_sql = f"INSERT INTO {table_name} ({col_names}) VALUES ({placeholders}) {conflict_clause}"
     cursor.executemany(insert_sql, data)
     conn.commit()
     print(f"Successfully wrote {len(data)} rows to {table_name}.")
 
 def run_database_cleanup(target_start_date):
-    """Deletes records from powerplay_stats older than the target start date."""
     target_str = target_start_date.strftime("%Y-%m-%d")
     print(f"Cleaning up powerplay_stats before {target_str}...")
 
@@ -420,17 +415,16 @@ def fetch_and_update_scoring_to_date():
 
         if all_data:
             df = pd.DataFrame(all_data)
-
-            # FIX: We removed the hardcoded name fixes because we are now using ID as PK
-
             df.drop_duplicates(subset=['playerId'], inplace=True)
             if 'skaterFullName' in df.columns:
                 df['player_name_normalized'] = df['skaterFullName'].apply(normalize_name)
 
+            # Convert to numeric
             numeric_cols = ['gamesPlayed', 'goals', 'assists', 'points', 'plusMinus', 'penaltyMinutes', 'ppGoals', 'ppPoints', 'shots']
             for col in numeric_cols:
                 df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
 
+            # Per Game Division
             cols_to_average = ['goals', 'assists', 'points', 'plusMinus', 'penaltyMinutes', 'ppGoals', 'ppPoints', 'shots']
             df['gamesPlayed'] = df['gamesPlayed'].astype(float)
             for col in cols_to_average:
@@ -452,7 +446,8 @@ def fetch_and_update_scoring_to_date():
             df_final = df[keep_cols].rename(columns=cols)
 
             with get_db_connection() as conn:
-                df_to_postgres(df_final, 'scoring_to_date', conn)
+                # Use nhlplayerid as PK for stats
+                df_to_postgres(df_final, 'scoring_to_date', conn, primary_key='nhlplayerid')
 
     except Exception as e:
         print(f"Error scoring: {e}")
@@ -487,7 +482,8 @@ def fetch_and_update_bangers_stats():
             df_final = df[keep_cols].rename(columns=cols)
 
             with get_db_connection() as conn:
-                df_to_postgres(df_final, 'bangers_to_date', conn)
+                # Use nhlplayerid as PK for stats
+                df_to_postgres(df_final, 'bangers_to_date', conn, primary_key='nhlplayerid')
 
     except Exception as e: print(f"Error bangers: {e}")
 
@@ -549,7 +545,8 @@ def fetch_and_update_goalie_stats():
                 if 'team_tricode' in df_final.columns: del df_final['team_tricode']
                 if 'team_gp' in df_final.columns: del df_final['team_gp']
 
-                df_to_postgres(df_final, 'goalie_to_date', conn)
+                # Use nhlplayerid as PK for stats
+                df_to_postgres(df_final, 'goalie_to_date', conn, primary_key='nhlplayerid')
 
     except Exception as e: print(f"Error goalies: {e}")
 
@@ -591,8 +588,8 @@ def join_special_teams_data():
         if 'nhlplayerid' in df_final.columns:
             df_final['nhlplayerid'] = pd.to_numeric(df_final['nhlplayerid'], errors='coerce').astype('Int64')
 
-        # Use lowercase=False to PRESERVE MixedCase for Projections table
-        df_to_postgres(df_final, 'projections', conn, lowercase_columns=False)
+        # Projections table is keyed by NAME (since it comes from CSVs)
+        df_to_postgres(df_final, 'projections', conn, lowercase_columns=False, primary_key='player_name_normalized')
 
         with conn.cursor() as cursor:
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_proj_norm ON projections(player_name_normalized)")
@@ -627,7 +624,6 @@ def perform_smart_join(base_df, merge_df, merge_cols, source_name, conn):
         if c in merge_df.columns:
             cols_found.append(c)
         elif c.lower() in merge_df.columns:
-            # Rename lowercase in merge_df to match requested MixedCase
             merge_df.rename(columns={c.lower(): c}, inplace=True)
             df_exact.rename(columns={c.lower(): c}, inplace=True)
             if not df_name.empty:
@@ -676,7 +672,6 @@ def create_stats_to_date_table():
         df_proj['nhlplayerid'] = pd.to_numeric(df_proj['nhlplayerid'], errors='coerce').fillna(0).astype(int)
         df_proj.drop_duplicates(subset=['nhlplayerid'], inplace=True)
 
-        # DROP RANK COLUMNS from projections to avoid duplication later
         drop_rank_cols = [c for c in df_proj.columns if c.endswith('_cat_rank')]
         if drop_rank_cols:
             df_proj.drop(columns=drop_rank_cols, inplace=True)
@@ -710,8 +705,7 @@ def create_stats_to_date_table():
 
         df_merged = perform_smart_join(df_merged, df_gl, list(gl_map.values()), 'goalies', conn)
 
-        # FIX: lowercase=False to preserve MixedCase keys
-        df_to_postgres(df_merged, 'stats_to_date', conn, lowercase_columns=False)
+        df_to_postgres(df_merged, 'stats_to_date', conn, lowercase_columns=False, primary_key='player_name_normalized')
 
 def calculate_and_save_to_date_ranks():
     print("\n--- Calculating Ranks ---")
@@ -728,17 +722,13 @@ def calculate_and_save_to_date_ranks():
         num_skaters = mask_skater.sum()
         if num_skaters > 0:
             for stat in skater_stats:
-                # FIX: Create rank columns as UpperCase to match standard
                 col = f"{stat}_cat_rank"
-
-                # Check both Mixed and Lower
                 s_key = stat if stat in df.columns else stat.lower()
 
                 if s_key in df.columns:
                     df[s_key] = pd.to_numeric(df[s_key], errors='coerce').fillna(0)
                     ranks = df.loc[mask_skater, s_key].rank(method='first', ascending=False)
                     pct = ranks / num_skaters
-
                     cond = [pct<=0.05, pct<=0.10, pct<=0.15, pct<=0.20, pct<=0.25, pct<=0.30, pct<=0.35, pct<=0.40, pct<=0.45, pct<=0.50, pct<=0.75]
                     choice = [1,2,3,4,5,6,7,8,9,10,15]
                     df.loc[mask_skater, col] = np.select(cond, choice, default=20)
@@ -759,8 +749,7 @@ def calculate_and_save_to_date_ranks():
                     choice = [1,2,3,4,5,6,7,8,9,10,15]
                     df.loc[mask_goalie, col] = np.select(cond, choice, default=20)
 
-        # FIX: Preserve mixed case
-        df_to_postgres(df, 'stats_to_date', conn, lowercase_columns=False)
+        df_to_postgres(df, 'stats_to_date', conn, lowercase_columns=False, primary_key='player_name_normalized')
 
 def create_combined_projections():
     print("\n--- Creating Combined Projections ---")
@@ -775,7 +764,7 @@ def create_combined_projections():
         # 1. Init with ID
         df_final_ids = df_merged[['nhlplayerid']].copy()
 
-        # 2. Collect new columns in a dict (Performance Optimization)
+        # 2. Collect new columns
         final_processed_data = {}
 
         id_cols = ['player_name_normalized', 'player_name', 'team', 'age', 'player_id', 'positions', 'status',
@@ -784,17 +773,17 @@ def create_combined_projections():
                    'player_games_played', 'team_games_played']
 
         for col in id_cols:
-            # Check Mixed, Lower, and Suffixed
             col_lower = col.lower()
+            c_proj, c_stat = f"{col}_proj", f"{col}_stats"
+            c_proj_l, c_stat_l = f"{col_lower}_proj", f"{col_lower}_stats"
 
-            def get_series(base, suffix):
-                keys = [f"{base}{suffix}", f"{base.lower()}{suffix}", base, base.lower()]
-                for k in keys:
-                    if k in df_merged: return df_merged[k]
+            def get_series(name_list):
+                for n in name_list:
+                    if n in df_merged: return df_merged[n]
                 return None
 
-            s_proj = get_series(col, "_proj")
-            s_stat = get_series(col, "_stats")
+            s_proj = get_series([c_proj, c_proj_l, col, col_lower])
+            s_stat = get_series([c_stat, c_stat_l])
 
             if s_stat is not None and s_proj is not None:
                 final_processed_data[col] = s_stat.fillna(s_proj)
@@ -821,7 +810,6 @@ def create_combined_projections():
             s_proj = s_proj.fillna(0)
             s_stat = s_stat.fillna(0)
 
-            # Logic: If column exists in original PROJ df, use average.
             has_p = (col in df_proj.columns) or (col.lower() in df_proj.columns)
             has_s = (col in df_stats.columns) or (col.lower() in df_stats.columns)
 
@@ -836,8 +824,7 @@ def create_combined_projections():
         df_data = pd.DataFrame(final_processed_data)
         df_final = pd.concat([df_final_ids, df_data], axis=1)
 
-        # Use lowercase=False to preserve MixedCase names
-        df_to_postgres(df_final, 'combined_projections', conn, lowercase_columns=False)
+        df_to_postgres(df_final, 'combined_projections', conn, lowercase_columns=False, primary_key='player_name_normalized')
 
 
 def update_toi_stats():
