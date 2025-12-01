@@ -13,10 +13,16 @@ import unicodedata
 import re
 import pytz
 import numpy as np
+import json
 
 # Add parent dir to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from database import get_db_connection
+
+# --- Constants ---
+# Path to 'static' folder for debug dumps
+DEBUG_DUMP_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'static')
+os.makedirs(DEBUG_DUMP_DIR, exist_ok=True)
 
 FRANCHISE_TO_TRICODE_MAP = {
     "Anaheim Ducks": "ANA", "Boston Bruins": "BOS", "Buffalo Sabres": "BUF",
@@ -52,30 +58,25 @@ def read_sql_postgres(query, conn):
 def df_to_postgres(df, table_name, conn, if_exists='replace', lowercase_columns=True, primary_key=None):
     """
     Writes DataFrame to Postgres.
-    primary_key: The column name to use as PRIMARY KEY.
     """
     if df.empty:
         print(f"Warning: DataFrame for {table_name} is empty. Skipping write.")
         return
 
-    # 1. Handle Case Sensitivity
     if lowercase_columns:
         df.columns = [c.lower() for c in df.columns]
-        if primary_key:
-            primary_key = primary_key.lower()
+        if primary_key: primary_key = primary_key.lower()
 
     cursor = conn.cursor()
     if if_exists == 'replace':
         cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
 
-    # 2. Create Table Schema
     cols = []
     for col, dtype in df.dtypes.items():
         pg_type = 'TEXT'
         if pd.api.types.is_integer_dtype(dtype): pg_type = 'INTEGER'
         elif pd.api.types.is_float_dtype(dtype): pg_type = 'DOUBLE PRECISION'
 
-        # Define Primary Key
         if primary_key and col == primary_key:
             cols.append(f'"{col}" {pg_type} PRIMARY KEY')
         else:
@@ -84,14 +85,12 @@ def df_to_postgres(df, table_name, conn, if_exists='replace', lowercase_columns=
     create_sql = f"CREATE TABLE IF NOT EXISTS {table_name} ({', '.join(cols)})"
     cursor.execute(create_sql)
 
-    # 3. Insert Data
     columns = list(df.columns)
     placeholders = ",".join(["%s"] * len(columns))
-    col_names = ",".join([f'"{c}"' for c in columns]) # Quoted
+    col_names = ",".join([f'"{c}"' for c in columns])
 
     data = [tuple(None if pd.isna(x) else x for x in row) for row in df.to_numpy()]
 
-    # Handle conflict based on PK
     conflict_clause = f"ON CONFLICT (\"{primary_key}\") DO NOTHING" if primary_key else ""
 
     insert_sql = f"INSERT INTO {table_name} ({col_names}) VALUES ({placeholders}) {conflict_clause}"
@@ -101,15 +100,11 @@ def df_to_postgres(df, table_name, conn, if_exists='replace', lowercase_columns=
 
 def run_database_cleanup(target_start_date):
     target_str = target_start_date.strftime("%Y-%m-%d")
-    print(f"Cleaning up powerplay_stats before {target_str}...")
-
     with get_db_connection() as conn:
         with conn.cursor() as cursor:
             cursor.execute("SELECT to_regclass('public.powerplay_stats')")
             if cursor.fetchone()[0]:
                 cursor.execute("DELETE FROM powerplay_stats WHERE date_ < %s", (target_str,))
-                deleted_count = cursor.rowcount
-                print(f"Deleted {deleted_count} old records.")
         conn.commit()
 
 def get_last_run_end_date():
@@ -150,7 +145,6 @@ def create_global_tables():
 
 def log_unmatched_players(conn, df_unmatched, source_table_name):
     if df_unmatched.empty: return
-    print(f"    -> Found {len(df_unmatched)} unmatched records from '{source_table_name}'. Logging.")
 
     log_df = pd.DataFrame()
     log_df['nhlplayerid'] = df_unmatched.get('nhlplayerid', pd.NA)
@@ -386,11 +380,14 @@ def fetch_and_update_scoring_to_date():
     base_url = "https://api.nhle.com/stats/rest/en/skater/summary"
     all_data = []
     start = 0
+    total_expected = 0
+
     try:
+        # --- FIX: Retry + Total Count Check + Debug Dump ---
         while True:
             params = {"isAggregate": "false", "cayenneExp": f"gameTypeId=2 and seasonId={season_id}", "start": start, "limit": 100}
-
             success = False
+
             for attempt in range(3):
                 try:
                     r = requests.get(base_url, params=params, timeout=15)
@@ -401,10 +398,15 @@ def fetch_and_update_scoring_to_date():
                     time.sleep(2)
 
             if not success:
-                print(f"Failed to fetch page start={start} after 3 retries.")
+                print(f"Failed to fetch scoring page start={start} after 3 retries.")
                 break
 
-            data = r.json().get('data', [])
+            resp_json = r.json()
+            if start == 0:
+                total_expected = resp_json.get('total', 0)
+                print(f"API reports total scoring records: {total_expected}")
+
+            data = resp_json.get('data', [])
             if not data: break
 
             all_data.extend(data)
@@ -412,6 +414,14 @@ def fetch_and_update_scoring_to_date():
             time.sleep(0.1)
 
         print(f"Fetched {len(all_data)} scoring records.")
+        if len(all_data) < total_expected:
+            print(f"WARNING: Missed {total_expected - len(all_data)} records!")
+
+        # --- DEBUG DUMP ---
+        dump_path = os.path.join(DEBUG_DUMP_DIR, 'debug_scoring.json')
+        with open(dump_path, 'w') as f:
+            json.dump(all_data, f)
+        print(f"Debug dump saved to {dump_path}")
 
         if all_data:
             df = pd.DataFrame(all_data)
@@ -419,12 +429,10 @@ def fetch_and_update_scoring_to_date():
             if 'skaterFullName' in df.columns:
                 df['player_name_normalized'] = df['skaterFullName'].apply(normalize_name)
 
-            # Convert to numeric
             numeric_cols = ['gamesPlayed', 'goals', 'assists', 'points', 'plusMinus', 'penaltyMinutes', 'ppGoals', 'ppPoints', 'shots']
             for col in numeric_cols:
                 df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
 
-            # Per Game Division
             cols_to_average = ['goals', 'assists', 'points', 'plusMinus', 'penaltyMinutes', 'ppGoals', 'ppPoints', 'shots']
             df['gamesPlayed'] = df['gamesPlayed'].astype(float)
             for col in cols_to_average:
@@ -446,7 +454,6 @@ def fetch_and_update_scoring_to_date():
             df_final = df[keep_cols].rename(columns=cols)
 
             with get_db_connection() as conn:
-                # Use nhlplayerid as PK for stats
                 df_to_postgres(df_final, 'scoring_to_date', conn, primary_key='nhlplayerid')
 
     except Exception as e:
@@ -458,17 +465,40 @@ def fetch_and_update_bangers_stats():
     base_url = "https://api.nhle.com/stats/rest/en/skater/scoringpergame"
     all_data = []
     start = 0
+    total_expected = 0
     try:
         while True:
             params = {"isAggregate": "false", "cayenneExp": f"gameTypeId=2 and seasonId={season_id}", "start": start, "limit": 100}
-            r = requests.get(base_url, params=params).json()
-            data = r.get('data', [])
+            success = False
+            for attempt in range(3):
+                try:
+                    r = requests.get(base_url, params=params, timeout=15)
+                    if r.status_code == 200:
+                        success = True
+                        break
+                except requests.RequestException:
+                    time.sleep(2)
+
+            if not success: break
+
+            resp_json = r.json()
+            if start == 0:
+                total_expected = resp_json.get('total', 0)
+                print(f"API reports total bangers records: {total_expected}")
+
+            data = resp_json.get('data', [])
             if not data: break
             all_data.extend(data)
             start += 100
             time.sleep(0.1)
 
         print(f"Fetched {len(all_data)} bangers records.")
+
+        # --- DEBUG DUMP ---
+        dump_path = os.path.join(DEBUG_DUMP_DIR, 'debug_bangers.json')
+        with open(dump_path, 'w') as f:
+            json.dump(all_data, f)
+        print(f"Debug dump saved to {dump_path}")
 
         if all_data:
             df = pd.DataFrame(all_data)
@@ -482,7 +512,6 @@ def fetch_and_update_bangers_stats():
             df_final = df[keep_cols].rename(columns=cols)
 
             with get_db_connection() as conn:
-                # Use nhlplayerid as PK for stats
                 df_to_postgres(df_final, 'bangers_to_date', conn, primary_key='nhlplayerid')
 
     except Exception as e: print(f"Error bangers: {e}")
@@ -545,7 +574,6 @@ def fetch_and_update_goalie_stats():
                 if 'team_tricode' in df_final.columns: del df_final['team_tricode']
                 if 'team_gp' in df_final.columns: del df_final['team_gp']
 
-                # Use nhlplayerid as PK for stats
                 df_to_postgres(df_final, 'goalie_to_date', conn, primary_key='nhlplayerid')
 
     except Exception as e: print(f"Error goalies: {e}")
@@ -588,7 +616,7 @@ def join_special_teams_data():
         if 'nhlplayerid' in df_final.columns:
             df_final['nhlplayerid'] = pd.to_numeric(df_final['nhlplayerid'], errors='coerce').astype('Int64')
 
-        # Projections table is keyed by NAME (since it comes from CSVs)
+        # Use lowercase=False to PRESERVE MixedCase for Projections table
         df_to_postgres(df_final, 'projections', conn, lowercase_columns=False, primary_key='player_name_normalized')
 
         with conn.cursor() as cursor:
@@ -764,7 +792,7 @@ def create_combined_projections():
         # 1. Init with ID
         df_final_ids = df_merged[['nhlplayerid']].copy()
 
-        # 2. Collect new columns
+        # 2. Collect new columns in a dict (Performance Optimization)
         final_processed_data = {}
 
         id_cols = ['player_name_normalized', 'player_name', 'team', 'age', 'player_id', 'positions', 'status',
@@ -773,17 +801,17 @@ def create_combined_projections():
                    'player_games_played', 'team_games_played']
 
         for col in id_cols:
+            # Check Mixed, Lower, and Suffixed
             col_lower = col.lower()
-            c_proj, c_stat = f"{col}_proj", f"{col}_stats"
-            c_proj_l, c_stat_l = f"{col_lower}_proj", f"{col_lower}_stats"
 
-            def get_series(name_list):
-                for n in name_list:
-                    if n in df_merged: return df_merged[n]
+            def get_series(base, suffix):
+                keys = [f"{base}{suffix}", f"{base.lower()}{suffix}", base, base.lower()]
+                for k in keys:
+                    if k in df_merged: return df_merged[k]
                 return None
 
-            s_proj = get_series([c_proj, c_proj_l, col, col_lower])
-            s_stat = get_series([c_stat, c_stat_l])
+            s_proj = get_series(col, "_proj")
+            s_stat = get_series(col, "_stats")
 
             if s_stat is not None and s_proj is not None:
                 final_processed_data[col] = s_stat.fillna(s_proj)
@@ -810,6 +838,7 @@ def create_combined_projections():
             s_proj = s_proj.fillna(0)
             s_stat = s_stat.fillna(0)
 
+            # Logic: If column exists in original PROJ df, use average.
             has_p = (col in df_proj.columns) or (col.lower() in df_proj.columns)
             has_s = (col in df_stats.columns) or (col.lower() in df_stats.columns)
 
@@ -824,6 +853,7 @@ def create_combined_projections():
         df_data = pd.DataFrame(final_processed_data)
         df_final = pd.concat([df_final_ids, df_data], axis=1)
 
+        # Use lowercase=False to preserve MixedCase names
         df_to_postgres(df_final, 'combined_projections', conn, lowercase_columns=False, primary_key='player_name_normalized')
 
 
