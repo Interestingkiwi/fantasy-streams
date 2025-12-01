@@ -51,26 +51,29 @@ def read_sql_postgres(query, conn):
 
 def df_to_postgres(df, table_name, conn, if_exists='replace'):
     """
-    Writes DataFrame to Postgres using efficient COPY or INSERT.
+    Writes DataFrame to Postgres using quoted lowercase columns to handle special chars.
     """
-    if df.empty: return
+    if df.empty:
+        print(f"Warning: DataFrame for {table_name} is empty. Skipping write.")
+        return
 
-    # Force lowercase columns for consistency
+    # 1. Force Lowercase Columns for consistency
     df.columns = [c.lower() for c in df.columns]
 
     cursor = conn.cursor()
     if if_exists == 'replace':
         cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
 
-    # Create Table Schema
+    # 2. Create Table Schema (Quoted Columns)
     cols = []
     for col, dtype in df.dtypes.items():
         pg_type = 'TEXT'
         if pd.api.types.is_integer_dtype(dtype): pg_type = 'INTEGER'
         elif pd.api.types.is_float_dtype(dtype): pg_type = 'DOUBLE PRECISION'
 
+        # Always quote column names to handle "toi/g"
         if col == 'player_name_normalized':
-            cols.append(f"{col} TEXT PRIMARY KEY")
+            cols.append(f'"{col}" TEXT PRIMARY KEY')
         elif col == 'nhlplayerid':
             cols.append(f'"{col}" INTEGER')
         else:
@@ -79,16 +82,18 @@ def df_to_postgres(df, table_name, conn, if_exists='replace'):
     create_sql = f"CREATE TABLE IF NOT EXISTS {table_name} ({', '.join(cols)})"
     cursor.execute(create_sql)
 
-    # Insert Data
+    # 3. Insert Data (Quoted Columns)
     columns = list(df.columns)
     placeholders = ",".join(["%s"] * len(columns))
-    # Use unquoted column names in INSERT
-    col_names = ",".join([f'{c}' for c in columns])
+    col_names = ",".join([f'"{c}"' for c in columns]) # Quoted!
 
+    # Convert DF to list of tuples
     data = [tuple(None if pd.isna(x) else x for x in row) for row in df.to_numpy()]
 
-    cursor.executemany(f"INSERT INTO {table_name} ({col_names}) VALUES ({placeholders}) ON CONFLICT DO NOTHING", data)
+    insert_sql = f"INSERT INTO {table_name} ({col_names}) VALUES ({placeholders}) ON CONFLICT DO NOTHING"
+    cursor.executemany(insert_sql, data)
     conn.commit()
+    print(f"Successfully wrote {len(data)} rows to {table_name}.")
 
 def run_database_cleanup(target_start_date):
     """Deletes records from powerplay_stats older than the target start date."""
@@ -127,6 +132,7 @@ def update_metadata(start, end):
 def create_global_tables():
     with get_db_connection() as conn:
         with conn.cursor() as cursor:
+            # Create base tables with standard lowercase names
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS powerplay_stats (
                     date_ TEXT, nhlplayerid INTEGER, skaterfullname TEXT, teamabbrevs TEXT,
@@ -235,6 +241,7 @@ def fetch_daily_pp_stats():
 
             with conn.cursor() as cursor:
                 vals = [tuple(x) for x in df[['date_', 'nhlplayerid', 'skaterfullname', 'teamabbrevs', 'pptimeonice', 'pptimeonicepctpergame', 'ppassists', 'ppgoals']].to_numpy()]
+                # Removed quotes from here, relying on standard lowercase
                 cursor.executemany("""
                     INSERT INTO powerplay_stats (date_, nhlplayerid, skaterfullname, teamabbrevs, pptimeonice, pptimeonicepctpergame, ppassists, ppgoals)
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
@@ -405,6 +412,8 @@ def fetch_and_update_scoring_to_date():
 
             df['ppAssists'] = df['ppPoints'] - df['ppGoals']
 
+            # Mapping Source Keys -> Lowercase Destination keys
+            # Note: timeOnIcePerGame is mapped to 'toi/g'
             cols = {
                 'playerId': 'nhlplayerid', 'skaterFullName': 'skaterfullname', 'teamAbbrevs': 'teamabbrevs',
                 'gamesPlayed': 'gamesplayed', 'goals': 'goals', 'assists': 'assists', 'points': 'points',
@@ -412,8 +421,6 @@ def fetch_and_update_scoring_to_date():
                 'ppPoints': 'pppoints', 'shootingPct': 'shootingpct', 'timeOnIcePerGame': 'toi/g',
                 'shots': 'shots', 'ppAssists': 'ppassists'
             }
-            # Rename TOI/G
-            cols['timeOnIcePerGame'] = 'TOI/G'
 
             # Filter and Rename
             keep_cols = list(cols.keys()) + ['player_name_normalized']
@@ -503,7 +510,7 @@ def fetch_and_update_goalie_stats():
                 'gamesStarted': 'gamesstarted', 'gamesPlayed': 'gamesplayed', 'goalsAgainstAverage': 'goalsagainstaverage',
                 'losses': 'losses', 'savePct': 'savepct', 'saves': 'saves', 'shotsAgainst': 'shotsagainst',
                 'shutouts': 'shutouts', 'wins': 'wins', 'goalsAgainst': 'goalsagainst',
-                'TOI/G': 'TOI/G'
+                'TOI/G': 'toi/g' # Maps to lowercase toi/g
             }
             df_final = df[list(cols.keys())].rename(columns=cols)
 
@@ -557,14 +564,9 @@ def perform_smart_join(base_df, merge_df, merge_cols, source_name, conn):
     log_unmatched_players(conn, df_unmatched, source_name)
 
     # 3. Merge Exact
-    # We need to ensure we are selecting the right lowercase columns from merge_df
-
-    # Map CamelCase keys (from app logic) to lowercase keys (from DB/df_to_postgres)
-    # But keep TOI/G as is because we renamed it specifically.
-    # Actually, df_to_postgres forces ALL to lowercase, including 'toi/g'.
-    # So we must request 'toi/g' from the DF, not 'TOI/G'.
-
+    # Note: merge_cols are CamelCase logic keys. Convert to lowercase to find them in merge_df.
     cols_to_select = ['nhlplayerid', 'team'] + [c.lower() for c in merge_cols]
+    # Check if they exist
     cols_exact = [c for c in cols_to_select if c in df_exact.columns]
 
     df_merged = pd.merge(base_df, df_exact[cols_exact], on=['nhlplayerid', 'team'], how='left', suffixes=('', '_new'))
@@ -675,36 +677,35 @@ def calculate_and_save_to_date_ranks():
         num_skaters = mask_skater.sum()
         if num_skaters > 0:
             for stat in skater_stats:
-                # Access lowercase if needed, but we renamed in create_stats_to_date
-                # But df_to_postgres lowercased everything again when saving 'stats_to_date'.
-                # So we must look for lowercase keys, or rename again.
-                # Let's look for lowercase keys.
-                stat_lower = stat.lower()
-                if stat_lower in df.columns:
-                    col = f"{stat}_cat_rank"
-                    df[stat_lower] = pd.to_numeric(df[stat_lower], errors='coerce').fillna(0)
-                    ranks = df.loc[mask_skater, stat_lower].rank(method='first', ascending=False)
+                # Look for CamelCase keys first (renamed in create_stats_to_date)
+                col = f"{stat}_cat_rank"
+                if stat in df.columns:
+                    df[stat] = pd.to_numeric(df[stat], errors='coerce').fillna(0)
+                    ranks = df.loc[mask_skater, stat].rank(method='first', ascending=False)
                     pct = ranks / num_skaters
 
                     cond = [pct<=0.05, pct<=0.10, pct<=0.15, pct<=0.20, pct<=0.25, pct<=0.30, pct<=0.35, pct<=0.40, pct<=0.45, pct<=0.50, pct<=0.75]
                     choice = [1,2,3,4,5,6,7,8,9,10,15]
                     df.loc[mask_skater, col] = np.select(cond, choice, default=20)
+                elif stat.lower() in df.columns: # Fallback to lowercase
+                     stat_l = stat.lower()
+                     df[stat_l] = pd.to_numeric(df[stat_l], errors='coerce').fillna(0)
+                     ranks = df.loc[mask_skater, stat_l].rank(method='first', ascending=False)
+                     pct = ranks / num_skaters
+                     cond = [pct<=0.05, pct<=0.10, pct<=0.15, pct<=0.20, pct<=0.25, pct<=0.30, pct<=0.35, pct<=0.40, pct<=0.45, pct<=0.50, pct<=0.75]
+                     choice = [1,2,3,4,5,6,7,8,9,10,15]
+                     df.loc[mask_skater, col] = np.select(cond, choice, default=20)
 
         # Goalies
         mask_goalie = df['positions'].str.contains('G', na=False)
         num_goalies = mask_goalie.sum()
         if num_goalies > 0:
             for stat, is_inv in goalie_stats.items():
-                stat_lower = stat.lower()
-                # Exception for TOI/G -> toi/g
-                if stat == 'TOI/G': stat_lower = 'toi/g'
-
-                if stat_lower in df.columns:
-                    col = f"{stat}_cat_rank"
-                    df[stat_lower] = pd.to_numeric(df[stat_lower], errors='coerce').fillna(0)
-                    ranks = df.loc[mask_goalie, stat_lower].rank(method='first', ascending=is_inv)
+                col = f"{stat}_cat_rank"
+                if stat in df.columns:
+                    df[stat] = pd.to_numeric(df[stat], errors='coerce').fillna(0)
+                    ranks = df.loc[mask_goalie, stat].rank(method='first', ascending=is_inv)
                     pct = ranks / num_goalies
-
                     cond = [pct<=0.05, pct<=0.10, pct<=0.15, pct<=0.20, pct<=0.25, pct<=0.30, pct<=0.35, pct<=0.40, pct<=0.45, pct<=0.50, pct<=0.75]
                     choice = [1,2,3,4,5,6,7,8,9,10,15]
                     df.loc[mask_goalie, col] = np.select(cond, choice, default=20)
@@ -731,19 +732,25 @@ def create_combined_projections():
                    'player_games_played', 'team_games_played']
 
         for col in id_cols:
+            # Check CamelCase first (from Projections)
+            # Check Lowercase if not found (from StatsToDate db read)
             col_lower = col.lower()
-            c_proj, c_stat = f"{col_lower}_proj", f"{col_lower}_stats"
 
-            # FIX: Check for lowercase columns in df_merged (from DB reads)
-            s_proj = None
-            if c_proj in df_merged: s_proj = df_merged[c_proj]
-            elif col_lower in df_merged: s_proj = df_merged[col_lower]
+            c_proj = f"{col}_proj"
+            c_stat = f"{col}_stats"
+            # Also try lowercase variants
+            c_proj_l = f"{col_lower}_proj"
+            c_stat_l = f"{col_lower}_stats"
 
-            s_stat = None
-            if c_stat in df_merged: s_stat = df_merged[c_stat]
-            elif col_lower in df_merged: s_stat = df_merged[col_lower]
+            # Helper to get series
+            def get_series(name_list):
+                for n in name_list:
+                    if n in df_merged: return df_merged[n]
+                return None
 
-            # Coalesce
+            s_proj = get_series([c_proj, c_proj_l, col, col_lower])
+            s_stat = get_series([c_stat, c_stat_l]) # Don't check col here, implied above
+
             if s_stat is not None and s_proj is not None:
                 df_final[col] = s_stat.fillna(s_proj)
             elif s_stat is not None:
@@ -756,22 +763,30 @@ def create_combined_projections():
         all_data_cols = (set(df_proj.columns) | set(df_stats.columns)) - skip
 
         for col in all_data_cols:
-            c_proj, c_stat = f"{col}_proj", f"{col}_stats"
+            col_lower = col.lower()
 
-            # FIX: Force Series creation even if column missing
-            s_proj = pd.Series(0, index=df_merged.index)
-            if c_proj in df_merged: s_proj = pd.to_numeric(df_merged[c_proj], errors='coerce')
-            elif col in df_proj.columns and col in df_merged: s_proj = pd.to_numeric(df_merged[col], errors='coerce')
+            # Skip if identity
+            if col_lower in [c.lower() for c in id_cols]: continue
 
-            s_stat = pd.Series(0, index=df_merged.index)
-            if c_stat in df_merged: s_stat = pd.to_numeric(df_merged[c_stat], errors='coerce')
-            elif col in df_stats.columns and col in df_merged: s_stat = pd.to_numeric(df_merged[col], errors='coerce')
+            c_proj = f"{col}_proj"
+            c_stat = f"{col}_stats"
+
+            # Helper
+            def get_numeric(name_list):
+                 for n in name_list:
+                     if n in df_merged: return pd.to_numeric(df_merged[n], errors='coerce')
+                 return pd.Series(0.0, index=df_merged.index)
+
+            s_proj = get_numeric([c_proj, col]) # Proj cols usually CamelCase or Lower
+            s_stat = get_numeric([c_stat, col_lower]) # Stats cols lower
 
             s_proj = s_proj.fillna(0)
             s_stat = s_stat.fillna(0)
 
+            # Simple average if both present, else take one
+            # Checking existence again to decide logic
             has_p = (c_proj in df_merged) or (col in df_proj.columns)
-            has_s = (c_stat in df_merged) or (col in df_stats.columns)
+            has_s = (c_stat in df_merged) or (col_lower in df_stats.columns) or (col in df_stats.columns)
 
             if has_p and has_s:
                 df_final[col] = (s_proj + s_stat) / 2
