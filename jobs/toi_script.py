@@ -237,6 +237,7 @@ def fetch_daily_pp_stats():
         df.drop_duplicates(subset=['date_', 'nhlplayerid'], inplace=True)
 
         with get_db_connection() as conn:
+            # Force Lowercase for consistency
             df.columns = [c.lower() for c in df.columns]
 
             with conn.cursor() as cursor:
@@ -396,10 +397,12 @@ def fetch_and_update_scoring_to_date():
             if 'skaterFullName' in df.columns:
                 df['player_name_normalized'] = df['skaterFullName'].apply(normalize_name)
 
+            # Convert to numeric
             numeric_cols = ['gamesPlayed', 'goals', 'assists', 'points', 'plusMinus', 'penaltyMinutes', 'ppGoals', 'ppPoints', 'shots']
             for col in numeric_cols:
                 df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
 
+            # Per Game Division
             cols_to_average = ['goals', 'assists', 'points', 'plusMinus', 'penaltyMinutes', 'ppGoals', 'ppPoints', 'shots']
             df['gamesPlayed'] = df['gamesPlayed'].astype(float)
             for col in cols_to_average:
@@ -415,8 +418,10 @@ def fetch_and_update_scoring_to_date():
                 'ppPoints': 'pppoints', 'shootingPct': 'shootingpct', 'timeOnIcePerGame': 'toi/g',
                 'shots': 'shots', 'ppAssists': 'ppassists'
             }
-            cols['timeOnIcePerGame'] = 'TOI/G'
+            # Rename TOI/G (keep as toi/g to match lowercase constraint)
+            cols['timeOnIcePerGame'] = 'toi/g'
 
+            # Filter and Rename
             keep_cols = list(cols.keys()) + ['player_name_normalized']
             df_final = df[keep_cols].rename(columns=cols)
 
@@ -482,10 +487,12 @@ def fetch_and_update_goalie_stats():
             if 'goalieFullName' in df.columns:
                 df['player_name_normalized'] = df['goalieFullName'].apply(normalize_name)
 
+            # Convert stats to numeric
             numeric_cols = ['gamesPlayed', 'wins', 'losses', 'saves', 'shotsAgainst', 'goalsAgainst', 'shutouts', 'goalsAgainstAverage']
             for col in numeric_cols:
                 df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
 
+            # Calculate TOI/G
             total_ga = df['goalsAgainst']
             gaa = df['goalsAgainstAverage']
             gp = df['gamesPlayed']
@@ -493,6 +500,7 @@ def fetch_and_update_goalie_stats():
             df['total_mins'] = np.where(gaa > 0, (total_ga * 60) / gaa, 0)
             df['TOI/G'] = np.where(gp > 0, df['total_mins'] / gp, 0.0).round(2)
 
+            # Convert counts to per-game
             for col in ['wins', 'losses', 'saves', 'shotsAgainst', 'goalsAgainst', 'shutouts']:
                 df[col] = np.where(gp > 0, df[col] / gp, 0.0).round(3)
 
@@ -565,7 +573,6 @@ def join_special_teams_data():
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_proj_norm ON projections(player_name_normalized)")
         conn.commit()
 
-
 def perform_smart_join(base_df, merge_df, merge_cols, source_name, conn):
     if 'teamabbrevs' in merge_df.columns and 'team' not in merge_df.columns:
         merge_df = merge_df.rename(columns={'teamabbrevs': 'team'})
@@ -615,6 +622,7 @@ def perform_smart_join(base_df, merge_df, merge_cols, source_name, conn):
         if c_new in df_merged.columns: final_col = final_col.fillna(df_merged[c_new])
         if c_name in df_merged.columns: final_col = final_col.fillna(df_merged[c_name])
 
+        # Save as the proper CamelCase name (e.g. 'G' not 'g')
         df_merged[col] = final_col
 
     drop_cols = [c for c in df_merged.columns if c.endswith('_new') or c.endswith('_name') or c == 'mc_key']
@@ -661,7 +669,7 @@ def create_stats_to_date_table():
 
         df_merged = perform_smart_join(df_merged, df_gl, list(gl_map.values()), 'goalies', conn)
 
-        df_to_postgres(df_merged, 'stats_to_date', conn)
+        df_to_postgres(df_merged, 'stats_to_date', conn, lowercase_columns=True)
 
 def calculate_and_save_to_date_ranks():
     print("\n--- Calculating Ranks ---")
@@ -678,11 +686,14 @@ def calculate_and_save_to_date_ranks():
         num_skaters = mask_skater.sum()
         if num_skaters > 0:
             for stat in skater_stats:
-                col = f"{stat}_cat_rank"
+                # FIX: Create rank columns as lowercase to avoid duplicates
+                col = f"{stat.lower()}_cat_rank"
+
                 if stat in df.columns:
                     df[stat] = pd.to_numeric(df[stat], errors='coerce').fillna(0)
                     ranks = df.loc[mask_skater, stat].rank(method='first', ascending=False)
                     pct = ranks / num_skaters
+
                     cond = [pct<=0.05, pct<=0.10, pct<=0.15, pct<=0.20, pct<=0.25, pct<=0.30, pct<=0.35, pct<=0.40, pct<=0.45, pct<=0.50, pct<=0.75]
                     choice = [1,2,3,4,5,6,7,8,9,10,15]
                     df.loc[mask_skater, col] = np.select(cond, choice, default=20)
@@ -699,7 +710,9 @@ def calculate_and_save_to_date_ranks():
         num_goalies = mask_goalie.sum()
         if num_goalies > 0:
             for stat, is_inv in goalie_stats.items():
-                col = f"{stat}_cat_rank"
+                # FIX: Create rank columns as lowercase
+                col = f"{stat.lower()}_cat_rank"
+
                 stat_lower = 'toi/g' if stat == 'TOI/G' else stat.lower()
 
                 if stat in df.columns:
