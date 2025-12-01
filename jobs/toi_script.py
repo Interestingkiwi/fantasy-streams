@@ -219,14 +219,17 @@ def fetch_daily_pp_stats():
                 if not data: break
 
                 for p in data:
-                    # FIX: Use 'or 0.0' to handle API returning None/Null
                     pp_pct = p.get("ppTimeOnIcePctPerGame")
-                    if pp_pct is None: pp_pct = 0.0
+
+                    # FIX: Skip games where the team had 0 PP time (null/None pct)
+                    # This prevents division by zero/null issues in averages
+                    if pp_pct is None:
+                        continue
 
                     rec = {
                         "date_": d, "nhlplayerid": p.get("playerId"), "skaterfullname": p.get("skaterFullName"),
                         "teamabbrevs": p.get("teamAbbrevs"), "pptimeonice": p.get("ppTimeOnIce"),
-                        "pptimeonicepctpergame": pp_pct, # <--- Fixed here
+                        "pptimeonicepctpergame": pp_pct,
                         "ppassists": p.get("ppAssists"),
                         "ppgoals": p.get("ppGoals")
                     }
@@ -242,6 +245,7 @@ def fetch_daily_pp_stats():
         df.drop_duplicates(subset=['date_', 'nhlplayerid'], inplace=True)
 
         with get_db_connection() as conn:
+            # Force Lowercase for consistency
             df.columns = [c.lower() for c in df.columns]
 
             with conn.cursor() as cursor:
