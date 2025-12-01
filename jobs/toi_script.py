@@ -135,11 +135,11 @@ def create_global_tables():
                 CREATE TABLE IF NOT EXISTS unmatched_players (
                     run_date TEXT, source_table TEXT, nhlplayerid INTEGER, player_name TEXT, team TEXT
                 );
-                -- CREATE TABLE IF NOT EXISTS debug_dumps (
-                --    filename TEXT PRIMARY KEY,
-                --    content TEXT,
-                --    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                -- );
+                CREATE TABLE IF NOT EXISTS debug_dumps (
+                    filename TEXT PRIMARY KEY,
+                    content TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
             """)
             conn.commit()
 
@@ -155,7 +155,6 @@ def save_debug_to_db(filename, data):
                     SET content = EXCLUDED.content, created_at = NOW()
                 """, (filename, json_str))
             conn.commit()
-        print(f"Debug dump saved to DB: {filename}")
     except Exception as e:
         print(f"Failed to save debug dump: {e}")
 
@@ -220,7 +219,6 @@ def fetch_daily_pp_stats():
         idx = 0
         try:
             while True:
-                # FIX: Added sort to guarantee deterministic paging
                 params = {
                     "isAggregate": "false",
                     "sort": '[{"property":"ppTimeOnIce","direction":"DESC"},{"property":"playerId","direction":"ASC"}]',
@@ -284,7 +282,7 @@ def create_last_game_pp_table():
                 SELECT
                     t1.nhlplayerid,
                     t1.pptimeonice as "lg_ppTimeOnIce",
-                    t1.pptimeonicepctpergame as "lg_ppTimeOnIcePctPerGame",
+                    COALESCE(t1.pptimeonicepctpergame, 0) as "lg_ppTimeOnIcePctPerGame",
                     t1.ppassists as "lg_ppAssists",
                     t1.ppgoals as "lg_ppGoals"
                 FROM powerplay_stats t1
@@ -399,7 +397,6 @@ def fetch_and_update_scoring_to_date():
 
     try:
         while True:
-            # FIX: Added explicit sort order to prevent pagination shifting
             params = {
                 "isAggregate": "false",
                 "cayenneExp": f"gameTypeId=2 and seasonId={season_id}",
@@ -418,14 +415,10 @@ def fetch_and_update_scoring_to_date():
                 except requests.RequestException:
                     time.sleep(2)
 
-            if not success:
-                print(f"Failed to fetch scoring page start={start} after 3 retries.")
-                break
+            if not success: break
 
             resp_json = r.json()
-            if start == 0:
-                total_expected = resp_json.get('total', 0)
-                print(f"API reports total scoring records: {total_expected}")
+            if start == 0: total_expected = resp_json.get('total', 0)
 
             data = resp_json.get('data', [])
             if not data: break
@@ -435,10 +428,7 @@ def fetch_and_update_scoring_to_date():
             time.sleep(0.1)
 
         print(f"Fetched {len(all_data)} scoring records.")
-        if len(all_data) < total_expected:
-            print(f"WARNING: Missed {total_expected - len(all_data)} records!")
-
-        #save_debug_to_db('debug_scoring.json', all_data)
+        # save_debug_to_db('debug_scoring.json', all_data)
 
         if all_data:
             df = pd.DataFrame(all_data)
@@ -446,7 +436,6 @@ def fetch_and_update_scoring_to_date():
             if 'skaterFullName' in df.columns:
                 df['player_name_normalized'] = df['skaterFullName'].apply(normalize_name)
 
-            # Handle Duplicate
             df['playerId'] = pd.to_numeric(df['playerId'], errors='coerce')
             df.loc[df['playerId'] == 8480012, 'player_name_normalized'] = 'eliaspetterssonf'
             df.loc[df['playerId'] == 8478427, 'player_name_normalized'] = 'sebastianahof'
@@ -487,10 +476,8 @@ def fetch_and_update_bangers_stats():
     base_url = "https://api.nhle.com/stats/rest/en/skater/scoringpergame"
     all_data = []
     start = 0
-    total_expected = 0
     try:
         while True:
-            # FIX: Added explicit sort order
             params = {
                 "isAggregate": "false",
                 "cayenneExp": f"gameTypeId=2 and seasonId={season_id}",
@@ -511,20 +498,14 @@ def fetch_and_update_bangers_stats():
 
             if not success: break
 
-            resp_json = r.json()
-            if start == 0:
-                total_expected = resp_json.get('total', 0)
-                print(f"API reports total bangers records: {total_expected}")
-
-            data = resp_json.get('data', [])
+            data = r.json().get('data', [])
             if not data: break
             all_data.extend(data)
             start += 100
             time.sleep(0.1)
 
         print(f"Fetched {len(all_data)} bangers records.")
-
-        #save_debug_to_db('debug_bangers.json', all_data)
+        # save_debug_to_db('debug_bangers.json', all_data)
 
         if all_data:
             df = pd.DataFrame(all_data)
@@ -532,7 +513,6 @@ def fetch_and_update_bangers_stats():
             if 'skaterFullName' in df.columns:
                 df['player_name_normalized'] = df['skaterFullName'].apply(normalize_name)
 
-            # Handle Duplicate
             df['playerId'] = pd.to_numeric(df['playerId'], errors='coerce')
             df.loc[df['playerId'] == 8480012, 'player_name_normalized'] = 'eliaspetterssonf'
             df.loc[df['playerId'] == 8478427, 'player_name_normalized'] = 'sebastianahof'
@@ -555,7 +535,6 @@ def fetch_and_update_goalie_stats():
     start = 0
     try:
         while True:
-            # FIX: Added explicit sort order
             params = {
                 "isAggregate": "false",
                 "cayenneExp": f"gameTypeId=2 and seasonId={season_id}",
@@ -620,9 +599,7 @@ def fetch_and_update_goalie_stats():
 # --- MERGING FUNCTIONS ---
 
 def join_special_teams_data():
-    """
-    Joins data from last_game_pp and last_week_pp into the main projections table.
-    """
+    # ... (No changes here) ...
     print("\n--- Joining Special Teams into Projections ---")
     with get_db_connection() as conn:
         with conn.cursor() as cursor:
@@ -655,15 +632,14 @@ def join_special_teams_data():
         if 'nhlplayerid' in df_final.columns:
             df_final['nhlplayerid'] = pd.to_numeric(df_final['nhlplayerid'], errors='coerce').astype('Int64')
 
-        # Use lowercase=False to PRESERVE MixedCase for Projections table
         df_to_postgres(df_final, 'projections', conn, lowercase_columns=False, primary_key='player_name_normalized')
 
         with conn.cursor() as cursor:
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_proj_norm ON projections(player_name_normalized)")
         conn.commit()
 
-
 def perform_smart_join(base_df, merge_df, merge_cols, source_name, conn):
+    # ... (No changes here) ...
     if 'teamabbrevs' in merge_df.columns and 'team' not in merge_df.columns:
         merge_df = merge_df.rename(columns={'teamabbrevs': 'team'})
 
@@ -761,6 +737,7 @@ def create_stats_to_date_table():
 
         df_merged = perform_smart_join(df_merged, df_bn, list(bn_map.values()), 'bangers', conn)
 
+        # --- FIX for GOALIE JOIN ---
         df_gl = read_sql_postgres("SELECT * FROM goalie_to_date", conn)
         gl_map = {
             'gamesstarted': 'GS', 'gamesplayed': 'GP', 'goalsagainstaverage': 'GAA', 'losses': 'L',
@@ -770,12 +747,31 @@ def create_stats_to_date_table():
         df_gl.rename(columns=gl_map, inplace=True)
         df_gl['nhlplayerid'] = pd.to_numeric(df_gl['nhlplayerid'], errors='coerce').fillna(0).astype(int)
 
-        df_merged = perform_smart_join(df_merged, df_gl, list(gl_map.values()), 'goalies', conn)
+        # Use Name-Only Match for Goalies (overwrites missing IDs in Projections)
+        print(f"  Smart Join: goalies (Name Only)")
+        cols_to_use = list(gl_map.values()) + ['player_name_normalized', 'nhlplayerid']
+        cols_to_use = [c for c in cols_to_use if c in df_gl.columns]
 
-        # FIX: lowercase=False to preserve MixedCase keys
+        df_merged = pd.merge(df_merged, df_gl[cols_to_use], on='player_name_normalized', how='left', suffixes=('', '_gl'))
+
+        # Coalesce Stats
+        for col in gl_map.values():
+            if f"{col}_gl" in df_merged.columns:
+                 df_merged[col] = df_merged[col].fillna(df_merged[f"{col}_gl"])
+
+        # Fix Broken IDs from Projections using correct API ID
+        if 'nhlplayerid_gl' in df_merged.columns:
+             # If projection ID is missing (0) but we found a name match, update it
+             df_merged['nhlplayerid'] = np.where(
+                 df_merged['nhlplayerid'] == 0,
+                 df_merged['nhlplayerid_gl'].fillna(0),
+                 df_merged['nhlplayerid']
+             )
+
         df_to_postgres(df_merged, 'stats_to_date', conn, lowercase_columns=False, primary_key='player_name_normalized')
 
 def calculate_and_save_to_date_ranks():
+    # ... (No changes here) ...
     print("\n--- Calculating Ranks ---")
     with get_db_connection() as conn:
         df = read_sql_postgres("SELECT * FROM stats_to_date", conn)
@@ -797,6 +793,7 @@ def calculate_and_save_to_date_ranks():
                     df[s_key] = pd.to_numeric(df[s_key], errors='coerce').fillna(0)
                     ranks = df.loc[mask_skater, s_key].rank(method='first', ascending=False)
                     pct = ranks / num_skaters
+
                     cond = [pct<=0.05, pct<=0.10, pct<=0.15, pct<=0.20, pct<=0.25, pct<=0.30, pct<=0.35, pct<=0.40, pct<=0.45, pct<=0.50, pct<=0.75]
                     choice = [1,2,3,4,5,6,7,8,9,10,15]
                     df.loc[mask_skater, col] = np.select(cond, choice, default=20)
@@ -820,6 +817,7 @@ def calculate_and_save_to_date_ranks():
         df_to_postgres(df, 'stats_to_date', conn, lowercase_columns=False, primary_key='player_name_normalized')
 
 def create_combined_projections():
+    # ... (No changes here) ...
     print("\n--- Creating Combined Projections ---")
     with get_db_connection() as conn:
         df_proj = read_sql_postgres("SELECT * FROM projections", conn)
@@ -832,7 +830,7 @@ def create_combined_projections():
         # 1. Init with ID
         df_final_ids = df_merged[['nhlplayerid']].copy()
 
-        # 2. Collect new columns
+        # 2. Collect new columns in a dict (Performance Optimization)
         final_processed_data = {}
 
         id_cols = ['player_name_normalized', 'player_name', 'team', 'age', 'player_id', 'positions', 'status',
