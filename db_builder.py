@@ -859,6 +859,10 @@ def _update_fantasy_weeks(yq, cursor, league_id, league_key, logger):
 def _update_league_matchups(yq, cursor, league_id, playoff_start_week, logger):
     logger.info("Fetching league matchups...")
     try:
+        # --- FIX: Clear old matchups to handle team name changes ---
+        cursor.execute("DELETE FROM matchups WHERE league_id = %s", (league_id,))
+        # -----------------------------------------------------------
+
         if not playoff_start_week: return
         last_reg_week = playoff_start_week - 1
         start_week = 1
