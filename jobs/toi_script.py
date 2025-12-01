@@ -579,7 +579,10 @@ def fetch_and_update_goalie_stats():
                 'shutouts': 'shutouts', 'wins': 'wins', 'goalsAgainst': 'goalsagainst',
                 'TOI/G': 'toi/g'
             }
-            df_final = df[list(cols.keys())].rename(columns=cols)
+
+            # FIX: Include player_name_normalized in the column selection
+            keep_cols = list(cols.keys()) + ['player_name_normalized']
+            df_final = df[keep_cols].rename(columns=cols)
 
             with get_db_connection() as conn:
                 std = read_sql_postgres("SELECT team_tricode, games_played as team_gp FROM team_standings", conn)
