@@ -338,6 +338,7 @@ def fetch_team_standings():
 def fetch_team_stats_summary():
     print("\n--- Fetching Team Stats Summary ---")
     try:
+        # Using 20252026 for current season
         params = {"isAggregate":"false", "isGame":"false", "start":0, "limit":50, "cayenneExp":"seasonId=20252026 and gameTypeId=2"}
         data = requests.get("https://api.nhle.com/stats/rest/en/team/summary", params=params).json().get("data", [])
         rows = []
@@ -514,7 +515,6 @@ def fetch_and_update_goalie_stats():
             df_final = df[list(cols.keys())].rename(columns=cols)
 
             with get_db_connection() as conn:
-                # Fetch standings for Start %
                 std = read_sql_postgres("SELECT team_tricode, games_played as team_gp FROM team_standings", conn)
                 if not std.empty:
                     df_final = pd.merge(df_final, std, left_on='teamabbrevs', right_on='team_tricode', how='left')
@@ -574,6 +574,7 @@ def join_special_teams_data():
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_proj_norm ON projections(player_name_normalized)")
         conn.commit()
 
+
 def perform_smart_join(base_df, merge_df, merge_cols, source_name, conn):
     if 'teamabbrevs' in merge_df.columns and 'team' not in merge_df.columns:
         merge_df = merge_df.rename(columns={'teamabbrevs': 'team'})
@@ -597,7 +598,23 @@ def perform_smart_join(base_df, merge_df, merge_cols, source_name, conn):
 
     log_unmatched_players(conn, df_unmatched, source_name)
 
-    cols_to_select = ['nhlplayerid', 'team'] + [c.lower() for c in merge_cols]
+    # FIX: Case-insensitive column check for merge_cols
+    # We passed e.g. "BLK", but merge_df might have "blockspergame" or "blk"
+    # Try finding the column in merge_df regardless of case
+
+    cols_found = []
+    for c in merge_cols:
+        if c in merge_df.columns:
+            cols_found.append(c)
+        elif c.lower() in merge_df.columns:
+            # Rename it in merge_df to match what we expect (CamelCase/Upper)
+            merge_df.rename(columns={c.lower(): c}, inplace=True)
+            df_exact.rename(columns={c.lower(): c}, inplace=True)
+            if not df_name.empty:
+                df_name.rename(columns={c.lower(): c}, inplace=True)
+            cols_found.append(c)
+
+    cols_to_select = ['nhlplayerid', 'team'] + cols_found
     cols_exact = [c for c in cols_to_select if c in df_exact.columns]
 
     df_merged = pd.merge(base_df, df_exact[cols_exact], on=['nhlplayerid', 'team'], how='left', suffixes=('', '_new'))
@@ -611,19 +628,18 @@ def perform_smart_join(base_df, merge_df, merge_cols, source_name, conn):
             df_merged['nhlplayerid'] = np.where(df_merged['nhlplayerid_name'].notna(), df_merged['nhlplayerid_name'], df_merged['nhlplayerid'])
 
     for col in merge_cols:
-        lower_col = col.lower()
-        c_new = f"{lower_col}_new"
-        c_name = f"{lower_col}_name"
+        # Note: We already renamed them to match 'col' (MixedCase) above
+        c_new = f"{col}_new"
+        c_name = f"{col}_name"
 
-        if lower_col in df_merged.columns and lower_col not in base_df.columns:
-            final_col = df_merged[lower_col]
+        if col in df_merged.columns and col not in base_df.columns:
+            final_col = df_merged[col]
         else:
             final_col = pd.Series(np.nan, index=df_merged.index)
 
         if c_new in df_merged.columns: final_col = final_col.fillna(df_merged[c_new])
         if c_name in df_merged.columns: final_col = final_col.fillna(df_merged[c_name])
 
-        # Save as the proper CamelCase name
         df_merged[col] = final_col
 
     drop_cols = [c for c in df_merged.columns if c.endswith('_new') or c.endswith('_name') or c == 'mc_key']
@@ -670,8 +686,8 @@ def create_stats_to_date_table():
 
         df_merged = perform_smart_join(df_merged, df_gl, list(gl_map.values()), 'goalies', conn)
 
-        # Use lowercase=True to enforce standard schema for this table
-        df_to_postgres(df_merged, 'stats_to_date', conn, lowercase_columns=True)
+        # FIX: lowercase=False to preserve BLK/HIT/TOI/G keys
+        df_to_postgres(df_merged, 'stats_to_date', conn, lowercase_columns=False)
 
 def calculate_and_save_to_date_ranks():
     print("\n--- Calculating Ranks ---")
@@ -688,46 +704,38 @@ def calculate_and_save_to_date_ranks():
         num_skaters = mask_skater.sum()
         if num_skaters > 0:
             for stat in skater_stats:
-                stat_lower = stat.lower()
-                # Explicitly define column name in lowercase to prevent duplicates
-                col = f"{stat_lower}_cat_rank"
+                # FIX: Create rank columns as lowercase
+                col = f"{stat.lower()}_cat_rank"
 
-                if stat in df.columns:
-                    df[stat] = pd.to_numeric(df[stat], errors='coerce').fillna(0)
-                    ranks = df.loc[mask_skater, stat].rank(method='first', ascending=False)
-                elif stat_lower in df.columns:
-                    df[stat_lower] = pd.to_numeric(df[stat_lower], errors='coerce').fillna(0)
-                    ranks = df.loc[mask_skater, stat_lower].rank(method='first', ascending=False)
-                else:
-                    continue
+                # Check both Mixed and Lower
+                s_key = stat if stat in df.columns else stat.lower()
 
-                pct = ranks / num_skaters
-                cond = [pct<=0.05, pct<=0.10, pct<=0.15, pct<=0.20, pct<=0.25, pct<=0.30, pct<=0.35, pct<=0.40, pct<=0.45, pct<=0.50, pct<=0.75]
-                choice = [1,2,3,4,5,6,7,8,9,10,15]
-                df.loc[mask_skater, col] = np.select(cond, choice, default=20)
+                if s_key in df.columns:
+                    df[s_key] = pd.to_numeric(df[s_key], errors='coerce').fillna(0)
+                    ranks = df.loc[mask_skater, s_key].rank(method='first', ascending=False)
+                    pct = ranks / num_skaters
+                    cond = [pct<=0.05, pct<=0.10, pct<=0.15, pct<=0.20, pct<=0.25, pct<=0.30, pct<=0.35, pct<=0.40, pct<=0.45, pct<=0.50, pct<=0.75]
+                    choice = [1,2,3,4,5,6,7,8,9,10,15]
+                    df.loc[mask_skater, col] = np.select(cond, choice, default=20)
 
         mask_goalie = df['positions'].str.contains('G', na=False)
         num_goalies = mask_goalie.sum()
         if num_goalies > 0:
             for stat, is_inv in goalie_stats.items():
-                stat_lower = 'toi/g' if stat == 'TOI/G' else stat.lower()
-                col = f"{stat_lower}_cat_rank"
+                col = f"{stat.lower()}_cat_rank"
+                s_key = stat if stat in df.columns else stat.lower()
+                if stat == 'TOI/G': s_key = 'TOI/G' if 'TOI/G' in df.columns else 'toi/g'
 
-                if stat in df.columns:
-                    df[stat] = pd.to_numeric(df[stat], errors='coerce').fillna(0)
-                    ranks = df.loc[mask_goalie, stat].rank(method='first', ascending=is_inv)
-                elif stat_lower in df.columns:
-                    df[stat_lower] = pd.to_numeric(df[stat_lower], errors='coerce').fillna(0)
-                    ranks = df.loc[mask_goalie, stat_lower].rank(method='first', ascending=is_inv)
-                else:
-                    continue
+                if s_key in df.columns:
+                    df[s_key] = pd.to_numeric(df[s_key], errors='coerce').fillna(0)
+                    ranks = df.loc[mask_goalie, s_key].rank(method='first', ascending=is_inv)
+                    pct = ranks / num_goalies
+                    cond = [pct<=0.05, pct<=0.10, pct<=0.15, pct<=0.20, pct<=0.25, pct<=0.30, pct<=0.35, pct<=0.40, pct<=0.45, pct<=0.50, pct<=0.75]
+                    choice = [1,2,3,4,5,6,7,8,9,10,15]
+                    df.loc[mask_goalie, col] = np.select(cond, choice, default=20)
 
-                pct = ranks / num_goalies
-                cond = [pct<=0.05, pct<=0.10, pct<=0.15, pct<=0.20, pct<=0.25, pct<=0.30, pct<=0.35, pct<=0.40, pct<=0.45, pct<=0.50, pct<=0.75]
-                choice = [1,2,3,4,5,6,7,8,9,10,15]
-                df.loc[mask_goalie, col] = np.select(cond, choice, default=20)
-
-        df_to_postgres(df, 'stats_to_date', conn, lowercase_columns=True)
+        # FIX: Preserve mixed case
+        df_to_postgres(df, 'stats_to_date', conn, lowercase_columns=False)
 
 def create_combined_projections():
     print("\n--- Creating Combined Projections ---")
@@ -751,17 +759,17 @@ def create_combined_projections():
                    'player_games_played', 'team_games_played']
 
         for col in id_cols:
+            # Check Mixed, Lower, and Suffixed
             col_lower = col.lower()
-            c_proj, c_stat = f"{col}_proj", f"{col}_stats"
-            c_proj_l, c_stat_l = f"{col_lower}_proj", f"{col_lower}_stats"
 
-            def get_series(name_list):
-                for n in name_list:
-                    if n in df_merged: return df_merged[n]
+            def get_series(base, suffix):
+                keys = [f"{base}{suffix}", f"{base.lower()}{suffix}", base, base.lower()]
+                for k in keys:
+                    if k in df_merged: return df_merged[k]
                 return None
 
-            s_proj = get_series([c_proj, c_proj_l, col, col_lower])
-            s_stat = get_series([c_stat, c_stat_l])
+            s_proj = get_series(col, "_proj")
+            s_stat = get_series(col, "_stats")
 
             if s_stat is not None and s_proj is not None:
                 final_processed_data[col] = s_stat.fillna(s_proj)
@@ -774,25 +782,24 @@ def create_combined_projections():
         all_data_cols = (set(df_proj.columns) | set(df_stats.columns)) - skip
 
         for col in all_data_cols:
-            col_lower = col.lower()
-            if col_lower in [c.lower() for c in id_cols]: continue
+            if col.lower() in [c.lower() for c in id_cols]: continue
 
-            c_proj = f"{col}_proj"
-            c_stat = f"{col}_stats"
+            def get_numeric(base, suffix):
+                keys = [f"{base}{suffix}", f"{base.lower()}{suffix}", base, base.lower()]
+                for k in keys:
+                    if k in df_merged: return pd.to_numeric(df_merged[k], errors='coerce')
+                return pd.Series(0.0, index=df_merged.index)
 
-            def get_numeric(name_list):
-                 for n in name_list:
-                     if n in df_merged: return pd.to_numeric(df_merged[n], errors='coerce')
-                 return pd.Series(0.0, index=df_merged.index)
-
-            s_proj = get_numeric([c_proj, col])
-            s_stat = get_numeric([c_stat, col_lower])
+            s_proj = get_numeric(col, "_proj")
+            s_stat = get_numeric(col, "_stats")
 
             s_proj = s_proj.fillna(0)
             s_stat = s_stat.fillna(0)
 
-            has_p = (c_proj in df_merged) or (col in df_proj.columns)
-            has_s = (c_stat in df_merged) or (col_lower in df_stats.columns) or (col in df_stats.columns)
+            # Logic: If column exists in original PROJ df, use average.
+            # We check if 'col' or 'col_lower' exists in df_proj columns
+            has_p = (col in df_proj.columns) or (col.lower() in df_proj.columns)
+            has_s = (col in df_stats.columns) or (col.lower() in df_stats.columns)
 
             if has_p and has_s:
                 final_processed_data[col] = (s_proj + s_stat) / 2
