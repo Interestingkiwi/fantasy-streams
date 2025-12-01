@@ -51,15 +51,13 @@ def read_sql_postgres(query, conn):
 
 def df_to_postgres(df, table_name, conn, if_exists='replace', lowercase_columns=True):
     """
-    Writes DataFrame to Postgres.
-    lowercase_columns=True: Forces all columns to lowercase (Good for raw stats).
-    lowercase_columns=False: Preserves CamelCase (Required for projections table used by App).
+    Writes DataFrame to Postgres using quoted lowercase columns to handle special chars.
     """
     if df.empty:
         print(f"Warning: DataFrame for {table_name} is empty. Skipping write.")
         return
 
-    # 1. Handle Case Sensitivity
+    # 1. Force Lowercase Columns for consistency
     if lowercase_columns:
         df.columns = [c.lower() for c in df.columns]
 
@@ -67,14 +65,14 @@ def df_to_postgres(df, table_name, conn, if_exists='replace', lowercase_columns=
     if if_exists == 'replace':
         cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
 
-    # 2. Create Table Schema
+    # 2. Create Table Schema (Quoted Columns)
     cols = []
     for col, dtype in df.dtypes.items():
         pg_type = 'TEXT'
         if pd.api.types.is_integer_dtype(dtype): pg_type = 'INTEGER'
         elif pd.api.types.is_float_dtype(dtype): pg_type = 'DOUBLE PRECISION'
 
-        # Always quote column names to handle special chars and case
+        # Always quote column names to handle "toi/g"
         if col == 'player_name_normalized':
             cols.append(f'"{col}" TEXT PRIMARY KEY')
         elif col == 'nhlplayerid':
@@ -85,7 +83,7 @@ def df_to_postgres(df, table_name, conn, if_exists='replace', lowercase_columns=
     create_sql = f"CREATE TABLE IF NOT EXISTS {table_name} ({', '.join(cols)})"
     cursor.execute(create_sql)
 
-    # 3. Insert Data
+    # 3. Insert Data (Quoted Columns)
     columns = list(df.columns)
     placeholders = ",".join(["%s"] * len(columns))
     col_names = ",".join([f'"{c}"' for c in columns]) # Quoted!
@@ -184,12 +182,8 @@ def fetch_daily_pp_stats():
     target_end_date = today - timedelta(days=1)
     target_start_date = today - timedelta(days=7)
 
-    # FIX: Always run cleanup for older records first
     run_database_cleanup(target_start_date)
 
-    # FIX: Clean the current window to ensure self-healing
-    # This removes records we are about to re-fetch, ensuring that if a player
-    # is skipped (due to bad data), their old record doesn't persist.
     print(f"Self-Healing: Clearing records from {target_start_date} to {target_end_date}...")
     with get_db_connection() as conn:
         with conn.cursor() as cursor:
@@ -200,7 +194,7 @@ def fetch_daily_pp_stats():
         conn.commit()
 
     dates = []
-    curr = target_start_date # FIX: Always start from 7 days ago
+    curr = target_start_date
     while curr <= target_end_date:
         dates.append(curr.strftime("%Y-%m-%d"))
         curr += timedelta(days=1)
@@ -226,7 +220,6 @@ def fetch_daily_pp_stats():
                 for p in data:
                     pp_pct = p.get("ppTimeOnIcePctPerGame")
 
-                    # FIX: Skip games where the team had 0 PP time (null/None pct)
                     if pp_pct is None:
                         continue
 
@@ -295,7 +288,6 @@ def create_last_week_pp_table():
     with get_db_connection() as conn:
         with conn.cursor() as cursor:
             cursor.execute("DROP TABLE IF EXISTS last_week_pp")
-            # Added COALESCE to handle any edge case NULLs
             cursor.execute("""
                 CREATE TABLE last_week_pp AS
                 WITH team_game_counts AS (
@@ -394,9 +386,25 @@ def fetch_and_update_scoring_to_date():
     try:
         while True:
             params = {"isAggregate": "false", "cayenneExp": f"gameTypeId=2 and seasonId={season_id}", "start": start, "limit": 100}
-            r = requests.get(base_url, params=params).json()
-            data = r.get('data', [])
+
+            # --- FIX: Retry Logic ---
+            success = False
+            for attempt in range(3):
+                try:
+                    r = requests.get(base_url, params=params, timeout=15)
+                    if r.status_code == 200:
+                        success = True
+                        break
+                except requests.RequestException:
+                    time.sleep(2)
+
+            if not success:
+                print(f"Failed to fetch page start={start} after 3 retries.")
+                break
+
+            data = r.json().get('data', [])
             if not data: break
+
             all_data.extend(data)
             start += 100
             time.sleep(0.1)
@@ -405,6 +413,14 @@ def fetch_and_update_scoring_to_date():
 
         if all_data:
             df = pd.DataFrame(all_data)
+
+            # --- DEBUG: Check for Eklund ---
+            eklund = df[df['skaterFullName'] == "William Eklund"]
+            if not eklund.empty:
+                print(f"✅ FOUND WILLIAM EKLUND in Raw API Data: {eklund[['playerId', 'gamesPlayed', 'points']].to_dict('records')}")
+            else:
+                print("❌ WILLIAM EKLUND NOT FOUND in Raw API Data.")
+
             df.drop_duplicates(subset=['playerId'], inplace=True)
             if 'skaterFullName' in df.columns:
                 df['player_name_normalized'] = df['skaterFullName'].apply(normalize_name)
@@ -412,6 +428,12 @@ def fetch_and_update_scoring_to_date():
             # Handle Elias Pettersson Duplicate (Forward)
             df['playerId'] = pd.to_numeric(df['playerId'], errors='coerce')
             df.loc[df['playerId'] == 8480012, 'player_name_normalized'] = 'eliaspetterssonf'
+
+            # --- FIX: Check for Duplicates ---
+            dupes = df[df.duplicated('player_name_normalized', keep=False)]
+            if not dupes.empty:
+                print(f"WARNING: Found {len(dupes)} duplicate names in Scoring Data:")
+                print(dupes[['skaterFullName', 'player_name_normalized', 'playerId']].head(10))
 
             # Convert to numeric
             numeric_cols = ['gamesPlayed', 'goals', 'assists', 'points', 'plusMinus', 'penaltyMinutes', 'ppGoals', 'ppPoints', 'shots']
@@ -687,13 +709,10 @@ def create_stats_to_date_table():
         df_merged = perform_smart_join(df_proj, df_sc, list(sc_map.values()), 'scoring', conn)
 
         df_bn = read_sql_postgres("SELECT * FROM bangers_to_date", conn)
-
-        # FIX: Map from lowercase 'blockspergame' to uppercase 'BLK'
         bn_map = {'blockspergame': 'BLK', 'hitspergame': 'HIT'}
         df_bn.rename(columns=bn_map, inplace=True)
         df_bn['nhlplayerid'] = pd.to_numeric(df_bn['nhlplayerid'], errors='coerce').fillna(0).astype(int)
 
-        # Merge with Uppercase keys (BLK, HIT)
         df_merged = perform_smart_join(df_merged, df_bn, list(bn_map.values()), 'bangers', conn)
 
         df_gl = read_sql_postgres("SELECT * FROM goalie_to_date", conn)
@@ -707,7 +726,7 @@ def create_stats_to_date_table():
 
         df_merged = perform_smart_join(df_merged, df_gl, list(gl_map.values()), 'goalies', conn)
 
-        # FIX: lowercase=False to preserve BLK/HIT/TOI/G keys
+        # FIX: lowercase=False to preserve MixedCase keys
         df_to_postgres(df_merged, 'stats_to_date', conn, lowercase_columns=False)
 
 def calculate_and_save_to_date_ranks():
