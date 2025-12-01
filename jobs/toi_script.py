@@ -219,10 +219,15 @@ def fetch_daily_pp_stats():
                 if not data: break
 
                 for p in data:
+                    # FIX: Use 'or 0.0' to handle API returning None/Null
+                    pp_pct = p.get("ppTimeOnIcePctPerGame")
+                    if pp_pct is None: pp_pct = 0.0
+
                     rec = {
                         "date_": d, "nhlplayerid": p.get("playerId"), "skaterfullname": p.get("skaterFullName"),
                         "teamabbrevs": p.get("teamAbbrevs"), "pptimeonice": p.get("ppTimeOnIce"),
-                        "pptimeonicepctpergame": p.get("ppTimeOnIcePctPerGame"), "ppassists": p.get("ppAssists"),
+                        "pptimeonicepctpergame": pp_pct, # <--- Fixed here
+                        "ppassists": p.get("ppAssists"),
                         "ppgoals": p.get("ppGoals")
                     }
                     all_data.append(rec)
@@ -237,7 +242,6 @@ def fetch_daily_pp_stats():
         df.drop_duplicates(subset=['date_', 'nhlplayerid'], inplace=True)
 
         with get_db_connection() as conn:
-            # Force Lowercase for consistency
             df.columns = [c.lower() for c in df.columns]
 
             with conn.cursor() as cursor:
@@ -293,7 +297,7 @@ def create_last_week_pp_table():
                 player_sums AS (
                     SELECT nhlplayerid, teamabbrevs, MAX(skaterfullname) as skaterfullname,
                     SUM(pptimeonice) as total_pptimeonice,
-                    SUM(pptimeonicepctpergame) as total_pptimeonicepctpergame,
+                    COALESCE(SUM(pptimeonicepctpergame), 0) as total_pptimeonicepctpergame, -- Fix here
                     SUM(ppassists) as total_ppassists,
                     SUM(ppgoals) as total_ppgoals,
                     COUNT(date_) as player_games_played
