@@ -19,11 +19,6 @@ import json
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from database import get_db_connection
 
-# --- Constants ---
-# Path to 'static' folder for debug dumps
-DEBUG_DUMP_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'static')
-os.makedirs(DEBUG_DUMP_DIR, exist_ok=True)
-
 FRANCHISE_TO_TRICODE_MAP = {
     "Anaheim Ducks": "ANA", "Boston Bruins": "BOS", "Buffalo Sabres": "BUF",
     "Calgary Flames": "CGY", "Carolina Hurricanes": "CAR", "Chicago Blackhawks": "CHI",
@@ -112,7 +107,6 @@ def get_last_run_end_date():
         with conn.cursor() as cursor:
             cursor.execute("SELECT to_regclass('public.table_metadata')")
             if cursor.fetchone()[0] is None: return None
-
             cursor.execute("SELECT end_date FROM table_metadata WHERE id = 1")
             res = cursor.fetchone()
             if res: return date.fromisoformat(res[0])
@@ -140,8 +134,31 @@ def create_global_tables():
                 CREATE TABLE IF NOT EXISTS unmatched_players (
                     run_date TEXT, source_table TEXT, nhlplayerid INTEGER, player_name TEXT, team TEXT
                 );
+                -- New Debug Table for storing JSON blobs
+                CREATE TABLE IF NOT EXISTS debug_dumps (
+                    filename TEXT PRIMARY KEY,
+                    content TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
             """)
             conn.commit()
+
+def save_debug_to_db(filename, data):
+    """Saves a JSON object to the debug_dumps table."""
+    try:
+        json_str = json.dumps(data)
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    INSERT INTO debug_dumps (filename, content, created_at)
+                    VALUES (%s, %s, NOW())
+                    ON CONFLICT (filename) DO UPDATE
+                    SET content = EXCLUDED.content, created_at = NOW()
+                """, (filename, json_str))
+            conn.commit()
+        print(f"Debug dump saved to DB: {filename}")
+    except Exception as e:
+        print(f"Failed to save debug dump: {e}")
 
 def log_unmatched_players(conn, df_unmatched, source_table_name):
     if df_unmatched.empty: return
@@ -383,7 +400,6 @@ def fetch_and_update_scoring_to_date():
     total_expected = 0
 
     try:
-        # --- FIX: Retry + Total Count Check + Debug Dump ---
         while True:
             params = {"isAggregate": "false", "cayenneExp": f"gameTypeId=2 and seasonId={season_id}", "start": start, "limit": 100}
             success = False
@@ -417,11 +433,8 @@ def fetch_and_update_scoring_to_date():
         if len(all_data) < total_expected:
             print(f"WARNING: Missed {total_expected - len(all_data)} records!")
 
-        # --- DEBUG DUMP ---
-        dump_path = os.path.join(DEBUG_DUMP_DIR, 'debug_scoring.json')
-        with open(dump_path, 'w') as f:
-            json.dump(all_data, f)
-        print(f"Debug dump saved to {dump_path}")
+        # --- FIX: Write to DB instead of File ---
+        save_debug_to_db('debug_scoring.json', all_data)
 
         if all_data:
             df = pd.DataFrame(all_data)
@@ -494,11 +507,8 @@ def fetch_and_update_bangers_stats():
 
         print(f"Fetched {len(all_data)} bangers records.")
 
-        # --- DEBUG DUMP ---
-        dump_path = os.path.join(DEBUG_DUMP_DIR, 'debug_bangers.json')
-        with open(dump_path, 'w') as f:
-            json.dump(all_data, f)
-        print(f"Debug dump saved to {dump_path}")
+        # --- FIX: Write to DB instead of File ---
+        save_debug_to_db('debug_bangers.json', all_data)
 
         if all_data:
             df = pd.DataFrame(all_data)
