@@ -51,13 +51,14 @@ def read_sql_postgres(query, conn):
 
 def df_to_postgres(df, table_name, conn, if_exists='replace', lowercase_columns=True):
     """
-    Writes DataFrame to Postgres using quoted lowercase columns to handle special chars.
+    Writes DataFrame to Postgres.
+    Prioritizes 'nhlplayerid' as Primary Key to handle duplicate names.
     """
     if df.empty:
         print(f"Warning: DataFrame for {table_name} is empty. Skipping write.")
         return
 
-    # 1. Force Lowercase Columns for consistency
+    # 1. Handle Case Sensitivity
     if lowercase_columns:
         df.columns = [c.lower() for c in df.columns]
 
@@ -65,31 +66,38 @@ def df_to_postgres(df, table_name, conn, if_exists='replace', lowercase_columns=
     if if_exists == 'replace':
         cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
 
-    # 2. Create Table Schema (Quoted Columns)
+    # 2. Create Table Schema
     cols = []
+    has_id_pk = False
+
+    # Check if we have an ID to use as PK
+    if 'nhlplayerid' in df.columns:
+        has_id_pk = True
+
     for col, dtype in df.dtypes.items():
         pg_type = 'TEXT'
         if pd.api.types.is_integer_dtype(dtype): pg_type = 'INTEGER'
         elif pd.api.types.is_float_dtype(dtype): pg_type = 'DOUBLE PRECISION'
 
-        # Always quote column names to handle "toi/g"
-        if col == 'player_name_normalized':
+        # FIX: Use nhlplayerid as PK if available, otherwise fallback to name
+        if col == 'nhlplayerid' and has_id_pk:
+            cols.append(f'"{col}" INTEGER PRIMARY KEY')
+        elif col == 'player_name_normalized' and not has_id_pk:
             cols.append(f'"{col}" TEXT PRIMARY KEY')
-        elif col == 'nhlplayerid':
-            cols.append(f'"{col}" INTEGER')
         else:
             cols.append(f'"{col}" {pg_type}')
 
     create_sql = f"CREATE TABLE IF NOT EXISTS {table_name} ({', '.join(cols)})"
     cursor.execute(create_sql)
 
-    # 3. Insert Data (Quoted Columns)
+    # 3. Insert Data
     columns = list(df.columns)
     placeholders = ",".join(["%s"] * len(columns))
-    col_names = ",".join([f'"{c}"' for c in columns]) # Quoted!
+    col_names = ",".join([f'"{c}"' for c in columns])
 
     data = [tuple(None if pd.isna(x) else x for x in row) for row in df.to_numpy()]
 
+    # On conflict, do nothing (first winner keeps spot if ID duplicated, which shouldn't happen with unique IDs)
     insert_sql = f"INSERT INTO {table_name} ({col_names}) VALUES ({placeholders}) ON CONFLICT DO NOTHING"
     cursor.executemany(insert_sql, data)
     conn.commit()
@@ -387,7 +395,6 @@ def fetch_and_update_scoring_to_date():
         while True:
             params = {"isAggregate": "false", "cayenneExp": f"gameTypeId=2 and seasonId={season_id}", "start": start, "limit": 100}
 
-            # --- FIX: Retry Logic ---
             success = False
             for attempt in range(3):
                 try:
@@ -414,33 +421,16 @@ def fetch_and_update_scoring_to_date():
         if all_data:
             df = pd.DataFrame(all_data)
 
-            # --- DEBUG: Check for Eklund ---
-            eklund = df[df['skaterFullName'] == "William Eklund"]
-            if not eklund.empty:
-                print(f"✅ FOUND WILLIAM EKLUND in Raw API Data: {eklund[['playerId', 'gamesPlayed', 'points']].to_dict('records')}")
-            else:
-                print("❌ WILLIAM EKLUND NOT FOUND in Raw API Data.")
+            # FIX: We removed the hardcoded name fixes because we are now using ID as PK
 
             df.drop_duplicates(subset=['playerId'], inplace=True)
             if 'skaterFullName' in df.columns:
                 df['player_name_normalized'] = df['skaterFullName'].apply(normalize_name)
 
-            # Handle Elias Pettersson Duplicate (Forward)
-            df['playerId'] = pd.to_numeric(df['playerId'], errors='coerce')
-            df.loc[df['playerId'] == 8480012, 'player_name_normalized'] = 'eliaspetterssonf'
-
-            # --- FIX: Check for Duplicates ---
-            dupes = df[df.duplicated('player_name_normalized', keep=False)]
-            if not dupes.empty:
-                print(f"WARNING: Found {len(dupes)} duplicate names in Scoring Data:")
-                print(dupes[['skaterFullName', 'player_name_normalized', 'playerId']].head(10))
-
-            # Convert to numeric
             numeric_cols = ['gamesPlayed', 'goals', 'assists', 'points', 'plusMinus', 'penaltyMinutes', 'ppGoals', 'ppPoints', 'shots']
             for col in numeric_cols:
                 df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
 
-            # Per Game Division
             cols_to_average = ['goals', 'assists', 'points', 'plusMinus', 'penaltyMinutes', 'ppGoals', 'ppPoints', 'shots']
             df['gamesPlayed'] = df['gamesPlayed'].astype(float)
             for col in cols_to_average:
@@ -469,7 +459,6 @@ def fetch_and_update_scoring_to_date():
 
 def fetch_and_update_bangers_stats():
     print("Fetching Bangers...")
-    # Reverted to scoringpergame endpoint
     season_id = "20252026"
     base_url = "https://api.nhle.com/stats/rest/en/skater/scoringpergame"
     all_data = []
@@ -491,10 +480,6 @@ def fetch_and_update_bangers_stats():
             df.drop_duplicates(subset=['playerId'], inplace=True)
             if 'skaterFullName' in df.columns:
                 df['player_name_normalized'] = df['skaterFullName'].apply(normalize_name)
-
-            # Handle Elias Pettersson Duplicate (Forward)
-            df['playerId'] = pd.to_numeric(df['playerId'], errors='coerce')
-            df.loc[df['playerId'] == 8480012, 'player_name_normalized'] = 'eliaspetterssonf'
 
             cols = {'playerId': 'nhlplayerid', 'skaterFullName': 'skaterfullname', 'teamAbbrevs': 'teamabbrevs', 'blocksPerGame': 'BLK', 'hitsPerGame': 'HIT'}
 
@@ -551,9 +536,7 @@ def fetch_and_update_goalie_stats():
                 'shutouts': 'shutouts', 'wins': 'wins', 'goalsAgainst': 'goalsagainst',
                 'TOI/G': 'toi/g'
             }
-
-            keep_cols = list(cols.keys()) + ['player_name_normalized']
-            df_final = df[keep_cols].rename(columns=cols)
+            df_final = df[list(cols.keys())].rename(columns=cols)
 
             with get_db_connection() as conn:
                 std = read_sql_postgres("SELECT team_tricode, games_played as team_gp FROM team_standings", conn)
@@ -644,6 +627,7 @@ def perform_smart_join(base_df, merge_df, merge_cols, source_name, conn):
         if c in merge_df.columns:
             cols_found.append(c)
         elif c.lower() in merge_df.columns:
+            # Rename lowercase in merge_df to match requested MixedCase
             merge_df.rename(columns={c.lower(): c}, inplace=True)
             df_exact.rename(columns={c.lower(): c}, inplace=True)
             if not df_name.empty:
