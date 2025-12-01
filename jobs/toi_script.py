@@ -535,6 +535,7 @@ def fetch_and_update_bangers_stats():
             # Handle Duplicate
             df['playerId'] = pd.to_numeric(df['playerId'], errors='coerce')
             df.loc[df['playerId'] == 8480012, 'player_name_normalized'] = 'eliaspetterssonf'
+            df.loc[df['playerId'] == 8478427, 'player_name_normalized'] = 'sebastianahof'
 
             cols = {'playerId': 'nhlplayerid', 'skaterFullName': 'skaterfullname', 'teamAbbrevs': 'teamabbrevs', 'blocksPerGame': 'BLK', 'hitsPerGame': 'HIT'}
 
