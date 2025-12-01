@@ -19,6 +19,10 @@ import json
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from database import get_db_connection
 
+# --- Constants ---
+DEBUG_DUMP_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'static')
+os.makedirs(DEBUG_DUMP_DIR, exist_ok=True)
+
 FRANCHISE_TO_TRICODE_MAP = {
     "Anaheim Ducks": "ANA", "Boston Bruins": "BOS", "Buffalo Sabres": "BUF",
     "Calgary Flames": "CGY", "Carolina Hurricanes": "CAR", "Chicago Blackhawks": "CHI",
@@ -51,9 +55,6 @@ def read_sql_postgres(query, conn):
         return pd.DataFrame()
 
 def df_to_postgres(df, table_name, conn, if_exists='replace', lowercase_columns=True, primary_key=None):
-    """
-    Writes DataFrame to Postgres.
-    """
     if df.empty:
         print(f"Warning: DataFrame for {table_name} is empty. Skipping write.")
         return
@@ -134,7 +135,6 @@ def create_global_tables():
                 CREATE TABLE IF NOT EXISTS unmatched_players (
                     run_date TEXT, source_table TEXT, nhlplayerid INTEGER, player_name TEXT, team TEXT
                 );
-                -- New Debug Table for storing JSON blobs
                 CREATE TABLE IF NOT EXISTS debug_dumps (
                     filename TEXT PRIMARY KEY,
                     content TEXT,
@@ -144,7 +144,6 @@ def create_global_tables():
             conn.commit()
 
 def save_debug_to_db(filename, data):
-    """Saves a JSON object to the debug_dumps table."""
     try:
         json_str = json.dumps(data)
         with get_db_connection() as conn:
@@ -165,7 +164,6 @@ def log_unmatched_players(conn, df_unmatched, source_table_name):
 
     log_df = pd.DataFrame()
     log_df['nhlplayerid'] = df_unmatched.get('nhlplayerid', pd.NA)
-
     if 'player_name_normalized' in df_unmatched.columns:
         log_df['player_name'] = df_unmatched['player_name_normalized']
     elif 'skaterfullname' in df_unmatched.columns:
@@ -222,8 +220,10 @@ def fetch_daily_pp_stats():
         idx = 0
         try:
             while True:
+                # FIX: Added sort to guarantee deterministic paging
                 params = {
-                    "isAggregate": "false", "sort": '[{"property":"ppTimeOnIce","direction":"DESC"}]',
+                    "isAggregate": "false",
+                    "sort": '[{"property":"ppTimeOnIce","direction":"DESC"},{"property":"playerId","direction":"ASC"}]',
                     "start": idx, "limit": 100,
                     "cayenneExp": f'gameDate>="{d}" and gameDate<="{d}" and gameTypeId=2'
                 }
@@ -233,9 +233,7 @@ def fetch_daily_pp_stats():
 
                 for p in data:
                     pp_pct = p.get("ppTimeOnIcePctPerGame")
-
-                    if pp_pct is None:
-                        continue
+                    if pp_pct is None: continue
 
                     rec = {
                         "date_": d, "nhlplayerid": p.get("playerId"), "skaterfullname": p.get("skaterFullName"),
@@ -401,9 +399,16 @@ def fetch_and_update_scoring_to_date():
 
     try:
         while True:
-            params = {"isAggregate": "false", "cayenneExp": f"gameTypeId=2 and seasonId={season_id}", "start": start, "limit": 100}
-            success = False
+            # FIX: Added explicit sort order to prevent pagination shifting
+            params = {
+                "isAggregate": "false",
+                "cayenneExp": f"gameTypeId=2 and seasonId={season_id}",
+                "sort": '[{"property":"points","direction":"DESC"},{"property":"playerId","direction":"ASC"}]',
+                "start": start,
+                "limit": 100
+            }
 
+            success = False
             for attempt in range(3):
                 try:
                     r = requests.get(base_url, params=params, timeout=15)
@@ -433,7 +438,6 @@ def fetch_and_update_scoring_to_date():
         if len(all_data) < total_expected:
             print(f"WARNING: Missed {total_expected - len(all_data)} records!")
 
-        # --- FIX: Write to DB instead of File ---
         save_debug_to_db('debug_scoring.json', all_data)
 
         if all_data:
@@ -441,6 +445,10 @@ def fetch_and_update_scoring_to_date():
             df.drop_duplicates(subset=['playerId'], inplace=True)
             if 'skaterFullName' in df.columns:
                 df['player_name_normalized'] = df['skaterFullName'].apply(normalize_name)
+
+            # Handle Duplicate
+            df['playerId'] = pd.to_numeric(df['playerId'], errors='coerce')
+            df.loc[df['playerId'] == 8480012, 'player_name_normalized'] = 'eliaspetterssonf'
 
             numeric_cols = ['gamesPlayed', 'goals', 'assists', 'points', 'plusMinus', 'penaltyMinutes', 'ppGoals', 'ppPoints', 'shots']
             for col in numeric_cols:
@@ -481,7 +489,15 @@ def fetch_and_update_bangers_stats():
     total_expected = 0
     try:
         while True:
-            params = {"isAggregate": "false", "cayenneExp": f"gameTypeId=2 and seasonId={season_id}", "start": start, "limit": 100}
+            # FIX: Added explicit sort order
+            params = {
+                "isAggregate": "false",
+                "cayenneExp": f"gameTypeId=2 and seasonId={season_id}",
+                "sort": '[{"property":"pointsPerGame","direction":"DESC"},{"property":"playerId","direction":"ASC"}]',
+                "start": start,
+                "limit": 100
+            }
+
             success = False
             for attempt in range(3):
                 try:
@@ -507,7 +523,6 @@ def fetch_and_update_bangers_stats():
 
         print(f"Fetched {len(all_data)} bangers records.")
 
-        # --- FIX: Write to DB instead of File ---
         save_debug_to_db('debug_bangers.json', all_data)
 
         if all_data:
@@ -515,6 +530,10 @@ def fetch_and_update_bangers_stats():
             df.drop_duplicates(subset=['playerId'], inplace=True)
             if 'skaterFullName' in df.columns:
                 df['player_name_normalized'] = df['skaterFullName'].apply(normalize_name)
+
+            # Handle Duplicate
+            df['playerId'] = pd.to_numeric(df['playerId'], errors='coerce')
+            df.loc[df['playerId'] == 8480012, 'player_name_normalized'] = 'eliaspetterssonf'
 
             cols = {'playerId': 'nhlplayerid', 'skaterFullName': 'skaterfullname', 'teamAbbrevs': 'teamabbrevs', 'blocksPerGame': 'BLK', 'hitsPerGame': 'HIT'}
 
@@ -534,7 +553,15 @@ def fetch_and_update_goalie_stats():
     start = 0
     try:
         while True:
-            params = {"isAggregate": "false", "cayenneExp": f"gameTypeId=2 and seasonId={season_id}", "start": start, "limit": 100}
+            # FIX: Added explicit sort order
+            params = {
+                "isAggregate": "false",
+                "cayenneExp": f"gameTypeId=2 and seasonId={season_id}",
+                "sort": '[{"property":"wins","direction":"DESC"},{"property":"playerId","direction":"ASC"}]',
+                "start": start,
+                "limit": 100
+            }
+
             r = requests.get(base_url, params=params).json()
             data = r.get('data', [])
             if not data: break
@@ -743,6 +770,7 @@ def create_stats_to_date_table():
 
         df_merged = perform_smart_join(df_merged, df_gl, list(gl_map.values()), 'goalies', conn)
 
+        # FIX: lowercase=False to preserve MixedCase keys
         df_to_postgres(df_merged, 'stats_to_date', conn, lowercase_columns=False, primary_key='player_name_normalized')
 
 def calculate_and_save_to_date_ranks():
@@ -802,7 +830,7 @@ def create_combined_projections():
         # 1. Init with ID
         df_final_ids = df_merged[['nhlplayerid']].copy()
 
-        # 2. Collect new columns in a dict (Performance Optimization)
+        # 2. Collect new columns
         final_processed_data = {}
 
         id_cols = ['player_name_normalized', 'player_name', 'team', 'age', 'player_id', 'positions', 'status',
@@ -811,17 +839,17 @@ def create_combined_projections():
                    'player_games_played', 'team_games_played']
 
         for col in id_cols:
-            # Check Mixed, Lower, and Suffixed
             col_lower = col.lower()
+            c_proj, c_stat = f"{col}_proj", f"{col}_stats"
+            c_proj_l, c_stat_l = f"{col_lower}_proj", f"{col_lower}_stats"
 
-            def get_series(base, suffix):
-                keys = [f"{base}{suffix}", f"{base.lower()}{suffix}", base, base.lower()]
-                for k in keys:
-                    if k in df_merged: return df_merged[k]
+            def get_series(name_list):
+                for n in name_list:
+                    if n in df_merged: return df_merged[n]
                 return None
 
-            s_proj = get_series(col, "_proj")
-            s_stat = get_series(col, "_stats")
+            s_proj = get_series([c_proj, c_proj_l, col, col_lower])
+            s_stat = get_series([c_stat, c_stat_l])
 
             if s_stat is not None and s_proj is not None:
                 final_processed_data[col] = s_stat.fillna(s_proj)
@@ -848,7 +876,6 @@ def create_combined_projections():
             s_proj = s_proj.fillna(0)
             s_stat = s_stat.fillna(0)
 
-            # Logic: If column exists in original PROJ df, use average.
             has_p = (col in df_proj.columns) or (col.lower() in df_proj.columns)
             has_s = (col in df_stats.columns) or (col.lower() in df_stats.columns)
 
@@ -863,7 +890,6 @@ def create_combined_projections():
         df_data = pd.DataFrame(final_processed_data)
         df_final = pd.concat([df_final_ids, df_data], axis=1)
 
-        # Use lowercase=False to preserve MixedCase names
         df_to_postgres(df_final, 'combined_projections', conn, lowercase_columns=False, primary_key='player_name_normalized')
 
 
