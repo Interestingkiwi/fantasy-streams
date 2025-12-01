@@ -184,18 +184,23 @@ def fetch_daily_pp_stats():
     target_end_date = today - timedelta(days=1)
     target_start_date = today - timedelta(days=7)
 
-    last_run = get_last_run_end_date()
-    query_start = last_run + timedelta(days=1) if last_run else target_start_date
-    if query_start < target_start_date: query_start = target_start_date
-
+    # FIX: Always run cleanup for older records first
     run_database_cleanup(target_start_date)
 
-    if query_start > target_end_date:
-        print("Data up to date.")
-        return False
+    # FIX: Clean the current window to ensure self-healing
+    # This removes records we are about to re-fetch, ensuring that if a player
+    # is skipped (due to bad data), their old record doesn't persist.
+    print(f"Self-Healing: Clearing records from {target_start_date} to {target_end_date}...")
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "DELETE FROM powerplay_stats WHERE date_ >= %s AND date_ <= %s",
+                (target_start_date.strftime("%Y-%m-%d"), target_end_date.strftime("%Y-%m-%d"))
+            )
+        conn.commit()
 
     dates = []
-    curr = query_start
+    curr = target_start_date # FIX: Always start from 7 days ago
     while curr <= target_end_date:
         dates.append(curr.strftime("%Y-%m-%d"))
         curr += timedelta(days=1)
@@ -222,7 +227,6 @@ def fetch_daily_pp_stats():
                     pp_pct = p.get("ppTimeOnIcePctPerGame")
 
                     # FIX: Skip games where the team had 0 PP time (null/None pct)
-                    # This prevents division by zero/null issues in averages
                     if pp_pct is None:
                         continue
 
@@ -245,7 +249,6 @@ def fetch_daily_pp_stats():
         df.drop_duplicates(subset=['date_', 'nhlplayerid'], inplace=True)
 
         with get_db_connection() as conn:
-            # Force Lowercase for consistency
             df.columns = [c.lower() for c in df.columns]
 
             with conn.cursor() as cursor:
@@ -292,6 +295,7 @@ def create_last_week_pp_table():
     with get_db_connection() as conn:
         with conn.cursor() as cursor:
             cursor.execute("DROP TABLE IF EXISTS last_week_pp")
+            # Added COALESCE to handle any edge case NULLs
             cursor.execute("""
                 CREATE TABLE last_week_pp AS
                 WITH team_game_counts AS (
@@ -301,7 +305,7 @@ def create_last_week_pp_table():
                 player_sums AS (
                     SELECT nhlplayerid, teamabbrevs, MAX(skaterfullname) as skaterfullname,
                     SUM(pptimeonice) as total_pptimeonice,
-                    COALESCE(SUM(pptimeonicepctpergame), 0) as total_pptimeonicepctpergame, -- Fix here
+                    COALESCE(SUM(pptimeonicepctpergame), 0) as total_pptimeonicepctpergame,
                     SUM(ppassists) as total_ppassists,
                     SUM(ppgoals) as total_ppgoals,
                     COUNT(date_) as player_games_played
@@ -346,7 +350,6 @@ def fetch_team_standings():
 def fetch_team_stats_summary():
     print("\n--- Fetching Team Stats Summary ---")
     try:
-        # Using 20252026 for current season
         params = {"isAggregate":"false", "isGame":"false", "start":0, "limit":50, "cayenneExp":"seasonId=20252026 and gameTypeId=2"}
         data = requests.get("https://api.nhle.com/stats/rest/en/team/summary", params=params).json().get("data", [])
         rows = []
@@ -406,11 +409,9 @@ def fetch_and_update_scoring_to_date():
             if 'skaterFullName' in df.columns:
                 df['player_name_normalized'] = df['skaterFullName'].apply(normalize_name)
 
-            # --- FIX: Handle Elias Pettersson Duplicate (Forward) ---
+            # Handle Elias Pettersson Duplicate (Forward)
             df['playerId'] = pd.to_numeric(df['playerId'], errors='coerce')
-            # Using 'eliaspetterssonf' (Double S) to match projection file standard
             df.loc[df['playerId'] == 8480012, 'player_name_normalized'] = 'eliaspetterssonf'
-            # ------------------------------------------------------
 
             # Convert to numeric
             numeric_cols = ['gamesPlayed', 'goals', 'assists', 'points', 'plusMinus', 'penaltyMinutes', 'ppGoals', 'ppPoints', 'shots']
@@ -433,10 +434,8 @@ def fetch_and_update_scoring_to_date():
                 'ppPoints': 'pppoints', 'shootingPct': 'shootingpct', 'timeOnIcePerGame': 'toi/g',
                 'shots': 'shots', 'ppAssists': 'ppassists'
             }
-            # Rename TOI/G
             cols['timeOnIcePerGame'] = 'toi/g'
 
-            # Filter and Rename
             keep_cols = list(cols.keys()) + ['player_name_normalized']
             df_final = df[keep_cols].rename(columns=cols)
 
@@ -448,6 +447,7 @@ def fetch_and_update_scoring_to_date():
 
 def fetch_and_update_bangers_stats():
     print("Fetching Bangers...")
+    # Reverted to scoringpergame endpoint
     season_id = "20252026"
     base_url = "https://api.nhle.com/stats/rest/en/skater/scoringpergame"
     all_data = []
@@ -470,10 +470,9 @@ def fetch_and_update_bangers_stats():
             if 'skaterFullName' in df.columns:
                 df['player_name_normalized'] = df['skaterFullName'].apply(normalize_name)
 
-            # --- FIX: Handle Elias Pettersson Duplicate (Forward) ---
+            # Handle Elias Pettersson Duplicate (Forward)
             df['playerId'] = pd.to_numeric(df['playerId'], errors='coerce')
             df.loc[df['playerId'] == 8480012, 'player_name_normalized'] = 'eliaspetterssonf'
-            # ------------------------------------------------------
 
             cols = {'playerId': 'nhlplayerid', 'skaterFullName': 'skaterfullname', 'teamAbbrevs': 'teamabbrevs', 'blocksPerGame': 'BLK', 'hitsPerGame': 'HIT'}
 
@@ -688,10 +687,13 @@ def create_stats_to_date_table():
         df_merged = perform_smart_join(df_proj, df_sc, list(sc_map.values()), 'scoring', conn)
 
         df_bn = read_sql_postgres("SELECT * FROM bangers_to_date", conn)
+
+        # FIX: Map from lowercase 'blockspergame' to uppercase 'BLK'
         bn_map = {'blockspergame': 'BLK', 'hitspergame': 'HIT'}
         df_bn.rename(columns=bn_map, inplace=True)
         df_bn['nhlplayerid'] = pd.to_numeric(df_bn['nhlplayerid'], errors='coerce').fillna(0).astype(int)
 
+        # Merge with Uppercase keys (BLK, HIT)
         df_merged = perform_smart_join(df_merged, df_bn, list(bn_map.values()), 'bangers', conn)
 
         df_gl = read_sql_postgres("SELECT * FROM goalie_to_date", conn)
@@ -705,7 +707,7 @@ def create_stats_to_date_table():
 
         df_merged = perform_smart_join(df_merged, df_gl, list(gl_map.values()), 'goalies', conn)
 
-        # FIX: lowercase=False to preserve MixedCase keys
+        # FIX: lowercase=False to preserve BLK/HIT/TOI/G keys
         df_to_postgres(df_merged, 'stats_to_date', conn, lowercase_columns=False)
 
 def calculate_and_save_to_date_ranks():
@@ -816,6 +818,7 @@ def create_combined_projections():
             s_proj = s_proj.fillna(0)
             s_stat = s_stat.fillna(0)
 
+            # Logic: If column exists in original PROJ df, use average.
             has_p = (col in df_proj.columns) or (col.lower() in df_proj.columns)
             has_s = (col in df_stats.columns) or (col.lower() in df_stats.columns)
 
