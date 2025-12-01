@@ -128,11 +128,11 @@ def update_metadata(start, end):
 def create_global_tables():
     with get_db_connection() as conn:
         with conn.cursor() as cursor:
-            # FIX: Removed quotes to match existing lowercase schema
+            # FIX: Removed quotes to ensure lowercase schema compatibility
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS powerplay_stats (
-                    date_ TEXT, nhlplayerid INTEGER, "skaterFullName" TEXT, "teamAbbrevs" TEXT,
-                    "ppTimeOnIce" INTEGER, "ppTimeOnIcePctPerGame" REAL, "ppAssists" INTEGER, "ppGoals" INTEGER,
+                    date_ TEXT, nhlplayerid INTEGER, skaterFullName TEXT, teamAbbrevs TEXT,
+                    ppTimeOnIce INTEGER, ppTimeOnIcePctPerGame REAL, ppAssists INTEGER, ppGoals INTEGER,
                     PRIMARY KEY (date_, nhlplayerid)
                 );
                 CREATE TABLE IF NOT EXISTS table_metadata (id INTEGER PRIMARY KEY DEFAULT 1, start_date TEXT, end_date TEXT);
@@ -234,15 +234,16 @@ def fetch_daily_pp_stats():
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
                 vals = [tuple(x) for x in df[['date_', 'nhlplayerid', 'skaterFullName', 'teamAbbrevs', 'ppTimeOnIce', 'ppTimeOnIcePctPerGame', 'ppAssists', 'ppGoals']].to_numpy()]
-                # FIX: Removed quotes from INSERT to match lowercase table schema
+
+                # FIX: Removed quotes from INSERT to match lowercase schema
                 cursor.executemany("""
-                    INSERT INTO powerplay_stats (date_, nhlplayerid, "skaterFullName", "teamAbbrevs", "ppTimeOnIce", "ppTimeOnIcePctPerGame", "ppAssists", "ppGoals")
+                    INSERT INTO powerplay_stats (date_, nhlplayerid, skaterFullName, teamAbbrevs, ppTimeOnIce, ppTimeOnIcePctPerGame, ppAssists, ppGoals)
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (date_, nhlplayerid) DO UPDATE SET
-                        "ppTimeOnIce" = EXCLUDED."ppTimeOnIce",
-                        "ppTimeOnIcePctPerGame" = EXCLUDED."ppTimeOnIcePctPerGame",
-                        "ppAssists" = EXCLUDED."ppAssists",
-                        "ppGoals" = EXCLUDED."ppGoals"
+                        ppTimeOnIce = EXCLUDED.ppTimeOnIce,
+                        ppTimeOnIcePctPerGame = EXCLUDED.ppTimeOnIcePctPerGame,
+                        ppAssists = EXCLUDED.ppAssists,
+                        ppGoals = EXCLUDED.ppGoals
                 """, vals)
                 conn.commit()
 
@@ -256,8 +257,7 @@ def create_last_game_pp_table():
     with get_db_connection() as conn:
         with conn.cursor() as cursor:
             cursor.execute("DROP TABLE IF EXISTS last_game_pp")
-            # FIX: Use UNQUOTED source columns (teamAbbrevs) and QUOTED aliases (lg_...)
-            # This matches the lowercase table but creates a MixedCase output
+            # Use UNQUOTED source columns (lowercase in DB) and QUOTED aliases
             cursor.execute("""
                 CREATE TABLE last_game_pp AS
                 SELECT
@@ -279,7 +279,7 @@ def create_last_week_pp_table():
     with get_db_connection() as conn:
         with conn.cursor() as cursor:
             cursor.execute("DROP TABLE IF EXISTS last_week_pp")
-            # FIX: Use UNQUOTED source columns and QUOTED aliases
+            # Use UNQUOTED source columns and QUOTED aliases
             cursor.execute("""
                 CREATE TABLE last_week_pp AS
                 WITH team_game_counts AS (
@@ -449,9 +449,7 @@ def fetch_and_update_bangers_stats():
                 df['player_name_normalized'] = df['skaterFullName'].apply(normalize_name)
 
             cols = {'playerId': 'nhlplayerid', 'skaterFullName': 'skaterFullName', 'teamAbbrevs': 'teamAbbrevs', 'blocksPerGame': 'blocksPerGame', 'hitsPerGame': 'hitsPerGame'}
-
-            keep_cols = list(cols.keys()) + ['player_name_normalized']
-            df_final = df[keep_cols].rename(columns=cols)
+            df_final = df[list(cols.keys())].rename(columns=cols)
 
             with get_db_connection() as conn:
                 df_to_postgres(df_final, 'bangers_to_date', conn)
@@ -480,6 +478,7 @@ def fetch_and_update_goalie_stats():
             if 'goalieFullName' in df.columns:
                 df['player_name_normalized'] = df['goalieFullName'].apply(normalize_name)
 
+            # Convert stats to numeric
             numeric_cols = ['gamesPlayed', 'wins', 'losses', 'saves', 'shotsAgainst', 'goalsAgainst', 'shutouts', 'goalsAgainstAverage']
             for col in numeric_cols:
                 df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
@@ -503,9 +502,7 @@ def fetch_and_update_goalie_stats():
                 'shutouts': 'shutouts', 'wins': 'wins', 'goalsAgainst': 'goalsAgainst',
                 'TOI/G': 'TOI/G'
             }
-
-            keep_cols = list(cols.keys()) + ['player_name_normalized']
-            df_final = df[keep_cols].rename(columns=cols)
+            df_final = df[list(cols.keys())].rename(columns=cols)
 
             with get_db_connection() as conn:
                 # Fetch standings for Start %
@@ -680,7 +677,7 @@ def create_stats_to_date_table():
         gl_map = {
             'gamesStarted': 'GS', 'gamesPlayed': 'GP', 'goalsAgainstAverage': 'GAA', 'losses': 'L',
             'savePct': 'SVpct', 'saves': 'SV', 'shotsAgainst': 'SA', 'shutouts': 'SHO', 'wins': 'W',
-            'goalsAgainst': 'GA', 'startpct': 'startpct'
+            'goalsAgainst': 'GA', 'startpct': 'startpct', 'TOI/G': 'TOI/G'
         }
         df_gl.rename(columns=gl_map, inplace=True)
         df_gl['nhlplayerid'] = pd.to_numeric(df_gl['nhlplayerid'], errors='coerce').fillna(0).astype(int)
