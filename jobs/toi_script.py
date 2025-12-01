@@ -51,13 +51,15 @@ def read_sql_postgres(query, conn):
 
 def df_to_postgres(df, table_name, conn, if_exists='replace', lowercase_columns=True):
     """
-    Writes DataFrame to Postgres using quoted lowercase columns to handle special chars.
+    Writes DataFrame to Postgres.
+    lowercase_columns=True: Forces all columns to lowercase (Good for raw stats).
+    lowercase_columns=False: Preserves CamelCase (Required for projections table used by App).
     """
     if df.empty:
         print(f"Warning: DataFrame for {table_name} is empty. Skipping write.")
         return
 
-    # 1. Force Lowercase Columns for consistency
+    # 1. Handle Case Sensitivity
     if lowercase_columns:
         df.columns = [c.lower() for c in df.columns]
 
@@ -65,14 +67,14 @@ def df_to_postgres(df, table_name, conn, if_exists='replace', lowercase_columns=
     if if_exists == 'replace':
         cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
 
-    # 2. Create Table Schema (Quoted Columns)
+    # 2. Create Table Schema
     cols = []
     for col, dtype in df.dtypes.items():
         pg_type = 'TEXT'
         if pd.api.types.is_integer_dtype(dtype): pg_type = 'INTEGER'
         elif pd.api.types.is_float_dtype(dtype): pg_type = 'DOUBLE PRECISION'
 
-        # Always quote column names to handle "toi/g"
+        # Always quote column names to handle special chars and case
         if col == 'player_name_normalized':
             cols.append(f'"{col}" TEXT PRIMARY KEY')
         elif col == 'nhlplayerid':
@@ -83,7 +85,7 @@ def df_to_postgres(df, table_name, conn, if_exists='replace', lowercase_columns=
     create_sql = f"CREATE TABLE IF NOT EXISTS {table_name} ({', '.join(cols)})"
     cursor.execute(create_sql)
 
-    # 3. Insert Data (Quoted Columns)
+    # 3. Insert Data
     columns = list(df.columns)
     placeholders = ",".join(["%s"] * len(columns))
     col_names = ",".join([f'"{c}"' for c in columns]) # Quoted!
@@ -431,7 +433,6 @@ def fetch_and_update_scoring_to_date():
 
 def fetch_and_update_bangers_stats():
     print("Fetching Bangers...")
-    # Reverted to scoringpergame endpoint
     season_id = "20252026"
     base_url = "https://api.nhle.com/stats/rest/en/skater/scoringpergame"
     all_data = []
@@ -454,9 +455,9 @@ def fetch_and_update_bangers_stats():
             if 'skaterFullName' in df.columns:
                 df['player_name_normalized'] = df['skaterFullName'].apply(normalize_name)
 
-            cols = {'playerId': 'nhlplayerid', 'skaterFullName': 'skaterfullname', 'teamAbbrevs': 'teamabbrevs', 'blocksPerGame': 'blockspergame', 'hitsPerGame': 'hitspergame'}
+            # FIX: Map lowercase keys from original request to Uppercase keys
+            cols = {'playerId': 'nhlplayerid', 'skaterFullName': 'skaterfullname', 'teamAbbrevs': 'teamabbrevs', 'blocksPerGame': 'BLK', 'hitsPerGame': 'HIT'}
 
-            # FIX: Included 'player_name_normalized' in selection
             keep_cols = list(cols.keys()) + ['player_name_normalized']
             df_final = df[keep_cols].rename(columns=cols)
 
@@ -489,10 +490,12 @@ def fetch_and_update_goalie_stats():
             if 'goalieFullName' in df.columns:
                 df['player_name_normalized'] = df['goalieFullName'].apply(normalize_name)
 
+            # Convert stats to numeric
             numeric_cols = ['gamesPlayed', 'wins', 'losses', 'saves', 'shotsAgainst', 'goalsAgainst', 'shutouts', 'goalsAgainstAverage']
             for col in numeric_cols:
                 df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
 
+            # Calculate TOI/G
             total_ga = df['goalsAgainst']
             gaa = df['goalsAgainstAverage']
             gp = df['gamesPlayed']
@@ -500,6 +503,7 @@ def fetch_and_update_goalie_stats():
             df['total_mins'] = np.where(gaa > 0, (total_ga * 60) / gaa, 0)
             df['TOI/G'] = np.where(gp > 0, df['total_mins'] / gp, 0.0).round(2)
 
+            # Convert counts to per-game
             for col in ['wins', 'losses', 'saves', 'shotsAgainst', 'goalsAgainst', 'shutouts']:
                 df[col] = np.where(gp > 0, df[col] / gp, 0.0).round(3)
 
@@ -510,10 +514,7 @@ def fetch_and_update_goalie_stats():
                 'shutouts': 'shutouts', 'wins': 'wins', 'goalsAgainst': 'goalsagainst',
                 'TOI/G': 'toi/g'
             }
-
-            # FIX: Included 'player_name_normalized' in selection
-            keep_cols = list(cols.keys()) + ['player_name_normalized']
-            df_final = df[keep_cols].rename(columns=cols)
+            df_final = df[list(cols.keys())].rename(columns=cols)
 
             with get_db_connection() as conn:
                 std = read_sql_postgres("SELECT team_tricode, games_played as team_gp FROM team_standings", conn)
@@ -568,6 +569,7 @@ def join_special_teams_data():
         if 'nhlplayerid' in df_final.columns:
             df_final['nhlplayerid'] = pd.to_numeric(df_final['nhlplayerid'], errors='coerce').astype('Int64')
 
+        # Use lowercase=False to PRESERVE MixedCase for Projections table
         df_to_postgres(df_final, 'projections', conn, lowercase_columns=False)
 
         with conn.cursor() as cursor:
@@ -603,6 +605,7 @@ def perform_smart_join(base_df, merge_df, merge_cols, source_name, conn):
         if c in merge_df.columns:
             cols_found.append(c)
         elif c.lower() in merge_df.columns:
+            # Rename lowercase in merge_df to match requested MixedCase
             merge_df.rename(columns={c.lower(): c}, inplace=True)
             df_exact.rename(columns={c.lower(): c}, inplace=True)
             if not df_name.empty:
@@ -651,6 +654,11 @@ def create_stats_to_date_table():
         df_proj['nhlplayerid'] = pd.to_numeric(df_proj['nhlplayerid'], errors='coerce').fillna(0).astype(int)
         df_proj.drop_duplicates(subset=['nhlplayerid'], inplace=True)
 
+        # DROP RANK COLUMNS from projections to avoid duplication later
+        drop_rank_cols = [c for c in df_proj.columns if c.endswith('_cat_rank')]
+        if drop_rank_cols:
+            df_proj.drop(columns=drop_rank_cols, inplace=True)
+
         df_sc = read_sql_postgres("SELECT * FROM scoring_to_date", conn)
         sc_map = {
             'gamesplayed': 'GPskater', 'goals': 'G', 'assists': 'A', 'points': 'P', 'plusminus': 'plus_minus',
@@ -663,13 +671,11 @@ def create_stats_to_date_table():
         df_merged = perform_smart_join(df_proj, df_sc, list(sc_map.values()), 'scoring', conn)
 
         df_bn = read_sql_postgres("SELECT * FROM bangers_to_date", conn)
-
-        # FIX: Map from lowercase 'blockspergame' to uppercase 'BLK'
         bn_map = {'blockspergame': 'BLK', 'hitspergame': 'HIT'}
+        # df_bn keys will already be 'BLK' and 'HIT' from fetch_bangers renaming
         df_bn.rename(columns=bn_map, inplace=True)
         df_bn['nhlplayerid'] = pd.to_numeric(df_bn['nhlplayerid'], errors='coerce').fillna(0).astype(int)
 
-        # Merge with Uppercase keys (BLK, HIT)
         df_merged = perform_smart_join(df_merged, df_bn, list(bn_map.values()), 'bangers', conn)
 
         df_gl = read_sql_postgres("SELECT * FROM goalie_to_date", conn)
@@ -683,7 +689,7 @@ def create_stats_to_date_table():
 
         df_merged = perform_smart_join(df_merged, df_gl, list(gl_map.values()), 'goalies', conn)
 
-        # FIX: lowercase=False to preserve BLK/HIT/TOI/G keys
+        # FIX: Use lowercase=False so columns like 'G', 'A' stay capitalized
         df_to_postgres(df_merged, 'stats_to_date', conn, lowercase_columns=False)
 
 def calculate_and_save_to_date_ranks():
@@ -701,10 +707,10 @@ def calculate_and_save_to_date_ranks():
         num_skaters = mask_skater.sum()
         if num_skaters > 0:
             for stat in skater_stats:
-                # FIX: Create rank columns as lowercase to avoid duplicates
-                col = f"{stat.lower()}_cat_rank"
+                # FIX: Create rank columns as UpperCase to match standard
+                col = f"{stat}_cat_rank"
 
-                # Check both Mixed and Lower
+                # Check both Mixed and Lower source
                 s_key = stat if stat in df.columns else stat.lower()
 
                 if s_key in df.columns:
@@ -720,7 +726,7 @@ def calculate_and_save_to_date_ranks():
         num_goalies = mask_goalie.sum()
         if num_goalies > 0:
             for stat, is_inv in goalie_stats.items():
-                col = f"{stat.lower()}_cat_rank"
+                col = f"{stat}_cat_rank"
                 s_key = stat if stat in df.columns else stat.lower()
                 if stat == 'TOI/G': s_key = 'TOI/G' if 'TOI/G' in df.columns else 'toi/g'
 
@@ -795,7 +801,6 @@ def create_combined_projections():
             s_stat = s_stat.fillna(0)
 
             # Logic: If column exists in original PROJ df, use average.
-            # We check if 'col' or 'col_lower' exists in df_proj columns
             has_p = (col in df_proj.columns) or (col.lower() in df_proj.columns)
             has_s = (col in df_stats.columns) or (col.lower() in df_stats.columns)
 
