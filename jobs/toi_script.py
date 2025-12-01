@@ -135,11 +135,11 @@ def create_global_tables():
                 CREATE TABLE IF NOT EXISTS unmatched_players (
                     run_date TEXT, source_table TEXT, nhlplayerid INTEGER, player_name TEXT, team TEXT
                 );
-                CREATE TABLE IF NOT EXISTS debug_dumps (
-                    filename TEXT PRIMARY KEY,
-                    content TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                );
+                -- CREATE TABLE IF NOT EXISTS debug_dumps (
+                --    filename TEXT PRIMARY KEY,
+                --    content TEXT,
+                --    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                -- );
             """)
             conn.commit()
 
@@ -438,7 +438,7 @@ def fetch_and_update_scoring_to_date():
         if len(all_data) < total_expected:
             print(f"WARNING: Missed {total_expected - len(all_data)} records!")
 
-        save_debug_to_db('debug_scoring.json', all_data)
+        #save_debug_to_db('debug_scoring.json', all_data)
 
         if all_data:
             df = pd.DataFrame(all_data)
@@ -449,6 +449,7 @@ def fetch_and_update_scoring_to_date():
             # Handle Duplicate
             df['playerId'] = pd.to_numeric(df['playerId'], errors='coerce')
             df.loc[df['playerId'] == 8480012, 'player_name_normalized'] = 'eliaspetterssonf'
+            df.loc[df['playerId'] == 8478427, 'player_name_normalized'] = 'sebastianahof'
 
             numeric_cols = ['gamesPlayed', 'goals', 'assists', 'points', 'plusMinus', 'penaltyMinutes', 'ppGoals', 'ppPoints', 'shots']
             for col in numeric_cols:
@@ -523,7 +524,7 @@ def fetch_and_update_bangers_stats():
 
         print(f"Fetched {len(all_data)} bangers records.")
 
-        save_debug_to_db('debug_bangers.json', all_data)
+        #save_debug_to_db('debug_bangers.json', all_data)
 
         if all_data:
             df = pd.DataFrame(all_data)
