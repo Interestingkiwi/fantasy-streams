@@ -658,16 +658,14 @@ def _calculate_unused_spots(days_in_week, active_players, lineup_settings, simul
 def _get_ranked_players(cursor, player_ids, cat_rank_columns, raw_stat_columns, week_num, team_stats_map, league_id, sourcing='projected'):
     """
     Internal helper to fetch player details, ranks, and schedules for a list of player IDs.
+    Handles mapping between '+/-' (App/Frontend) and 'plus_minus' (DB).
     """
     source_table = get_stat_source_table(sourcing)
     if not player_ids:
         return []
 
     # --- FIX: Convert IDs to Strings ---
-    # The 'players' table uses TEXT for player_id, but inputs might be Integers.
-    # We convert them here so Postgres compares TEXT = TEXT.
     player_ids = [str(p) for p in player_ids]
-    # -----------------------------------
 
     # 1. Get dates for current and next week
     cursor.execute(
@@ -718,8 +716,13 @@ def _get_ranked_players(cursor, player_ids, cat_rank_columns, raw_stat_columns, 
         'total_ppGoals', 'team_games_played'
     ]
 
-    # Prefix stats with 'proj.'
-    stat_cols_select = [f'proj."{c}"' for c in (cat_rank_columns + pp_stat_columns + raw_stat_columns)]
+    # --- FIX: Create DB-safe column names (plus_minus) ---
+    db_cat_rank_columns = [c.replace('+/-', 'plus_minus') for c in cat_rank_columns]
+    db_raw_stat_columns = [c.replace('+/-', 'plus_minus') for c in raw_stat_columns]
+
+    # Select using the DB names
+    cols_to_select_db = db_cat_rank_columns + pp_stat_columns + db_raw_stat_columns
+    stat_cols_select = [f'proj."{c}"' for c in cols_to_select_db]
 
     status_col = """
         CASE
@@ -749,6 +752,17 @@ def _get_ranked_players(cursor, player_ids, cat_rank_columns, raw_stat_columns, 
 
     # 4. Enrich Results
     for player in players:
+        # --- FIX: Map DB keys back to original keys for Frontend ---
+        # e.g. Copy value from 'plus_minus_cat_rank' to '+/-_cat_rank'
+        for orig, db in zip(cat_rank_columns, db_cat_rank_columns):
+             if orig != db and db in player:
+                 player[orig] = player[db]
+
+        for orig, db in zip(raw_stat_columns, db_raw_stat_columns):
+             if orig != db and db in player:
+                 player[orig] = player[db]
+
+        # Calculate total rank using the original keys (which are now populated)
         total_rank = sum(player.get(col, 0) or 0 for col in cat_rank_columns)
         player['total_cat_rank'] = round(total_rank, 2)
 
