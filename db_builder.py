@@ -995,19 +995,36 @@ def _update_current_rosters(yq, cursor, conn, league_id, num_teams, logger):
         return
 
     try:
+        # --- FIX: Fetch actual team IDs to handle gaps (e.g. 1, 2, 4) ---
+        # The previous loop `range(1, num_teams + 1)` assumed sequential IDs.
+        logger.info("Fetching valid team IDs for current roster update...")
+        league_teams = yq.get_league_teams()
+        sorted_teams = sorted(league_teams, key=lambda t: int(t.team_id))
+
         data = []
         MAX_PLAYERS = 29
-        for team_id in range(1, num_teams + 1):
-            players = yq.get_team_roster_player_info_by_date(team_id, date.today().isoformat())
-            p_ids = [p.player_id for p in players][:MAX_PLAYERS]
-            padded = p_ids + [None] * (MAX_PLAYERS - len(p_ids))
-            data.append([league_id, team_id] + padded)
 
-        placeholders = ', '.join(['%s'] * (MAX_PLAYERS + 2))
-        cols = ", ".join([f"p{i}" for i in range(1, MAX_PLAYERS + 1)])
-        sql = f"INSERT INTO rosters (league_id, team_id, {cols}) VALUES ({placeholders})"
-        cursor.executemany(sql, data)
-        conn.commit()
+        for team in sorted_teams:
+            team_id = int(team.team_id)
+            try:
+                players = yq.get_team_roster_player_info_by_date(team_id, date.today().isoformat())
+                p_ids = [p.player_id for p in players][:MAX_PLAYERS]
+                padded = p_ids + [None] * (MAX_PLAYERS - len(p_ids))
+                data.append([league_id, team_id] + padded)
+            except Exception as e:
+                logger.error(f"Failed to fetch current roster for team {team_id}: {e}")
+                continue
+
+        if data:
+            placeholders = ', '.join(['%s'] * (MAX_PLAYERS + 2))
+            cols = ", ".join([f"p{i}" for i in range(1, MAX_PLAYERS + 1)])
+            sql = f"INSERT INTO rosters (league_id, team_id, {cols}) VALUES ({placeholders})"
+            cursor.executemany(sql, data)
+            conn.commit()
+            logger.info(f"Updated current rosters for {len(data)} teams.")
+        else:
+            logger.warning("No roster data fetched.")
+
     except Exception as e:
         logger.error(f"Failed to update rosters: {e}", exc_info=True)
 
