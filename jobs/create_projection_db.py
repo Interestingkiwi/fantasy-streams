@@ -246,6 +246,14 @@ def process_separate_files_to_table(cursor, skater_csv_file, goalie_csv_file, ta
                 team = data_dict.get('team', '').upper()
                 data_dict['team'] = TEAM_TRICODE_MAP.get(team, team)
 
+                # --- FIX: Calculate PPA (Power Play Assists) ---
+                if 'PPA' not in data_dict and 'PPP' in data_dict and 'PPG' in data_dict:
+                    try:
+                        ppp = float(data_dict['PPP'])
+                        ppg = float(data_dict['PPG'])
+                        data_dict['PPA'] = round(ppp - ppg, 4)
+                    except: pass
+
                 # --- FIX: Calculate TOI/G for Skaters ---
                 if 'TOI/G' not in data_dict and 'Total TOI' in data_dict:
                     try:
