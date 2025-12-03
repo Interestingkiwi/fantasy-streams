@@ -72,21 +72,57 @@ def process_subscription_expirations():
             """, (today_str,))
             conn.commit()
 
-def run_league_updates():
-    logger.info("--- Starting Scheduled League Updates ---")
-    process_subscription_expirations()
+
+
 
     with get_db_connection() as conn:
         with conn.cursor() as cursor:
-#            cursor.execute("""
-#                SELECT l.league_id, u.* FROM league_updaters l
-#                JOIN users u ON l.user_guid = u.guid
-#                WHERE u.is_premium = TRUE
-#            """)
-            cursor.execute("""
-                SELECT l.league_id, u.* FROM league_updaters l
-                JOIN users u ON l.user_guid = u.guid
-            """)
+            if target_league_id:
+                # Targeted Query for one league
+                cursor.execute("""
+                    SELECT l.league_id, u.* FROM league_updaters l
+                    JOIN users u ON l.user_guid = u.guid
+                    WHERE l.league_id = %s
+                """, (target_league_id,))
+                logger.info(f"Running manual update for single league: {target_league_id}")
+            else:
+                # Standard Query for all leagues
+                cursor.execute("""
+                    SELECT l.league_id, u.* FROM league_updaters l
+                    JOIN users u ON l.user_guid = u.guid
+                """)
+
+            rows = cursor.fetchall()
+
+
+def run_league_updates(target_league_id=None):
+    logger.info("--- Starting Scheduled League Updates ---")
+
+    # Only run subscription expiration checks if we are doing a full run
+    if not target_league_id:
+        process_subscription_expirations()
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            if target_league_id:
+                # Targeted Query for one league
+                cursor.execute("""
+                    SELECT l.league_id, u.* FROM league_updaters l
+                    JOIN users u ON l.user_guid = u.guid
+                    WHERE l.league_id = %s
+                """, (target_league_id,))
+                logger.info(f"Running manual update for single league: {target_league_id}")
+            else:
+                # Standard Query for all leagues
+#                cursor.execute("""
+    #                SELECT l.league_id, u.* FROM league_updaters l
+    #                JOIN users u ON l.user_guid = u.guid
+    #                WHERE u.is_premium = TRUE
+    #            """)
+                cursor.execute("""
+                    SELECT l.league_id, u.* FROM league_updaters l
+                    JOIN users u ON l.user_guid = u.guid
+                """)
             rows = cursor.fetchall()
 
             if not rows:
