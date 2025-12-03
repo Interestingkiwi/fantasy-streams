@@ -535,6 +535,79 @@ def fetch_and_update_bangers_stats():
 
     except Exception as e: print(f"Error bangers: {e}")
 
+def fetch_and_update_faceoff_stats():
+    print("Fetching Faceoffs...")
+    season_id = "20252026"
+    base_url = "https://api.nhle.com/stats/rest/en/skater/faceoffwins"
+    all_data = []
+    start = 0
+
+    try:
+        while True:
+            params = {
+                "isAggregate": "false",
+                "cayenneExp": f"gameTypeId=2 and seasonId={season_id}",
+                "sort": '[{"property":"totalFaceoffWins","direction":"DESC"},{"property":"faceoffWinPct","direction":"DESC"}]',
+                "start": start,
+                "limit": 100
+            }
+
+            success = False
+            for attempt in range(3):
+                try:
+                    r = requests.get(base_url, params=params, timeout=15)
+                    if r.status_code == 200:
+                        success = True
+                        break
+                except requests.RequestException:
+                    time.sleep(2)
+
+            if not success: break
+
+            data = r.json().get('data', [])
+            if not data: break
+            all_data.extend(data)
+            start += 100
+            time.sleep(0.1)
+
+        print(f"Fetched {len(all_data)} faceoff records.")
+
+        if all_data:
+            df = pd.DataFrame(all_data)
+            df.drop_duplicates(subset=['playerId'], inplace=True)
+            if 'skaterFullName' in df.columns:
+                df['player_name_normalized'] = df['skaterFullName'].apply(normalize_name)
+
+            df['playerId'] = pd.to_numeric(df['playerId'], errors='coerce')
+            df.loc[df['playerId'] == 8480012, 'player_name_normalized'] = 'eliaspetterssonf'
+            df.loc[df['playerId'] == 8478427, 'player_name_normalized'] = 'sebastianahof'
+
+            # --- Calculate Per Game Stats ---
+            df['gamesPlayed'] = pd.to_numeric(df['gamesPlayed'], errors='coerce').fillna(0)
+            df['totalFaceoffWins'] = pd.to_numeric(df['totalFaceoffWins'], errors='coerce').fillna(0)
+            df['totalFaceoffLosses'] = pd.to_numeric(df['totalFaceoffLosses'], errors='coerce').fillna(0)
+
+            df['totalfaceoffwins'] = np.where(df['gamesPlayed'] > 0, df['totalFaceoffWins'] / df['gamesPlayed'], 0.0).round(3)
+            df['totalfaceofflosses'] = np.where(df['gamesPlayed'] > 0, df['totalFaceoffLosses'] / df['gamesPlayed'], 0.0).round(3)
+
+            cols = {
+                'playerId': 'nhlplayerid',
+                'skaterFullName': 'skaterfullname',
+                'teamAbbrevs': 'teamabbrevs',
+                'faceoffWinPct': 'faceoffwinpct',
+                'totalfaceoffwins': 'totalfaceoffwins', # Mapped to calculated per-game col
+                'totalfaceofflosses': 'totalfaceofflosses' # Mapped to calculated per-game col
+            }
+
+            keep_cols = list(cols.keys()) + ['player_name_normalized']
+            df_final = df[keep_cols].rename(columns=cols)
+
+            with get_db_connection() as conn:
+                df_to_postgres(df_final, 'faceoff_to_date', conn, primary_key='nhlplayerid')
+
+    except Exception as e:
+        print(f"Error faceoffs: {e}")
+
 def fetch_and_update_goalie_stats():
     print("Fetching Goalies...")
     season_id = "20252026"
@@ -751,6 +824,14 @@ def create_stats_to_date_table():
 
         df_merged = perform_smart_join(df_merged, df_bn, list(bn_map.values()), 'bangers', conn)
 
+        # --- NEW: Join Faceoff Stats ---
+        df_fo = read_sql_postgres("SELECT * FROM faceoff_to_date", conn)
+        fo_map = {'totalfaceoffwins': 'FW', 'totalfaceofflosses': 'FL', 'faceoffwinpct': 'FOpct'}
+        df_fo.rename(columns=fo_map, inplace=True)
+        df_fo['nhlplayerid'] = pd.to_numeric(df_fo['nhlplayerid'], errors='coerce').fillna(0).astype(int)
+
+        df_merged = perform_smart_join(df_merged, df_fo, list(fo_map.values()), 'faceoffs', conn)
+
         # --- FIX for GOALIE JOIN ---
         df_gl = read_sql_postgres("SELECT * FROM goalie_to_date", conn)
         gl_map = {
@@ -791,8 +872,8 @@ def calculate_and_save_to_date_ranks():
         df = read_sql_postgres("SELECT * FROM stats_to_date", conn)
         if df.empty: return
 
-        # --- UPDATED: Added GWG to list of ranked stats ---
-        skater_stats = ['G', 'A', 'P', 'PPG', 'PPA', 'PPP', 'SHG', 'SHA', 'SHP', 'GWG', 'HIT', 'BLK', 'PIM', 'FOW', 'SOG', 'plus_minus']
+        # --- UPDATED: Added GWG, FW, FL, FOpct to list of ranked stats ---
+        skater_stats = ['G', 'A', 'P', 'PPG', 'PPA', 'PPP', 'SHG', 'SHA', 'SHP', 'GWG', 'HIT', 'BLK', 'PIM', 'FOW', 'SOG', 'plus_minus', 'FW', 'FL', 'FOpct']
         goalie_stats = {'GS': False, 'W': False, 'L': True, 'GA': True, 'SA': False, 'SV': False, 'SVpct': False, 'GAA': True, 'SHO': False, 'QS': False}
 
         if 'positions' not in df.columns: return
@@ -918,6 +999,7 @@ def update_toi_stats():
 
     fetch_and_update_scoring_to_date()
     fetch_and_update_bangers_stats()
+    fetch_and_update_faceoff_stats() # New Function
     fetch_and_update_goalie_stats()
 
     fetch_daily_pp_stats()
