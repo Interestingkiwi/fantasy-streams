@@ -439,15 +439,15 @@ def fetch_and_update_scoring_to_date():
             df.loc[df['playerId'] == 8480012, 'player_name_normalized'] = 'eliaspetterssonf'
             df.loc[df['playerId'] == 8478427, 'player_name_normalized'] = 'sebastianahof'
 
-            # --- UPDATED: Added shGoals and shPoints to numeric conversion ---
+            # --- UPDATED: Added gameWinningGoals to numeric conversion ---
             numeric_cols = ['gamesPlayed', 'goals', 'assists', 'points', 'plusMinus',
-                            'penaltyMinutes', 'ppGoals', 'ppPoints', 'shGoals', 'shPoints', 'shots']
+                            'penaltyMinutes', 'ppGoals', 'ppPoints', 'shGoals', 'shPoints', 'shots', 'gameWinningGoals']
             for col in numeric_cols:
                 df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
 
-            # --- UPDATED: Added shGoals and shPoints to averaging loop ---
+            # --- UPDATED: Added gameWinningGoals to averaging loop ---
             cols_to_average = ['goals', 'assists', 'points', 'plusMinus', 'penaltyMinutes',
-                               'ppGoals', 'ppPoints', 'shGoals', 'shPoints', 'shots']
+                               'ppGoals', 'ppPoints', 'shGoals', 'shPoints', 'shots', 'gameWinningGoals']
             df['gamesPlayed'] = df['gamesPlayed'].astype(float)
             for col in cols_to_average:
                 df[col] = np.where(df['gamesPlayed'] > 0, df[col] / df['gamesPlayed'], 0.0)
@@ -462,9 +462,10 @@ def fetch_and_update_scoring_to_date():
                 'gamesPlayed': 'gamesplayed', 'goals': 'goals', 'assists': 'assists', 'points': 'points',
                 'plusMinus': 'plusminus', 'penaltyMinutes': 'penaltyminutes',
                 'ppGoals': 'ppgoals', 'ppPoints': 'pppoints',
-                'shGoals': 'shgoals', 'shPoints': 'shpoints', # New Columns
+                'shGoals': 'shgoals', 'shPoints': 'shpoints',
+                'gameWinningGoals': 'gwgoals', # New Column Mapping
                 'shootingPct': 'shootingpct', 'timeOnIcePerGame': 'toi/g',
-                'shots': 'shots', 'ppAssists': 'ppassists', 'shAssists': 'shassists' # New Columns
+                'shots': 'shots', 'ppAssists': 'ppassists', 'shAssists': 'shassists'
             }
             cols['timeOnIcePerGame'] = 'toi/g'
 
@@ -730,11 +731,12 @@ def create_stats_to_date_table():
             df_proj.drop(columns=drop_rank_cols, inplace=True)
 
         df_sc = read_sql_postgres("SELECT * FROM scoring_to_date", conn)
-        # --- UPDATED MAPPING ---
+        # --- UPDATED MAPPING: Added gwgoals to GWG ---
         sc_map = {
             'gamesplayed': 'GPskater', 'goals': 'G', 'assists': 'A', 'points': 'P', 'plusminus': 'plus_minus',
             'penaltyminutes': 'PIM', 'ppgoals': 'PPG', 'ppassists': 'PPA', 'pppoints': 'PPP',
-            'shgoals': 'SHG', 'shassists': 'SHA', 'shpoints': 'SHP', # Added SH mapping
+            'shgoals': 'SHG', 'shassists': 'SHA', 'shpoints': 'SHP',
+            'gwgoals': 'GWG',  # Added GWG mapping
             'shootingpct': 'shootingPct', 'toi/g': 'TOI/G', 'shots': 'SOG'
         }
         df_sc.rename(columns=sc_map, inplace=True)
@@ -789,7 +791,8 @@ def calculate_and_save_to_date_ranks():
         df = read_sql_postgres("SELECT * FROM stats_to_date", conn)
         if df.empty: return
 
-        skater_stats = ['G', 'A', 'P', 'PPG', 'PPA', 'PPP', 'SHG', 'SHA', 'SHP', 'HIT', 'BLK', 'PIM', 'FOW', 'SOG', 'plus_minus']
+        # --- UPDATED: Added GWG to list of ranked stats ---
+        skater_stats = ['G', 'A', 'P', 'PPG', 'PPA', 'PPP', 'SHG', 'SHA', 'SHP', 'GWG', 'HIT', 'BLK', 'PIM', 'FOW', 'SOG', 'plus_minus']
         goalie_stats = {'GS': False, 'W': False, 'L': True, 'GA': True, 'SA': False, 'SV': False, 'SVpct': False, 'GAA': True, 'SHO': False, 'QS': False}
 
         if 'positions' not in df.columns: return

@@ -57,7 +57,7 @@ def sanitize_header(header_list):
         'sh_goals': 'SHG', 'sh_assists': 'SHA', 'sh_points': 'SHP',
         'pim': 'PIM', 'fow': 'FOW', 'fol': 'FOL', 'ppg': 'PPG', 'ppa': 'PPA',
         'gaa': 'GAA', 'gs': 'GS', 'sv': 'SV', 'sa': 'SA', 'qs': 'QS', 'l':'L',
-        'toi/g': 'TOI/G', 'timeonice': 'TOI/G', 'total_toi': 'Total TOI'
+        'toi/g': 'TOI/G', 'timeonice': 'TOI/G', 'total_toi': 'Total TOI', 'gwg': 'GWG'
     }
     for h in header_list:
         clean_h = h.strip().lower()
@@ -98,7 +98,7 @@ def calculate_per_game_stats(row, gp_index, stat_indices):
 
 def calculate_and_add_category_ranks(player_data):
     new_rank_columns = []
-    skater_stats_to_rank = ['G', 'A', 'P', 'PPG', 'PPA', 'PPP', 'SHG', 'SHA', 'SHP', 'HIT', 'BLK', 'PIM', 'FOW', 'SOG', 'plus_minus']
+    skater_stats_to_rank = ['G', 'A', 'P', 'PPG', 'PPA', 'PPP', 'SHG', 'SHA', 'SHP', 'HIT', 'BLK', 'PIM', 'FOW', 'SOG', 'plus_minus', 'GWG']
 
     skaters = {
         name: data for name, data in player_data.items()
