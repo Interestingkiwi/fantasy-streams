@@ -775,7 +775,7 @@ def _update_daily_lineups(yq, cursor, conn, league_id, num_teams, league_start_d
         else:
             # Map Yahoo positions to our DB prefixes
             prefix_map = {
-                'C': 'c', 'LW': 'l', 'RW': 'r', 'D': 'd', 'G': 'g', 'F', 'f'
+                'C': 'c', 'LW': 'l', 'RW': 'r', 'D': 'd', 'G': 'g', 'F': 'f'
                 'Util': 'u', 'NA': 'n', 'IR': 'i', 'IR+': 'i', 'BN': 'b', 'W': 'w'
             }
 
