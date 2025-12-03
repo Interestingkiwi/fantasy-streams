@@ -1412,8 +1412,10 @@ def get_matchup_stats():
                     if starter_names:
                         placeholders = ','.join(['%s'] * len(starter_names))
 
-                        # --- FIX: Quote columns for Postgres ---
-                        quoted_cats = [f'"{c}"' for c in projection_cats]
+                        # --- FIX: Sanitize and Quote columns for Postgres ---
+                        # Convert "+/-" to "plus_minus" for the DB query
+                        db_projection_cats = [c.replace('+/-', 'plus_minus') for c in projection_cats]
+                        quoted_cats = [f'"{c}"' for c in db_projection_cats]
 
                         query = f"SELECT player_name_normalized, {', '.join(quoted_cats)} FROM {stat_table} WHERE player_name_normalized IN ({placeholders})"
                         cursor.execute(query, tuple(starter_names))
@@ -1427,7 +1429,10 @@ def get_matchup_stats():
                             if norm in proj_map:
                                 p_stats = proj_map[norm]
                                 for cat in projection_cats:
-                                    stats['team1']['row'][cat] += (p_stats.get(cat) or 0)
+                                    # Use sanitized key (plus_minus) to pull from DB result
+                                    db_key = cat.replace('+/-', 'plus_minus')
+                                    # Use original key (+/-) to update the stats dict
+                                    stats['team1']['row'][cat] += (p_stats.get(db_key) or 0)
                                 if 'G' in (starter.get('eligible_positions') or starter.get('positions', '')):
                                     stats['team1']['row']['TOI/G'] += 60
 
@@ -1436,7 +1441,8 @@ def get_matchup_stats():
                             if norm in proj_map:
                                 p_stats = proj_map[norm]
                                 for cat in projection_cats:
-                                    stats['team2']['row'][cat] += (p_stats.get(cat) or 0)
+                                    db_key = cat.replace('+/-', 'plus_minus')
+                                    stats['team2']['row'][cat] += (p_stats.get(db_key) or 0)
                                 if 'G' in (starter.get('eligible_positions') or starter.get('positions', '')):
                                     stats['team2']['row']['TOI/G'] += 60
 
