@@ -240,11 +240,15 @@
         const hasGaa = leagueCats.includes('GAA');
         const hasSvPct = leagueCats.includes('SVpct');
 
-        let wClass = COLORS.tie, gaaClass = COLORS.tie, svPctClass = COLORS.tie, shoClass = COLORS.tie;
+        // Init colors
+        let wClass = COLORS.tie, gaaClass = COLORS.tie, gaClass = COLORS.tie;
+        let svPctClass = COLORS.tie, svClass = COLORS.tie, shoClass = COLORS.tie;
 
         if (opponentTotals) {
             wClass = getComparisonClass(totals.W, opponentTotals.W, false);
+            shoClass = getComparisonClass(totals.SHO, opponentTotals.SHO, false);
 
+            // GAA comparison
             if (hasGaa) {
                 const myGaa = totals.TOI > 0 ? totals.GAA : Infinity;
                 const oppGaa = opponentTotals.TOI > 0 ? opponentTotals.GAA : Infinity;
@@ -252,55 +256,80 @@
                 else gaaClass = getComparisonClass(myGaa, oppGaa, true);
             }
 
-            if (hasSvPct) svPctClass = getComparisonClass(totals.SVpct, opponentTotals.SVpct, false);
-            shoClass = getComparisonClass(totals.SHO, opponentTotals.SHO, false);
+            // GA comparison (Lower is better)
+            gaClass = getComparisonClass(totals.GA, opponentTotals.GA, true);
+
+            // SV% comparison
+            if (hasSvPct) {
+                svPctClass = getComparisonClass(totals.SVpct, opponentTotals.SVpct, false);
+            }
+
+            // SV comparison (Higher is better)
+            svClass = getComparisonClass(totals.SV, opponentTotals.SV, false);
         }
 
-        let rows = `
+        // --- STYLES ---
+        // Main stat style: "px-3 py-2 whitespace-nowrap text-sm font-medium text-gray-300"
+        // Sub stat style:  "px-3 py-2 whitespace-nowrap text-sm font-normal text-gray-400 pl-6"
+        // Value style (Main): "px-3 py-2 whitespace-nowrap text-sm text-right" (Color comes from row class)
+        // Value style (Sub):  "px-3 py-2 whitespace-nowrap text-sm text-gray-400 text-right"
+
+        // Helper to generate row HTML based on "is main stat" status
+        const renderRow = (label, value, colorClass, isMain, subLabel = label) => {
+            const labelClass = isMain
+                ? "px-3 py-2 whitespace-nowrap text-sm font-medium text-gray-300"
+                : "px-3 py-2 whitespace-nowrap text-sm font-normal text-gray-400 pl-6";
+
+            const valueClass = isMain
+                ? "px-3 py-2 whitespace-nowrap text-sm text-right"
+                : "px-3 py-2 whitespace-nowrap text-sm text-gray-400 text-right";
+
+            return `
+                <tr class="hover:bg-gray-700/50 ${colorClass}">
+                    <td class="${labelClass}">${isMain ? label : subLabel}</td>
+                    <td class="${valueClass}">${value}</td>
+                </tr>
+            `;
+        };
+
+        let rows = "";
+
+        // 1. Starts (Always Main)
+        rows += `
             <tr class="hover:bg-gray-700/50">
                 <td class="px-3 py-2 whitespace-nowrap text-sm font-medium text-gray-300">Goalie Starts</td>
                 <td class="px-3 py-2 whitespace-nowrap text-sm text-gray-300 text-right font-bold">${totals.starts}</td>
-            </tr>
-            <tr class="hover:bg-gray-700/50 ${wClass}">
-                <td class="px-3 py-2 whitespace-nowrap text-sm font-medium text-gray-300">Wins (W)</td>
-                <td class="px-3 py-2 whitespace-nowrap text-sm text-right">${totals.W.toFixed(0)}</td>
             </tr>`;
 
+        // 2. Wins (Always Main)
+        rows += renderRow("Wins (W)", totals.W.toFixed(0), wClass, true);
+
+        // 3. GAA Block
         if (hasGaa) {
-            rows += `<tr class="hover:bg-gray-700/50 ${gaaClass}">
-                <td class="px-3 py-2 whitespace-nowrap text-sm font-medium text-gray-300">Goals Against Avg (GAA)</td>
-                <td class="px-3 py-2 whitespace-nowrap text-sm text-right">${(totals.TOI > 0 ? totals.GAA : 0).toFixed(3)}</td>
-            </tr>`;
+            // GAA is Main, GA/TOI are Sub
+            rows += renderRow("Goals Against Avg (GAA)", (totals.TOI > 0 ? totals.GAA : 0).toFixed(3), gaaClass, true);
+            rows += renderRow("Goals Against (GA)", totals.GA.toFixed(0), "", false, "Goals Against (GA)");
+            rows += renderRow("Time on Ice (TOI)", totals.TOI.toFixed(1), "", false, "Time on Ice (TOI)");
+        } else {
+            // GA is Main, TOI is Sub (informational)
+            rows += renderRow("Goals Against (GA)", totals.GA.toFixed(0), gaClass, true);
+            rows += renderRow("Time on Ice (TOI)", totals.TOI.toFixed(1), "", false, "Time on Ice (TOI)");
         }
 
-        rows += `<tr class="hover:bg-gray-700/50">
-            <td class="px-3 py-2 whitespace-nowrap text-sm font-normal text-gray-400 pl-6">Goals Against (GA)</td>
-            <td class="px-3 py-2 whitespace-nowrap text-sm text-gray-400 text-right">${totals.GA.toFixed(0)}</td>
-        </tr>
-        <tr class="hover:bg-gray-700/50">
-            <td class="px-3 py-2 whitespace-nowrap text-sm font-normal text-gray-400 pl-6">Time on Ice (TOI)</td>
-            <td class="px-3 py-2 whitespace-nowrap text-sm text-gray-400 text-right">${totals.TOI.toFixed(1)}</td>
-        </tr>`;
-
+        // 4. SV% Block
         if (hasSvPct) {
-            rows += `<tr class="hover:bg-gray-700/50 ${svPctClass}">
-                <td class="px-3 py-2 whitespace-nowrap text-sm font-medium text-gray-300">Save Pct (SV%)</td>
-                <td class="px-3 py-2 whitespace-nowrap text-sm text-right">${totals.SVpct.toFixed(3)}</td>
-            </tr>`;
+            // SV% is Main, SV/SA are Sub
+            rows += renderRow("Save Pct (SV%)", totals.SVpct.toFixed(3), svPctClass, true);
+            rows += renderRow("Saves (SV)", totals.SV.toFixed(0), "", false, "Saves (SV)");
+            rows += renderRow("Shots Against (SA)", totals.SA.toFixed(0), "", false, "Shots Against (SA)");
+        } else {
+            // SV is Main, SA is Sub (informational)
+            rows += renderRow("Saves (SV)", totals.SV.toFixed(0), svClass, true);
+            rows += renderRow("Shots Against (SA)", totals.SA.toFixed(0), "", false, "Shots Against (SA)");
         }
 
-        rows += `<tr class="hover:bg-gray-700/50">
-            <td class="px-3 py-2 whitespace-nowrap text-sm font-normal text-gray-400 pl-6">Saves (SV)</td>
-            <td class="px-3 py-2 whitespace-nowrap text-sm text-gray-400 text-right">${totals.SV.toFixed(0)}</td>
-        </tr>
-        <tr class="hover:bg-gray-700/50">
-            <td class="px-3 py-2 whitespace-nowrap text-sm font-normal text-gray-400 pl-6">Shots Against (SA)</td>
-            <td class="px-3 py-2 whitespace-nowrap text-sm text-gray-400 text-right">${totals.SA.toFixed(0)}</td>
-        </tr>
-        <tr class="hover:bg-gray-700/50 ${shoClass}">
-            <td class="px-3 py-2 whitespace-nowrap text-sm font-medium text-gray-300">Shutouts (SHO)</td>
-            <td class="px-3 py-2 whitespace-nowrap text-sm text-right">${totals.SHO.toFixed(0)}</td>
-        </tr>`;
+        // 5. Shutouts (Always Main)
+        rows += renderRow("Shutouts (SHO)", totals.SHO.toFixed(0), shoClass, true);
 
         let tableHtml = `
             <div class="bg-gray-900 rounded-lg ${shadowClass}">
@@ -326,9 +355,23 @@
     function renderIndividualStartsTable(allStarts, totals) {
         const leagueCats = pageData.scoring_categories.map(c => c.category);
 
-        let headers = ['Start #', 'Date', 'Player', 'W', 'GA', 'SV', 'SA'];
-        if (leagueCats.includes('SVpct')) headers.push('SV%');
-        if (leagueCats.includes('GAA')) headers.push('GAA');
+        // Define Headers based on league settings
+        let headers = ['Start #', 'Date', 'Player', 'W'];
+
+        // GAA/GA Logic
+        if (leagueCats.includes('GAA')) {
+            headers.push('GA', 'GAA');
+        } else {
+            headers.push('GA');
+        }
+
+        // SV%/SV Logic
+        if (leagueCats.includes('SVpct')) {
+            headers.push('SV', 'SA', 'SV%');
+        } else {
+            headers.push('SV', 'SA');
+        }
+
         headers.push('SHO');
 
         let tableHtml = `
@@ -379,12 +422,19 @@
                 ${isSim ? numCell.replace(index + 1, '') : `<td class="px-3 py-2 whitespace-nowrap text-sm text-gray-300">${start.date}</td>`}
                 <td class="px-3 py-2 whitespace-nowrap text-sm font-medium text-gray-300">${name}</td>
                 <td class="px-3 py-2 whitespace-nowrap text-sm text-gray-300">${(w || 0).toFixed(0)}</td>
-                <td class="px-3 py-2 whitespace-nowrap text-sm text-gray-300">${(ga || 0).toFixed(0)}</td>
+                <td class="px-3 py-2 whitespace-nowrap text-sm text-gray-300">${(ga || 0).toFixed(0)}</td>`;
+
+            if (leagueCats.includes('GAA')) {
+                html += `<td class="px-3 py-2 whitespace-nowrap text-sm text-gray-300">${gaa.toFixed(3)}</td>`;
+            }
+
+            html += `
                 <td class="px-3 py-2 whitespace-nowrap text-sm text-gray-300">${(sv || 0).toFixed(0)}</td>
                 <td class="px-3 py-2 whitespace-nowrap text-sm text-gray-300">${(sa || 0).toFixed(0)}</td>`;
 
-            if (leagueCats.includes('SVpct')) html += `<td class="px-3 py-2 whitespace-nowrap text-sm text-gray-300">${svpct.toFixed(3)}</td>`;
-            if (leagueCats.includes('GAA')) html += `<td class="px-3 py-2 whitespace-nowrap text-sm text-gray-300">${gaa.toFixed(3)}</td>`;
+            if (leagueCats.includes('SVpct')) {
+                html += `<td class="px-3 py-2 whitespace-nowrap text-sm text-gray-300">${svpct.toFixed(3)}</td>`;
+            }
 
             html += `<td class="px-3 py-2 whitespace-nowrap text-sm text-gray-300">${(sho || 0).toFixed(0)}</td></tr>`;
             return html;
@@ -405,12 +455,19 @@
                 <td class="px-3 py-2 whitespace-nowrap text-sm font-bold text-white"></td>
                 <td class="px-3 py-2 whitespace-nowrap text-sm font-bold text-white">TOTALS</td>
                 <td class="px-3 py-2 whitespace-nowrap text-sm font-bold text-white">${totals.W.toFixed(0)}</td>
-                <td class="px-3 py-2 whitespace-nowrap text-sm font-bold text-white">${totals.GA.toFixed(0)}</td>
+                <td class="px-3 py-2 whitespace-nowrap text-sm font-bold text-white">${totals.GA.toFixed(0)}</td>`;
+
+        if (leagueCats.includes('GAA')) {
+            tableHtml += `<td class="px-3 py-2 whitespace-nowrap text-sm font-bold text-white">${(totals.TOI > 0 ? totals.GAA : 0).toFixed(3)}</td>`;
+        }
+
+        tableHtml += `
                 <td class="px-3 py-2 whitespace-nowrap text-sm font-bold text-white">${totals.SV.toFixed(0)}</td>
                 <td class="px-3 py-2 whitespace-nowrap text-sm font-bold text-white">${totals.SA.toFixed(0)}</td>`;
 
-        if (leagueCats.includes('SVpct')) tableHtml += `<td class="px-3 py-2 whitespace-nowrap text-sm font-bold text-white">${(totals.TOI > 0 ? totals.SVpct : 0).toFixed(3)}</td>`;
-        if (leagueCats.includes('GAA')) tableHtml += `<td class="px-3 py-2 whitespace-nowrap text-sm font-bold text-white">${(totals.TOI > 0 ? totals.GAA : 0).toFixed(3)}</td>`;
+        if (leagueCats.includes('SVpct')) {
+            tableHtml += `<td class="px-3 py-2 whitespace-nowrap text-sm font-bold text-white">${(totals.TOI > 0 ? totals.SVpct : 0).toFixed(3)}</td>`;
+        }
 
         tableHtml += `<td class="px-3 py-2 whitespace-nowrap text-sm font-bold text-white">${totals.SHO.toFixed(0)}</td></tr>`;
 
@@ -437,12 +494,19 @@
                     </td>
                     <td class="px-3 py-2 whitespace-nowrap text-sm font-medium">${scenario.name}</td>
                     <td class="px-3 py-2 whitespace-nowrap text-sm">${newW.toFixed(0)}</td>
-                    <td class="px-3 py-2 whitespace-nowrap text-sm">${newGA.toFixed(0)}</td>
+                    <td class="px-3 py-2 whitespace-nowrap text-sm">${newGA.toFixed(0)}</td>`;
+
+            if (leagueCats.includes('GAA')) {
+                tableHtml += `<td class="px-3 py-2 whitespace-nowrap text-sm">${newGAA.toFixed(3)}</td>`;
+            }
+
+            tableHtml += `
                     <td class="px-3 py-2 whitespace-nowrap text-sm">${newSV.toFixed(0)}</td>
                     <td class="px-3 py-2 whitespace-nowrap text-sm">${newSA.toFixed(0)}</td>`;
 
-            if (leagueCats.includes('SVpct')) tableHtml += `<td class="px-3 py-2 whitespace-nowrap text-sm">${newSVpct.toFixed(3)}</td>`;
-            if (leagueCats.includes('GAA')) tableHtml += `<td class="px-3 py-2 whitespace-nowrap text-sm">${newGAA.toFixed(3)}</td>`;
+            if (leagueCats.includes('SVpct')) {
+                tableHtml += `<td class="px-3 py-2 whitespace-nowrap text-sm">${newSVpct.toFixed(3)}</td>`;
+            }
 
             tableHtml += `<td class="px-3 py-2 whitespace-nowrap text-sm">${newSHO.toFixed(0)}</td></tr>`;
         });
