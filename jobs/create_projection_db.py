@@ -49,12 +49,15 @@ def sanitize_header(header_list):
     sanitized = []
     stat_mapping = {
         'goals': 'G', 'g':'G', 'assists': 'A', 'a':'A', 'points': 'P', 'p':'P',
-        'pp_points': 'PPP', 'ppp':'PPP', 'hits': 'HIT', 'hit':'HIT', 'sog': 'SOG',
+        'pp_points': 'PPP', 'ppp':'PPP', 'pp_goals': 'PPG', 'pp_assists': 'PPA',
+        'hits': 'HIT', 'hit':'HIT', 'sog': 'SOG',
         'blk': 'BLK', 'w': 'W', 'so': 'SHO', 'sho':'SHO', 'sv%': 'SVpct', 'svpct': 'SVpct',
-        'ga': 'GA', 'plus_minus': 'plus_minus', 'shg': 'SHG', 'sha': 'SHA', 'shp': 'SHP',
+        'ga': 'GA', 'plus_minus': 'plus_minus',
+        'shg': 'SHG', 'sha': 'SHA', 'shp': 'SHP',
+        'sh_goals': 'SHG', 'sh_assists': 'SHA', 'sh_points': 'SHP',
         'pim': 'PIM', 'fow': 'FOW', 'fol': 'FOL', 'ppg': 'PPG', 'ppa': 'PPA',
         'gaa': 'GAA', 'gs': 'GS', 'sv': 'SV', 'sa': 'SA', 'qs': 'QS', 'l':'L',
-        'toi/g': 'TOI/G', 'timeonice': 'TOI/G', 'total_toi': 'Total TOI' # Added mapping
+        'toi/g': 'TOI/G', 'timeonice': 'TOI/G', 'total_toi': 'Total TOI'
     }
     for h in header_list:
         clean_h = h.strip().lower()
@@ -254,6 +257,14 @@ def process_separate_files_to_table(cursor, skater_csv_file, goalie_csv_file, ta
                         data_dict['PPA'] = round(ppp - ppg, 4)
                     except: pass
 
+                # --- FIX: Calculate SHA (Shorthanded Assists) ---
+                if 'SHA' not in data_dict and 'SHP' in data_dict and 'SHG' in data_dict:
+                    try:
+                        shp = float(data_dict['SHP'])
+                        shg = float(data_dict['SHG'])
+                        data_dict['SHA'] = round(shp - shg, 4)
+                    except: pass
+
                 # --- FIX: Calculate TOI/G for Skaters ---
                 if 'TOI/G' not in data_dict and 'Total TOI' in data_dict:
                     try:
@@ -372,6 +383,8 @@ def create_averaged_projections(conn, cursor):
         c1, c2 = f'{col}_p1', f'{col}_p2'
         if c1 in merged: final[col] = merged[c1].fillna(merged.get(c2))
         elif c2 in merged: final[col] = merged[c2]
+        # --- FIX: Handle columns that exist in only one file (no suffix) ---
+        elif col in merged: final[col] = merged[col]
 
     if 'playerid_p2' in merged:
         final['nhlplayerid'] = pd.to_numeric(merged['playerid_p2'], errors='coerce').astype('Int64')
@@ -395,6 +408,9 @@ def create_averaged_projections(conn, cursor):
             final[col] = pd.to_numeric(merged[c1], errors='coerce')
         elif in2:
             final[col] = pd.to_numeric(merged[c2], errors='coerce')
+        # --- FIX: Handle columns that exist in only one file (no suffix) ---
+        elif col in merged.columns:
+             final[col] = pd.to_numeric(merged[col], errors='coerce')
 
     df_to_postgres(final, 'projections', conn)
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_proj_norm ON projections(player_name_normalized)")
