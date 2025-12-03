@@ -95,7 +95,7 @@ def process_subscription_expirations():
             rows = cursor.fetchall()
 
 
-def run_league_updates(target_league_id=None):
+def run_league_updates(target_league_id=None, force_full_history=False):
     logger.info("--- Starting Scheduled League Updates ---")
 
     # Only run subscription expiration checks if we are doing a full run
@@ -111,7 +111,7 @@ def run_league_updates(target_league_id=None):
                     JOIN users u ON l.user_guid = u.guid
                     WHERE l.league_id = %s
                 """, (target_league_id,))
-                logger.info(f"Running manual update for single league: {target_league_id}")
+                logger.info(f"Running manual update for single league: {target_league_id} (Force Full History: {force_full_history})")
             else:
                 # Standard Query for all leagues
 #                cursor.execute("""
@@ -123,50 +123,48 @@ def run_league_updates(target_league_id=None):
                     SELECT l.league_id, u.* FROM league_updaters l
                     JOIN users u ON l.user_guid = u.guid
                 """)
+
             rows = cursor.fetchall()
 
-            if not rows:
-                logger.info("No premium leagues to update.")
-                return
+    for row in rows:
+        # Row structure: (league_id, guid, access_token, ...)
+        # Postgres returns tuples. Index 0 is league_id. Index 1 onwards is User columns.
+        league_id = str(row[0])
+        # User columns start at index 1
+        user_row = row[1:]
 
-            for row in rows:
-                league_id = row[0]
-                user_data = row[1:] # users table columns
-                user_guid = user_data[0]
+        logger.info(f"Processing League {league_id}...")
 
-                logger.info(f"Processing League {league_id}")
-                creds = get_refreshed_token(user_data)
-                if not creds: continue
+        try:
+            creds = get_refreshed_token(user_row)
 
-                # Update Token in DB
-                cursor.execute("""
-                    UPDATE users SET access_token=%s, refresh_token=%s, token_time=%s, expires_in=%s
-                    WHERE guid=%s
-                """, (creds['access_token'], creds['refresh_token'], creds['token_time'], creds['expires_in'], user_guid))
-                conn.commit()
+            auth_data = {
+                'consumer_key': creds['consumer_key'],
+                'consumer_secret': creds['consumer_secret'],
+                'access_token': creds['access_token'],
+                'refresh_token': creds['refresh_token'],
+                'token_type': creds['token_type'],
+                'token_time': creds['token_time'],
+                'guid': creds['xoauth_yahoo_guid']
+            }
+            yq = YahooFantasySportsQuery(league_id, game_code="nhl", yahoo_access_token_json=auth_data)
 
-                try:
-                    auth_data = {
-                        'consumer_key': creds['consumer_key'],
-                        'consumer_secret': creds['consumer_secret'],
-                        'access_token': creds['access_token'],
-                        'refresh_token': creds['refresh_token'],
-                        'token_type': creds['token_type'],
-                        'token_time': creds['token_time'],
-                        'guid': creds['xoauth_yahoo_guid']
-                    }
-                    yq = YahooFantasySportsQuery(league_id, game_code="nhl", yahoo_access_token_json=auth_data)
+            fd, temp_path = tempfile.mkstemp(suffix=".json")
+            with os.fdopen(fd, 'w') as f: json.dump(creds, f)
+            sc = OAuth2(creds['consumer_key'], creds['consumer_secret'], from_file=temp_path)
+            gm = yfa.Game(sc, 'nhl')
+            lg = gm.to_league(f"nhl.l.{league_id}")
+            os.remove(temp_path)
 
-                    fd, temp_path = tempfile.mkstemp(suffix=".json")
-                    with os.fdopen(fd, 'w') as f: json.dump(creds, f)
-                    sc = OAuth2(creds['consumer_key'], creds['consumer_secret'], from_file=temp_path)
-                    gm = yfa.Game(sc, 'nhl')
-                    lg = gm.to_league(f"nhl.l.{league_id}")
-                    os.remove(temp_path)
-
-                    db_builder.update_league_db(yq, lg, league_id, logger)
-                except Exception as e:
-                    logger.error(f"Error updating {league_id}: {e}", exc_info=True)
+            db_builder.update_league_db(
+                yq,
+                lg,
+                league_id,
+                logger,
+                force_full_history=force_full_history
+            )
+        except Exception as e:
+            logger.error(f"Error updating {league_id}: {e}", exc_info=True)
 
 # Import your global update function
 from jobs.global_update import update_global_data

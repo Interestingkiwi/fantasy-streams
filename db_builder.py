@@ -195,10 +195,12 @@ def run_task(build_id, log_file_path, options, data):
         logger.info(f"Build ID: {build_id}")
 
         roster_updates_only = options.get('roster_updates_only', False)
+        force_full_history = options.get('force_full_history', False) # NEW FLAG
+
         if roster_updates_only:
              logger.info("Mode: Roster Updates Only")
         else:
-             logger.info(f"Mode: Standard Update (Capture Lineups: {options['capture_lineups']})")
+             logger.info(f"Mode: Standard Update (Capture Lineups: {options['capture_lineups']}, Force Full History: {force_full_history})")
 
         result = update_league_db(
             yq,
@@ -206,7 +208,8 @@ def run_task(build_id, log_file_path, options, data):
             data['league_id'],
             logger,
             capture_lineups=options['capture_lineups'],
-            roster_updates_only=options.get('roster_updates_only', False)
+            roster_updates_only=roster_updates_only,
+            force_full_history=force_full_history # Pass it down
         )
 
         if result and result.get('success'):
@@ -307,7 +310,17 @@ class DBFinalizer:
         stats_to_insert = []
         player_string_pattern = re.compile(r"ID: (\d+), Name: .*, Stats: (\[.*\])")
         pos_pattern = re.compile(r"([a-zA-Z]+)")
-        active_roster_columns = ['c1', 'c2', 'l1', 'l2', 'r1', 'r2', 'd1', 'd2', 'd3', 'd4', 'g1', 'g2']
+
+        # --- FIX: Dynamically determine active roster columns ---
+        active_roster_columns = []
+        for col in column_names:
+            if col.startswith(('c', 'l', 'r', 'd', 'g', 'u', 'n')) and not col.startswith(('b', 'i')):
+                 # Ensure we don't accidentally pick up 'league_id' or 'date_' or 'team_id'
+                 if len(col) > 1 and col[1].isdigit():
+                     active_roster_columns.append(col)
+
+        if not active_roster_columns:
+             active_roster_columns = ['c1', 'c2', 'l1', 'l2', 'r1', 'r2', 'd1', 'd2', 'd3', 'd4', 'g1', 'g2']
 
         for row in all_lineups:
             try:
@@ -425,14 +438,8 @@ class DBFinalizer:
         pos_pattern = re.compile(r"([a-zA-Z]+)")
         # --- FIX END ---
 
-        # [FIX] This needs to be dynamic too if we want full coverage, but for now
-        # the main roster fetch is the priority.
-        # Since this finalizer parses columns that *exist*, we can just grab all columns
-        # starting with 'b', 'i', or 'n' if we wanted to be truly dynamic.
-        # For safety in this update, we will fetch all columns from the table schema.
-
         # Determine Bench Columns dynamically from the cursor description
-        bench_roster_columns = [col for col in column_names if col.startswith('b') or col.startswith('i') or col.startswith('n') or col.startswith('u')]
+        bench_roster_columns = [col for col in column_names if col.startswith('b') or col.startswith('i')]
 
         for row in all_lineups:
             try:
@@ -724,13 +731,14 @@ def _get_current_week_start_date(cursor, league_id, logger):
         logger.error(f"Could not determine current week start date: {e}")
         return date.today().isoformat()
 
-def _update_daily_lineups(yq, cursor, conn, league_id, num_teams, league_start_date, is_full_mode, logger):
+def _update_daily_lineups(yq, cursor, conn, league_id, num_teams, league_start_date, is_full_mode, logger, force_full_history=False):
     """
     Fetches daily roster snapshots.
     UPDATED:
     1. Fetches valid Team IDs first (handles non-sequential IDs).
     2. Dynamically generates required columns based on lineup_settings.
     3. Alters the table to add missing columns if necessary.
+    4. Handles FORCE_FULL_HISTORY flag to repair bad data.
     """
     try:
         cursor.execute("SELECT MAX(date_) FROM daily_lineups_dump WHERE league_id = %s", (league_id,))
@@ -739,7 +747,11 @@ def _update_daily_lineups(yq, cursor, conn, league_id, num_teams, league_start_d
 
         today_iso = date.today().isoformat()
 
-        if is_full_mode or not last_fetch_date_str:
+        # --- FIX: Handling Force Full History logic ---
+        if force_full_history:
+            logger.info("FORCE FULL HISTORY requested: Overwriting all data from league start.")
+            start_date_for_fetch = league_start_date
+        elif is_full_mode or not last_fetch_date_str:
             start_date_for_fetch = league_start_date
             logger.info(f"Fetching full history from: {start_date_for_fetch}")
         else:
@@ -747,7 +759,7 @@ def _update_daily_lineups(yq, cursor, conn, league_id, num_teams, league_start_d
             start_date_for_fetch = (last_fetch_date + timedelta(days=1)).isoformat()
             logger.info(f"Resuming from: {start_date_for_fetch}")
 
-        if start_date_for_fetch >= today_iso:
+        if start_date_for_fetch >= today_iso and not force_full_history:
             logger.info("Daily lineups up to date.")
             return
 
@@ -763,8 +775,8 @@ def _update_daily_lineups(yq, cursor, conn, league_id, num_teams, league_start_d
         else:
             # Map Yahoo positions to our DB prefixes
             prefix_map = {
-                'C': 'c', 'LW': 'l', 'RW': 'r', 'F': 'f', 'D': 'd', 'G': 'g',
-                'Util': 'u', 'NA': 'n', 'IR': 'i', 'IR+': 'i', 'BN': 'bn'
+                'C': 'c', 'LW': 'l', 'RW': 'r', 'D': 'd', 'G': 'g',
+                'Util': 'u', 'NA': 'n', 'IR': 'i', 'IR+': 'i', 'BN': 'b'
             }
 
             prefix_counts = defaultdict(int)
@@ -790,7 +802,7 @@ def _update_daily_lineups(yq, cursor, conn, league_id, num_teams, league_start_d
             # 3. Build the final sorted list of columns
             # Order matters for readability but not for SQL logic.
             # We'll follow standard order: C, L, R, D, U, G, I, N, BN
-            order = ['c', 'l', 'r', 'f', 'd', 'u', 'g', 'i', 'n', 'bn']
+            order = ['c', 'l', 'r', 'd', 'u', 'g', 'i', 'n', 'b']
             roster_cols = []
 
             for p in order:
@@ -1172,7 +1184,7 @@ def _update_db_metadata(cursor, league_id, logger, update_available_players_time
     """
     cursor.executemany(sql, data)
 
-def update_league_db(yq, lg, league_id, logger, capture_lineups=False, roster_updates_only=False):
+def update_league_db(yq, lg, league_id, logger, capture_lineups=False, roster_updates_only=False, force_full_history=False):
     logger.info(f"Starting DB update for league {league_id}...")
 
     if yq is None:
@@ -1195,7 +1207,7 @@ def update_league_db(yq, lg, league_id, logger, capture_lineups=False, roster_up
                 _update_fantasy_weeks(yq, cursor, league_id, league_metadata.league_key, logger)
                 _update_league_matchups(yq, cursor, league_id, playoff_week, logger)
                 _update_league_transactions(yq, cursor, league_id, logger)
-                _update_daily_lineups(yq, cursor, conn, league_id, league_metadata.num_teams, league_metadata.start_date, capture_lineups, logger)
+                _update_daily_lineups(yq, cursor, conn, league_id, league_metadata.num_teams, league_metadata.start_date, capture_lineups, logger, force_full_history=force_full_history)
 
             _update_current_rosters(yq, cursor, conn, league_id, league_metadata.num_teams, logger)
             _create_rosters_tall(cursor, conn, league_id, logger)
