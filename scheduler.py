@@ -39,90 +39,75 @@ def get_refreshed_token(user_row):
         "xoauth_yahoo_guid": guid
     }
 
+    # 1. Create temp file
     fd, temp_path = tempfile.mkstemp(suffix=".json")
     with os.fdopen(fd, 'w') as f:
         json.dump(creds, f)
 
     try:
-        sc = OAuth2(consumer_key, consumer_secret, from_file=temp_path)
-        logger.info(f"Attempting refresh for {guid}...")
-        sc.refresh_access_token()
-
+        # 2. Refresh
+        sc = OAuth2(None, None, from_file=temp_path)
         if not sc.token_is_valid():
-            raise Exception("Token refresh failed")
+            sc.refresh_access_token()
 
+        # 3. Read back new token
         with open(temp_path, 'r') as f:
             new_creds = json.load(f)
+
+        # 4. Update DB
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    UPDATE users
+                    SET access_token = %s, refresh_token = %s, token_time = %s, expires_in = %s
+                    WHERE guid = %s
+                """, (
+                    new_creds['access_token'],
+                    new_creds['refresh_token'],
+                    new_creds['token_time'],
+                    new_creds.get('expires_in', 3600),
+                    guid
+                ))
+            conn.commit()
+
+        # Return updated creds dict
         return new_creds
-    except Exception as e:
-        logger.error(f"Refresh failed: {e}")
-        return None
+
     finally:
         if os.path.exists(temp_path):
             os.remove(temp_path)
 
 def process_subscription_expirations():
-    today_str = datetime.utcnow().strftime('%Y-%m-%d')
-    with get_db_connection() as conn:
-        with conn.cursor() as cursor:
-            cursor.execute("""
-                UPDATE users SET is_premium = FALSE
-                WHERE is_premium = TRUE
-                AND premium_expiration_date < %s
-            """, (today_str,))
+    """Checks for expired premium subscriptions and downgrades them."""
+    logger.info("Checking for expired subscriptions...")
+    today = datetime.now().date()
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    UPDATE users
+                    SET is_premium = FALSE, premium_expiration_date = NULL
+                    WHERE is_premium = TRUE AND premium_expiration_date < %s
+                """, (today,))
+                if cursor.rowcount > 0:
+                    logger.info(f"Downgraded {cursor.rowcount} expired subscriptions.")
             conn.commit()
+    except Exception as e:
+        logger.error(f"Error processing expirations: {e}", exc_info=True)
 
+def run_league_updates(force_full_history=False):
+    logger.info(f"--- Starting Scheduled League Updates (Force Full History: {force_full_history}) ---")
 
-
-
-    with get_db_connection() as conn:
-        with conn.cursor() as cursor:
-            if target_league_id:
-                # Targeted Query for one league
-                cursor.execute("""
-                    SELECT l.league_id, u.* FROM league_updaters l
-                    JOIN users u ON l.user_guid = u.guid
-                    WHERE l.league_id = %s
-                """, (target_league_id,))
-                logger.info(f"Running manual update for single league: {target_league_id}")
-            else:
-                # Standard Query for all leagues
-                cursor.execute("""
-                    SELECT l.league_id, u.* FROM league_updaters l
-                    JOIN users u ON l.user_guid = u.guid
-                """)
-
-            rows = cursor.fetchall()
-
-
-def run_league_updates(target_league_id=None, force_full_history=False):
-    logger.info("--- Starting Scheduled League Updates ---")
-
-    # Only run subscription expiration checks if we are doing a full run
-    if not target_league_id:
-        process_subscription_expirations()
+    # Run subscription expiration checks
+    process_subscription_expirations()
 
     with get_db_connection() as conn:
         with conn.cursor() as cursor:
-            if target_league_id:
-                # Targeted Query for one league
-                cursor.execute("""
-                    SELECT l.league_id, u.* FROM league_updaters l
-                    JOIN users u ON l.user_guid = u.guid
-                    WHERE l.league_id = %s
-                """, (target_league_id,))
-                logger.info(f"Running manual update for single league: {target_league_id} (Force Full History: {force_full_history})")
-            else:
-                # Standard Query for all leagues
-#                cursor.execute("""
-    #                SELECT l.league_id, u.* FROM league_updaters l
-    #                JOIN users u ON l.user_guid = u.guid
-    #                WHERE u.is_premium = TRUE
-    #            """)
-                cursor.execute("""
-                    SELECT l.league_id, u.* FROM league_updaters l
-                    JOIN users u ON l.user_guid = u.guid
-                """)
+            # Standard Query for all leagues
+            cursor.execute("""
+                SELECT l.league_id, u.* FROM league_updaters l
+                JOIN users u ON l.user_guid = u.guid
+            """)
 
             rows = cursor.fetchall()
 
@@ -177,12 +162,6 @@ def start_scheduler():
     scheduler.add_job(update_global_data, trigger='cron', hour=9, minute=0)
 
     # League updates
-    scheduler.add_job(run_league_updates, trigger='cron', hour=9, minute=20)
+    scheduler.add_job(run_league_updates, trigger='cron', hour=10, minute=0)
 
     scheduler.start()
-
-if __name__ == "__main__":
-    start_scheduler()
-    try:
-        while True: time.sleep(60)
-    except (KeyboardInterrupt, SystemExit): pass
