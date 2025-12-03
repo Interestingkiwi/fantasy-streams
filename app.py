@@ -524,7 +524,9 @@ def _get_ranked_roster_for_week(cursor, team_id, week_num, team_stats_map, leagu
     # 4. Get Categories
     cursor.execute("SELECT category FROM scoring WHERE league_id = %s", (league_id,))
     scoring_categories = [row['category'] for row in cursor.fetchall()]
-    cat_rank_columns = [f"{cat}_cat_rank" for cat in scoring_categories]
+
+    # [FIX] Sanitize column names for DB query (+/- -> plus_minus)
+    cat_rank_columns = [f"{cat.replace('+/-', 'plus_minus')}_cat_rank" for cat in scoring_categories]
 
     # 5. Apply Schedules
     for player in players:
@@ -582,11 +584,13 @@ def _get_ranked_roster_for_week(cursor, team_id, week_num, team_stats_map, leagu
             if stats:
                 total_rank = sum(stats.get(col, 0) or 0 for col in cat_rank_columns)
                 player['total_rank'] = round(total_rank, 2)
-                for col in cat_rank_columns:
-                    player[col] = stats.get(col)
+                # [FIX] Map back to original category keys for consistency
+                for i, cat in enumerate(scoring_categories):
+                    db_col = cat_rank_columns[i]
+                    player[f"{cat}_cat_rank"] = stats.get(db_col)
             else:
                 player['total_rank'] = None
-                for col in cat_rank_columns: player[col] = None
+                for cat in scoring_categories: player[f"{cat}_cat_rank"] = None
 
     return active_players
 
@@ -2776,8 +2780,12 @@ def get_trade_helper_league_roster_data():
                     player['fantasy_team_name'] = teams_map.get(str(player['fantasy_team_id']), 'Unknown Team')
 
                 # 6. Get Ranks AND Stats
-                cat_rank_columns = [f"{cat}_cat_rank" for cat in all_scoring_categories]
-                raw_stats_to_fetch = list(set(all_scoring_categories) | {'GA', 'SV', 'SA', 'TOI/G'})
+                # [FIX] Sanitize column names for query
+                cat_rank_columns = [f"{cat.replace('+/-', 'plus_minus')}_cat_rank" for cat in all_scoring_categories]
+
+                # [FIX] Sanitize raw stats too
+                sanitized_cats = [cat.replace('+/-', 'plus_minus') for cat in all_scoring_categories]
+                raw_stats_to_fetch = list(set(sanitized_cats) | {'GA', 'SV', 'SA', 'TOI/G'})
 
                 valid_normalized_names = [p.get('player_name_normalized') for p in all_players if p.get('player_name_normalized')]
 
@@ -2801,10 +2809,16 @@ def get_trade_helper_league_roster_data():
 
                     # 7. Enrich players
                     for player in all_players:
-                        p_stats = player_stats.get(player.get('player_name_normalized'))
-                        if p_stats:
-                            for key, val in p_stats.items():
+                        p_data = player_stats.get(player.get('player_name_normalized'))
+                        if p_data:
+                            for key, val in p_data.items():
                                 player[key] = val
+
+                            # [FIX] Map sanitized rank keys back to standard keys if missing
+                            for cat in all_scoring_categories:
+                                sanitized_rank_key = f"{cat.replace('+/-', 'plus_minus')}_cat_rank"
+                                if sanitized_rank_key in p_data:
+                                    player[f"{cat}_cat_rank"] = p_data[sanitized_rank_key]
                         else:
                             for cat in all_scoring_categories:
                                 player[f"{cat}_cat_rank"] = None
@@ -3323,10 +3337,12 @@ def get_roster_data():
                             existing_ids.add(int(added.get('player_id', 0)))
 
                 # 8. Fetch Stats & Ranks
-                cat_rank_columns = [f"{cat}_cat_rank" for cat in all_scoring_categories]
+                # [FIX] Sanitize column names (+/- -> plus_minus)
+                cat_rank_columns = [f"{cat.replace('+/-', 'plus_minus')}_cat_rank" for cat in all_scoring_categories]
 
                 # FIX: Do NOT double-quote column names here, helper does it
-                raw_stat_columns = list(all_scoring_categories)
+                # [FIX] Sanitize raw stat columns too
+                raw_stat_columns = [cat.replace('+/-', 'plus_minus') for cat in all_scoring_categories]
 
                 all_cols = list(set(cat_rank_columns + raw_stat_columns))
                 pp_stat_columns = [
@@ -3393,12 +3409,17 @@ def get_roster_data():
                     new_total_rank = 0
                     if p_data:
                         for cat in all_scoring_categories:
-                            r_val = p_data.get(f"{cat}_cat_rank")
+                            # [FIX] Look up using sanitized keys, assign using original keys
+                            sanitized_cat = cat.replace('+/-', 'plus_minus')
+                            sanitized_rank_col = f"{sanitized_cat}_cat_rank"
+
+                            r_val = p_data.get(sanitized_rank_col)
                             player[f"{cat}_cat_rank"] = r_val
                             if r_val is not None:
                                 if cat in unchecked_categories: new_total_rank += r_val / 10.0
                                 else: new_total_rank += r_val
-                            player[cat] = p_data.get(cat)
+
+                            player[cat] = p_data.get(sanitized_cat)
 
                         for col in pp_stat_columns:
                             player[col] = p_data.get(col)
@@ -3476,11 +3497,14 @@ def get_free_agent_data():
                     checked_categories = all_scoring_categories
 
                 unchecked_categories = [cat for cat in all_scoring_categories if cat not in checked_categories]
-                all_cat_rank_columns = [f"{cat}_cat_rank" for cat in all_scoring_categories]
+
+                # [FIX] Sanitize column names for DB query
+                all_cat_rank_columns = [f"{cat.replace('+/-', 'plus_minus')}_cat_rank" for cat in all_scoring_categories]
 
                 # --- FIX: DO NOT QUOTE HERE (Helper handles it) ---
                 # Was: [f'"{cat}"' ...] -> New: [cat ...]
-                raw_stat_columns = [cat for cat in all_scoring_categories]
+                # [FIX] Sanitize raw stat columns
+                raw_stat_columns = [cat.replace('+/-', 'plus_minus') for cat in all_scoring_categories]
                 # --------------------------------------------------
 
                 # 2. Determine Target Week
@@ -3528,8 +3552,10 @@ def get_free_agent_data():
                     for player in player_list:
                         total_rank = 0
                         for cat in all_scoring_categories:
-                            rank_key = f"{cat}_cat_rank"
-                            rank_value = player.get(rank_key)
+                            # [FIX] Look up using sanitized DB keys
+                            sanitized_rank_key = f"{cat.replace('+/-', 'plus_minus')}_cat_rank"
+                            rank_value = player.get(sanitized_rank_key)
+
                             if rank_value is not None:
                                 if cat in unchecked_categories:
                                     total_rank += rank_value / 2.0
