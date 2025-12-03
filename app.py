@@ -1265,35 +1265,28 @@ def get_matchup_stats():
     league_id = session.get('league_id')
     data = request.get_json()
 
-    # 1. Get Sourcing Table (Global Name)
     sourcing = data.get('sourcing', 'projected')
     stat_table = get_stat_source_table(sourcing)
-
     week_num_str = data.get('week')
     team1_name = data.get('team1_name')
     team2_name = data.get('team2_name')
     simulated_moves = data.get('simulated_moves', [])
 
-    if not week_num_str:
-        return jsonify({'error': 'Week number is required.'}), 400
-    try:
-        week_num = int(week_num_str)
-    except ValueError:
-        return jsonify({'error': 'Invalid week number format.'}), 400
+    if not week_num_str: return jsonify({'error': 'Week number is required.'}), 400
+    try: week_num = int(week_num_str)
+    except ValueError: return jsonify({'error': 'Invalid week number format.'}), 400
 
     try:
         with get_db_connection() as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cursor:
-
-                # 2. Fetch Scoring Categories (League Specific)
+                # Fetch Scoring Categories
                 cursor.execute("SELECT category FROM scoring WHERE league_id = %s", (league_id,))
                 all_scoring_categories = [row['category'] for row in cursor.fetchall()]
 
                 checked_categories = data.get('categories')
-                if checked_categories is None:
-                    checked_categories = all_scoring_categories
+                if checked_categories is None: checked_categories = all_scoring_categories
 
-                # 3. Fetch Team IDs (League Specific)
+                # Fetch Team IDs
                 cursor.execute("SELECT team_id FROM teams WHERE league_id = %s AND name = %s", (league_id, team1_name))
                 team1_row = cursor.fetchone()
                 if not team1_row: return jsonify({'error': f'Team not found: {team1_name}'}), 404
@@ -1304,7 +1297,7 @@ def get_matchup_stats():
                 if not team2_row: return jsonify({'error': f'Team not found: {team2_name}'}), 404
                 team2_id = team2_row['team_id']
 
-                # 4. Fetch Week Dates (League Specific)
+                # Fetch Week Dates
                 cursor.execute("SELECT start_date, end_date FROM weeks WHERE league_id = %s AND week_num = %s", (league_id, week_num))
                 week_dates = cursor.fetchone()
                 if not week_dates: return jsonify({'error': f'Week not found: {week_num}'}), 404
@@ -1315,123 +1308,100 @@ def get_matchup_stats():
                 end_date_obj = datetime.strptime(end_date_str, '%Y-%m-%d').date()
                 days_in_week = [(start_date_obj + timedelta(days=i)) for i in range((end_date_obj - start_date_obj).days + 1)]
 
-                # 5. Prepare Categories
-                cursor.execute("SELECT category FROM scoring WHERE league_id = %s", (league_id,))
-                scoring_categories = [row['category'] for row in cursor.fetchall()]
-
+                # Prepare Categories
                 required_cats = {'SV', 'SA', 'GA', 'TOI/G'}
-                all_categories_to_fetch = list(set(scoring_categories) | required_cats)
+                all_categories_to_fetch = list(set(all_scoring_categories) | required_cats)
                 projection_cats = list(set(all_categories_to_fetch) - {'TOI/G', 'SVpct'})
 
-                # 6. Fetch Lineup Settings (League Specific)
+                # Fetch Lineup Settings
                 cursor.execute("SELECT position, position_count FROM lineup_settings WHERE league_id = %s AND position NOT IN ('BN', 'IR', 'IR+')", (league_id,))
                 lineup_settings = {row['position']: row['position_count'] for row in cursor.fetchall()}
 
-                # 7. Fetch Live Stats (League Specific)
+                # Fetch Live Stats
                 cursor.execute("""
                     SELECT team_id, category, SUM(stat_value) as total
                     FROM daily_player_stats
-                    WHERE league_id = %s
-                      AND date_ >= %s
-                      AND date_ <= %s
+                    WHERE league_id = %s AND date_ >= %s AND date_ <= %s
                       AND (team_id = %s OR team_id = %s)
                     GROUP BY team_id, category
                 """, (league_id, start_date_str, end_date_str, team1_id, team2_id))
-
                 live_stats_raw = cursor.fetchall()
 
-                # Initialize Stats Structure
                 stats = {
                     'team1': {'live': {cat: 0 for cat in all_categories_to_fetch}, 'row': {}},
                     'team2': {'live': {cat: 0 for cat in all_categories_to_fetch}, 'row': {}},
                     'game_counts': { 'team1_total': 0, 'team2_total': 0, 'team1_remaining': 0, 'team2_remaining': 0 }
                 }
 
-                # Process Live Stats
                 for row in live_stats_raw:
                     t_id = str(row['team_id'])
                     team_key = 'team1' if t_id == str(team1_id) else 'team2'
                     if row['category'] in all_categories_to_fetch:
                         stats[team_key]['live'][row['category']] = row.get('total', 0)
 
-                # Calculate Derived Stats (GAA, SV%, TOI)
+                # Calculate Derived Stats (Conditional)
                 for team_key in ['team1', 'team2']:
                     live = stats[team_key]['live']
                     if 'SHO' in live and live['SHO'] > 0:
                         live['TOI/G'] += (live['SHO'] * 60)
-                    if 'GAA' in live:
+
+                    # [FIX] Conditional Calculation
+                    if 'GAA' in all_scoring_categories:
                         live['GAA'] = (live.get('GA', 0) * 60) / live['TOI/G'] if live.get('TOI/G', 0) > 0 else 0
-                    if 'SVpct' in live:
+                    if 'SVpct' in all_scoring_categories:
                         live['SVpct'] = live.get('SV', 0) / live.get('SA') if live.get('SA', 0) > 0 else 0
 
                 stats['team1']['row'] = copy.deepcopy(stats['team1']['live'])
                 stats['team2']['row'] = copy.deepcopy(stats['team2']['live'])
 
-                # 8. Fetch Team Stats Map (Global Tables)
+                # Fetch Team Stats Map
                 team_stats_map = {}
                 cursor.execute("SELECT * FROM team_stats_summary")
-                for row in cursor.fetchall():
-                    team_stats_map[row['team_tricode']] = dict(row)
-
+                for row in cursor.fetchall(): team_stats_map[row['team_tricode']] = dict(row)
                 cursor.execute("SELECT * FROM team_stats_weekly")
                 for row in cursor.fetchall():
-                    tricode = row['team_tricode']
-                    if tricode in team_stats_map:
-                        team_stats_map[tricode].update(dict(row))
+                    if row['team_tricode'] in team_stats_map:
+                        team_stats_map[row['team_tricode']].update(dict(row))
 
-                # 9. Get Ranked Rosters (Pass League ID!)
+                # Get Ranked Rosters
                 team1_ranked_roster = _get_ranked_roster_for_week(cursor, team1_id, week_num, team_stats_map, league_id, sourcing)
                 team2_ranked_roster = _get_ranked_roster_for_week(cursor, team2_id, week_num, team_stats_map, league_id, sourcing)
 
-                # 10. Simulated Moves & Optimal Lineups
+                # Simulated Moves
                 today = date.today()
                 projection_start_date = max(today, start_date_obj)
                 current_date = projection_start_date
 
                 while current_date <= end_date_obj:
                     current_date_str = current_date.strftime('%Y-%m-%d')
-
-                    # Apply simulated moves
                     t1_daily_roster = _get_daily_simulated_roster(team1_ranked_roster, simulated_moves, current_date_str)
-
                     t1_players_today = [p for p in t1_daily_roster if current_date_str in (p.get('game_dates_this_week') or p.get('game_dates_this_week_full', []))]
                     team2_players_today = [p for p in team2_ranked_roster if current_date_str in p.get('game_dates_this_week', [])]
 
                     team1_lineup = get_optimal_lineup(t1_players_today, lineup_settings)
                     team2_lineup = get_optimal_lineup(team2_players_today, lineup_settings)
-
                     team1_starters = [p for pos in team1_lineup.values() for p in pos]
                     team2_starters = [p for pos in team2_lineup.values() for p in pos]
 
                     stats['game_counts']['team1_remaining'] += len(team1_starters)
                     stats['game_counts']['team2_remaining'] += len(team2_starters)
 
-                    # Fetch Projections for Starters
                     starter_names = [p['player_name_normalized'] for p in team1_starters + team2_starters if p.get('player_name_normalized')]
-
                     if starter_names:
                         placeholders = ','.join(['%s'] * len(starter_names))
-
-                        # --- FIX: Sanitize and Quote columns for Postgres ---
-                        # Convert "+/-" to "plus_minus" for the DB query
                         db_projection_cats = [c.replace('+/-', 'plus_minus') for c in projection_cats]
                         quoted_cats = [f'"{c}"' for c in db_projection_cats]
 
                         query = f"SELECT player_name_normalized, {', '.join(quoted_cats)} FROM {stat_table} WHERE player_name_normalized IN ({placeholders})"
                         cursor.execute(query, tuple(starter_names))
-
-                        # Map results
                         proj_map = {row['player_name_normalized']: dict(row) for row in cursor.fetchall()}
 
-                        # Apply stats
                         for starter in team1_starters:
                             norm = starter.get('player_name_normalized')
                             if norm in proj_map:
                                 p_stats = proj_map[norm]
                                 for cat in projection_cats:
-                                    # Use sanitized key (plus_minus) to pull from DB result
                                     db_key = cat.replace('+/-', 'plus_minus')
-                                    # Use original key (+/-) to update the stats dict
                                     stats['team1']['row'][cat] += (p_stats.get(db_key) or 0)
                                 if 'G' in (starter.get('eligible_positions') or starter.get('positions', '')):
                                     stats['team1']['row']['TOI/G'] += 60
@@ -1445,39 +1415,41 @@ def get_matchup_stats():
                                     stats['team2']['row'][cat] += (p_stats.get(db_key) or 0)
                                 if 'G' in (starter.get('eligible_positions') or starter.get('positions', '')):
                                     stats['team2']['row']['TOI/G'] += 60
-
                     current_date += timedelta(days=1)
 
-                # Final Math (Rounding / Derived Stats)
+                # Final Math
                 for team_key in ['team1', 'team2']:
                     row_stats = stats[team_key]['row']
-                    gaa = (row_stats.get('GA', 0) * 60) / row_stats['TOI/G'] if row_stats.get('TOI/G', 0) > 0 else 0
-                    sv_pct = row_stats.get('SV', 0) / row_stats['SA'] if row_stats.get('SA', 0) > 0 else 0
-                    for cat, value in row_stats.items():
-                        if cat == 'GAA': row_stats[cat] = round(gaa, 2)
-                        elif cat == 'SVpct': row_stats[cat] = round(sv_pct, 3)
-                        elif isinstance(value, (int, float)): row_stats[cat] = round(value, 1)
 
-                # Recalculate Game Counts for Display
+                    # [FIX] Conditional Recalculation
+                    if 'GAA' in all_scoring_categories:
+                        gaa = (row_stats.get('GA', 0) * 60) / row_stats['TOI/G'] if row_stats.get('TOI/G', 0) > 0 else 0
+                        row_stats['GAA'] = round(gaa, 2)
+
+                    if 'SVpct' in all_scoring_categories:
+                        sv_pct = row_stats.get('SV', 0) / row_stats['SA'] if row_stats.get('SA', 0) > 0 else 0
+                        row_stats['SVpct'] = round(sv_pct, 3)
+
+                    for cat, value in row_stats.items():
+                         if isinstance(value, (int, float)) and cat not in ['GAA', 'SVpct']:
+                             row_stats[cat] = round(value, 1)
+
+                # Game Counts for Display
                 for day_date in days_in_week:
                     day_str = day_date.strftime('%Y-%m-%d')
                     t1_dr = _get_daily_simulated_roster(team1_ranked_roster, simulated_moves, day_str)
                     t1_play = [p for p in t1_dr if day_str in (p.get('game_dates_this_week') or p.get('game_dates_this_week_full', []))]
                     t2_play = [p for p in team2_ranked_roster if day_str in p.get('game_dates_this_week', [])]
-
                     t1_opt = get_optimal_lineup(t1_play, lineup_settings)
                     t2_opt = get_optimal_lineup(t2_play, lineup_settings)
-
                     stats['game_counts']['team1_total'] += sum(len(v) for v in t1_opt.values())
                     stats['game_counts']['team2_total'] += sum(len(v) for v in t2_opt.values())
 
                 stats['team1_unused_spots'] = _calculate_unused_spots(days_in_week, team1_ranked_roster, lineup_settings, simulated_moves)
                 return jsonify(stats)
-
     except Exception as e:
         logging.error(f"Error fetching matchup stats: {e}", exc_info=True)
         return jsonify({'error': f"An error occurred: {e}"}), 500
-
 
 
 @app.route('/api/lineup_page_data')
@@ -1588,7 +1560,6 @@ def _get_live_matchup_stats(cursor, team1_id, team2_id, start_date_str, end_date
     """
 
     # Get official scoring categories in display order
-    # Added league_id filter
     cursor.execute("SELECT category FROM scoring WHERE league_id = %s ORDER BY scoring_group DESC, stat_id", (league_id,))
     scoring_categories = [row['category'] for row in cursor.fetchall()]
 
@@ -1597,7 +1568,6 @@ def _get_live_matchup_stats(cursor, team1_id, team2_id, start_date_str, end_date
     all_categories_to_fetch = list(set(scoring_categories) | required_cats)
 
     # --- Calculate Live Stats ---
-    # Added league_id filter and changed placeholders to %s
     cursor.execute("""
         SELECT team_id, category, SUM(stat_value) as total
         FROM daily_player_stats
@@ -1615,10 +1585,8 @@ def _get_live_matchup_stats(cursor, team1_id, team2_id, start_date_str, end_date
     }
 
     for row in live_stats_raw:
-        # Cast IDs to string for safe comparison
         r_id = str(row['team_id'])
         t1_id = str(team1_id)
-
         team_key = 'team1' if r_id == t1_id else 'team2'
 
         if row['category'] in all_categories_to_fetch:
@@ -1631,10 +1599,12 @@ def _get_live_matchup_stats(cursor, team1_id, team2_id, start_date_str, end_date
         if 'SHO' in live_stats and live_stats['SHO'] > 0:
             live_stats['TOI/G'] += (live_stats['SHO'] * 60)
 
-        if 'GAA' in live_stats:
+        # [FIX] Only calculate GAA if it is a scoring category
+        if 'GAA' in scoring_categories:
             live_stats['GAA'] = (live_stats.get('GA', 0) * 60) / live_stats['TOI/G'] if live_stats.get('TOI/G', 0) > 0 else 0
 
-        if 'SVpct' in live_stats:
+        # [FIX] Only calculate SVpct if it is a scoring category
+        if 'SVpct' in scoring_categories:
             live_stats['SVpct'] = live_stats.get('SV', 0) / live_stats['SA'] if live_stats.get('SA', 0) > 0 else 0
 
     # Rounding for display
@@ -1651,46 +1621,30 @@ def _get_live_matchup_stats(cursor, team1_id, team2_id, start_date_str, end_date
     return {
         'your_team_stats': stats['team1']['live'],
         'opponent_team_stats': stats['team2']['live'],
-        'scoring_categories': scoring_categories # Return the ordered list
+        'scoring_categories': scoring_categories
     }
 
 
 def _calculate_bench_optimization(cursor, team_id, week_num, start_date, end_date, matchup_data, league_id):
     """
-    Performs a daily greedy simulation to find the "optimal" lineup
-    by swapping bench players for the weakest starters.
+    Performs a daily greedy simulation to find the "optimal" lineup.
     Refactored for Postgres Multi-Tenancy.
     """
     try:
         logging.info("--- Starting Bench Optimization ---")
 
         # 1. Get data needed for simulation
-
-        # Get lineup settings (League Specific)
         cursor.execute("SELECT position FROM lineup_settings WHERE league_id = %s AND position NOT IN ('BN', 'IR', 'IR+')", (league_id,))
         starter_positions = {row['position'] for row in cursor.fetchall()}
-        logging.info(f"Starter positions: {starter_positions}")
 
-        # Create position mapping
-        pos_map = {
-            'c': 'C', 'l': 'LW', 'r': 'RW', 'd': 'D', 'g': 'G',
-            'b': 'BN', 'i': 'IR'
-        }
+        pos_map = { 'c': 'C', 'l': 'LW', 'r': 'RW', 'd': 'D', 'g': 'G', 'b': 'BN', 'i': 'IR' }
 
-        # Get scoring categories
         scoring_categories = matchup_data['scoring_categories']
         reverse_cats = {'GA', 'GAA'}
-
-        # Get opponent stats
         opponent_stats = matchup_data['opponent_team_stats']
-
-        # Create a deep copy of our stats to modify
         optimized_stats = copy.deepcopy(matchup_data['your_team_stats'])
 
-        # Query BOTH tables (League Specific)
-        logging.info("Querying for ALL player stats (starters and bench)...")
-
-        # --- FIX: Added CAST(... AS TEXT) to both JOINs ---
+        # Query BOTH tables
         cursor.execute("""
             SELECT
                 d.date_, d.player_id, d.lineup_pos, d.category, d.stat_value,
@@ -1712,14 +1666,10 @@ def _calculate_bench_optimization(cursor, team_id, week_num, start_date, end_dat
         """, (league_id, team_id, start_date, end_date, league_id, team_id, start_date, end_date))
 
         all_stats_raw = cursor.fetchall()
-
         if not all_stats_raw:
-            logging.warning("No daily_player_stats or daily_bench_stats found for optimization.")
             return matchup_data, []
 
-        logging.info(f"Found {len(all_stats_raw)} total stat rows for simulation.")
-
-        # 2. Pivot data by day and player
+        # 2. Pivot data
         daily_player_performances = defaultdict(lambda: defaultdict(lambda: {
             'stats': defaultdict(float), 'player_id': None, 'player_name': None,
             'lineup_pos': None, 'eligible_positions': []
@@ -1729,27 +1679,22 @@ def _calculate_bench_optimization(cursor, team_id, week_num, start_date, end_dat
             day = row['date_']
             pid = row['player_id']
             player = daily_player_performances[day][pid]
-
             player['stats'][row['category']] = row['stat_value']
             player['player_id'] = pid
             player['player_name'] = row['player_name']
             player['lineup_pos'] = pos_map.get(row['lineup_pos'], row['lineup_pos'])
             player['eligible_positions'] = row['positions'].split(',')
 
-        # 3. Start the simulation
+        # 3. Simulation
         swaps_log = []
-
         week_dates = sorted(daily_player_performances.keys())
-        logging.info(f"Simulating days: {week_dates}")
 
         for day in week_dates:
             performances = daily_player_performances[day]
-
             starters = [p for p in performances.values() if p['lineup_pos'] in starter_positions]
             bench = [p for p in performances.values() if p['lineup_pos'] == 'BN' and sum(p['stats'].values()) > 0]
 
-            if not bench or not starters:
-                continue
+            if not bench or not starters: continue
 
             replaced_starters_today = set()
 
@@ -1793,7 +1738,6 @@ def _calculate_bench_optimization(cursor, team_id, week_num, start_date, end_dat
 
                 if best_swap['net_gain_score'] > 0 and best_swap['starter_to_replace']:
                     starter_to_replace = best_swap['starter_to_replace']
-
                     stat_diffs = {}
                     starter_stats = starter_to_replace['stats']
                     for cat in scoring_categories:
@@ -1810,15 +1754,16 @@ def _calculate_bench_optimization(cursor, team_id, week_num, start_date, end_dat
                     })
 
                     replaced_starters_today.add(starter_to_replace['player_id'])
-
                     for cat, diff in stat_diffs.items():
                         optimized_stats[cat] += diff
 
-
         # 4. Finalize Stats
-        if 'GAA' in optimized_stats:
+        # [FIX] Only recalc GAA if it's a scoring category
+        if 'GAA' in scoring_categories and 'GAA' in optimized_stats:
             optimized_stats['GAA'] = (optimized_stats.get('GA', 0) * 60) / optimized_stats['TOI/G'] if optimized_stats.get('TOI/G', 0) > 0 else 0
-        if 'SVpct' in optimized_stats:
+
+        # [FIX] Only recalc SVpct if it's a scoring category
+        if 'SVpct' in scoring_categories and 'SVpct' in optimized_stats:
             optimized_stats['SVpct'] = optimized_stats.get('SV', 0) / optimized_stats['SA'] if optimized_stats.get('SA', 0) > 0 else 0
 
         for cat, value in optimized_stats.items():
@@ -3635,12 +3580,16 @@ def get_free_agent_data():
         return jsonify({'error': f"An error occurred: {e}"}), 500
 
 
-def _get_team_goalie_stats(cursor, team_id, start_date_str, end_date_str, league_id):
+def _get_team_goalie_stats(cursor, team_id, start_date_str, end_date_str, league_id, scoring_categories):
+    """
+    Helper to get aggregated and individual goalie stats.
+    Only calculates GAA/SV% if they are in scoring_categories.
+    """
+    # Base stats we always fetch for calculation or display
+    base_goalie_cats = ['W', 'L', 'GA', 'SV', 'SA', 'SHO', 'TOI/G']
+    placeholders = ','.join(['%s'] * len(base_goalie_cats))
+
     # 1. Get Aggregated Live Stats
-    goalie_categories = ['W', 'L', 'GA', 'SV', 'SA', 'SHO', 'TOI/G']
-
-    placeholders = ','.join(['%s'] * len(goalie_categories))
-
     query = f"""
         SELECT category, SUM(stat_value) as total
         FROM daily_player_stats
@@ -3650,13 +3599,11 @@ def _get_team_goalie_stats(cursor, team_id, start_date_str, end_date_str, league
           AND category IN ({placeholders})
         GROUP BY category
     """
-
-    params = [league_id, start_date_str, end_date_str, team_id] + goalie_categories
+    params = [league_id, start_date_str, end_date_str, team_id] + base_goalie_cats
     cursor.execute(query, tuple(params))
-
     live_stats_raw = cursor.fetchall()
 
-    live_stats = {cat: 0 for cat in goalie_categories}
+    live_stats = {cat: 0 for cat in base_goalie_cats}
     for row in live_stats_raw:
         if row['category'] in live_stats:
             live_stats[row['category']] = row.get('total', 0)
@@ -3665,14 +3612,8 @@ def _get_team_goalie_stats(cursor, team_id, start_date_str, end_date_str, league
         live_stats['TOI/G'] += (live_stats['SHO'] * 60)
 
     # 2. Get Individual Goalie Starts
-    # FIX: Added CAST(d.player_id AS TEXT) to the JOIN
     cursor.execute(f"""
-        SELECT
-            d.player_id,
-            p.player_name,
-            d.date_,
-            d.category,
-            d.stat_value
+        SELECT d.player_id, p.player_name, d.date_, d.category, d.stat_value
         FROM daily_player_stats d
         JOIN players p ON CAST(d.player_id AS TEXT) = p.player_id
         WHERE d.league_id = %s
@@ -3680,10 +3621,9 @@ def _get_team_goalie_stats(cursor, team_id, start_date_str, end_date_str, league
           AND d.date_ >= %s AND d.date_ <= %s
           AND d.category IN ({placeholders})
         ORDER BY d.date_, p.player_name
-    """, tuple([league_id, team_id, start_date_str, end_date_str] + goalie_categories))
+    """, tuple([league_id, team_id, start_date_str, end_date_str] + base_goalie_cats))
 
     raw_starts = cursor.fetchall()
-
     starts_data = defaultdict(lambda: defaultdict(float))
     for row in raw_starts:
         key = (row['player_id'], row['player_name'], row['date_'])
@@ -3698,19 +3638,21 @@ def _get_team_goalie_stats(cursor, team_id, start_date_str, end_date_str, league
                 "date": date_,
                 **stats
             }
-
             toi = stats.get('TOI/G', 0)
             if stats.get('SHO', 0) > 0:
                 toi += 60
                 start_record['TOI/G'] = toi
 
-            start_record['GAA'] = (stats.get('GA', 0) * 60) / toi if toi > 0 else 0
-            start_record['SV%'] = stats.get('SV', 0) / stats.get('SA', 0) if stats.get('SA', 0) > 0 else 0
+            # [FIX] Conditional Calculations for Individual Starts
+            if 'GAA' in scoring_categories:
+                start_record['GAA'] = (stats.get('GA', 0) * 60) / toi if toi > 0 else 0
+
+            if 'SVpct' in scoring_categories:
+                start_record['SV%'] = stats.get('SV', 0) / stats.get('SA', 0) if stats.get('SA', 0) > 0 else 0
 
             individual_starts.append(start_record)
 
     goalie_starts = len(individual_starts)
-
     return {
         'live_stats': live_stats,
         'goalie_starts': goalie_starts,
@@ -3731,33 +3673,33 @@ def get_goalie_planning_stats():
                 your_team_name = data.get('your_team_name')
                 opponent_team_name = data.get('opponent_team_name')
 
-                # Get Team IDs (League Specific)
+                # Fetch Scoring Categories
+                cursor.execute("SELECT category FROM scoring WHERE league_id = %s", (league_id,))
+                scoring_categories = [row['category'] for row in cursor.fetchall()]
+
+                # Get Team IDs
                 cursor.execute("SELECT team_id FROM teams WHERE league_id = %s AND name = %s", (league_id, your_team_name))
                 your_team_id_row = cursor.fetchone()
-
                 cursor.execute("SELECT team_id FROM teams WHERE league_id = %s AND name = %s", (league_id, opponent_team_name))
                 opponent_team_id_row = cursor.fetchone()
 
-                if not your_team_id_row:
-                    return jsonify({'error': f'Team not found: {your_team_name}'}), 404
-                if not opponent_team_id_row:
-                    return jsonify({'error': f'Team not found: {opponent_team_name}'}), 404
+                if not your_team_id_row: return jsonify({'error': f'Team not found: {your_team_name}'}), 404
+                if not opponent_team_id_row: return jsonify({'error': f'Team not found: {opponent_team_name}'}), 404
 
                 your_team_id = your_team_id_row['team_id']
                 opponent_team_id = opponent_team_id_row['team_id']
 
-                # Get week dates (League Specific)
+                # Get week dates
                 cursor.execute("SELECT start_date, end_date FROM weeks WHERE league_id = %s AND week_num = %s", (league_id, week_num))
                 week_dates = cursor.fetchone()
-                if not week_dates:
-                    return jsonify({'error': f'Week not found: {week_num}'}), 404
+                if not week_dates: return jsonify({'error': f'Week not found: {week_num}'}), 404
 
                 start_date_str = week_dates['start_date']
                 end_date_str = week_dates['end_date']
 
-                # Get stats for both teams using the helper (Pass league_id!)
-                your_team_stats = _get_team_goalie_stats(cursor, your_team_id, start_date_str, end_date_str, league_id)
-                opponent_team_stats = _get_team_goalie_stats(cursor, opponent_team_id, start_date_str, end_date_str, league_id)
+                # [FIX] Pass scoring_categories to helper
+                your_team_stats = _get_team_goalie_stats(cursor, your_team_id, start_date_str, end_date_str, league_id, scoring_categories)
+                opponent_team_stats = _get_team_goalie_stats(cursor, opponent_team_id, start_date_str, end_date_str, league_id, scoring_categories)
 
                 return jsonify({
                     'your_team_stats': your_team_stats,
@@ -3767,7 +3709,7 @@ def get_goalie_planning_stats():
     except Exception as e:
         logging.error(f"Error fetching goalie planning stats: {e}", exc_info=True)
         return jsonify({'error': f"An error occurred: {e}"}), 500
-
+        
 
 @app.route('/stream')
 def stream():

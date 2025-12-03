@@ -10,12 +10,12 @@
     const weekSelect = document.getElementById('week-select');
     const yourTeamSelect = document.getElementById('your-team-select');
     const opponentSelect = document.getElementById('opponent-select');
-    const simLogContainer = document.getElementById('simulated-moves-log'); // NEW
+    const simLogContainer = document.getElementById('simulated-moves-log');
 
     let pageData = null; // To store weeks, teams, and matchups
-    const CATEGORY_PREF_KEY = 'lineupCategoryPreferences'; // --- NEW --- Key for localStorage
+    const CATEGORY_PREF_KEY = 'lineupCategoryPreferences';
     const SIMULATION_KEY = 'simulationCache';
-    let simulatedMoves = []; // NEW
+    let simulatedMoves = [];
 
     async function init() {
         try {
@@ -59,7 +59,6 @@
         yourTeamSelect.innerHTML = teamOptions;
         opponentSelect.innerHTML = teamOptions;
 
-        // --- EDITED SECTION ---
         // Restore team selection from localStorage
         const savedTeam = localStorage.getItem('selectedTeam');
         if (savedTeam) {
@@ -82,7 +81,6 @@
                 weekSelect.value = pageData.current_week;
             }
         }
-        // --- END EDITED SECTION ---
     }
 
     function updateOpponentDropdown() {
@@ -120,26 +118,25 @@
         unusedRosterSpotsContainer.innerHTML = '';
         gameCountsContainer.innerHTML = '';
 
-        // --- NEW: Read category preferences from localStorage ---
         const savedCategories = localStorage.getItem(CATEGORY_PREF_KEY);
         const categoriesToSend = savedCategories ? JSON.parse(savedCategories) : null;
-        // --- END NEW ---
+
         const cachedSim = localStorage.getItem(SIMULATION_KEY);
-        simulatedMoves = cachedSim ? JSON.parse(cachedSim) : []; // MODIFIED: Assign to global
+        simulatedMoves = cachedSim ? JSON.parse(cachedSim) : [];
         const selectedSourcing = localStorage.getItem('selectedStatSourcing') || 'projected';
         try {
           const response = await fetch('/api/matchup_team_stats', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    week: selectedWeek,
-                    team1_name: yourTeamName,
-                    team2_name: opponentName,
-                    categories: categoriesToSend,
-                    simulated_moves: simulatedMoves,
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    week: selectedWeek,
+                    team1_name: yourTeamName,
+                    team2_name: opponentName,
+                    categories: categoriesToSend,
+                    simulated_moves: simulatedMoves,
                     sourcing: selectedSourcing
-                })
-            });
+                })
+            });
 
             const stats = await response.json();
             if (!response.ok) throw new Error(stats.error || 'Failed to fetch stats.');
@@ -147,7 +144,7 @@
             renderTable(stats, yourTeamName, opponentName);
             renderUnusedRosterSpotsTable(stats.team1_unused_spots);
             renderGameCounts(stats.game_counts, yourTeamName, opponentName);
-            renderSimulatedMovesLog(); // NEW CALL
+            renderSimulatedMovesLog();
 
         } catch(error) {
             console.error('Error fetching stats:', error);
@@ -179,12 +176,21 @@
                     <tbody class="bg-gray-800 divide-y divide-gray-700">
         `;
 
+        // Define relationship between parent stats and sub-stats
         const goalieCats = { 'SVpct': ['SV', 'SA'], 'GAA': ['GA', 'TOI/G'] };
-        const allGoalieSubCats = Object.values(goalieCats).flat();
+
+        // --- FIX: Dynamic Skip List ---
+        // Only skip sub-stats (GA, SV) if their PARENT (GAA, SVpct) is actually active.
+        const activeCategories = pageData.scoring_categories.map(c => c.category);
+        const subCatsToSkip = [];
+        if (activeCategories.includes('SVpct')) subCatsToSkip.push('SV', 'SA');
+        if (activeCategories.includes('GAA')) subCatsToSkip.push('GA', 'TOI/G');
 
         pageData.scoring_categories.forEach(cat => {
             const category = cat.category;
-            if (allGoalieSubCats.includes(category)) return;
+
+            // Skip this category ONLY if it is being displayed as a sub-stat of an active parent
+            if (subCatsToSkip.includes(category)) return;
 
             let t1_live_val, t2_live_val;
 
@@ -199,7 +205,7 @@
             } else if (category === 'GAA') {
                 const t1_ga = stats.team1.live['GA'] || 0;
                 const t1_toi = stats.team1.live['TOI/G'] || 0;
-                t1_live_val = t1_toi > 0 ? ((t1_ga * 60) / t1_toi) : Infinity; // Use Infinity for lower-is-better comparison
+                t1_live_val = t1_toi > 0 ? ((t1_ga * 60) / t1_toi) : Infinity;
 
                 const t2_ga = stats.team2.live['GA'] || 0;
                 const t2_toi = stats.team2.live['TOI/G'] || 0;
@@ -251,19 +257,19 @@
                 </tr>
             `;
 
+            // Render sub-stats (if this is a parent category)
             if (goalieCats[category]) {
                 goalieCats[category].forEach(subCat => {
-                    if(pageData.scoring_categories.some(c => c.category === subCat)) {
-                        tableHtml += `
-                            <tr class="hover:bg-gray-700/50">
-                                <td class="px-3 py-1 whitespace-nowrap text-sm font-normal text-gray-400 pl-8">${subCat}</td>
-                                <td class="px-3 py-1 whitespace-nowrap text-sm text-center text-gray-300">${stats.team1.live[subCat] || 0}</td>
-                                <td class="px-3 py-1 whitespace-nowrap text-sm text-center text-gray-300">${stats.team1.row[subCat] || 0}</td>
-                                <td class="px-3 py-1 whitespace-nowrap text-sm text-center text-gray-300">${stats.team2.live[subCat] || 0}</td>
-                                <td class="px-3 py-1 whitespace-nowrap text-sm text-center text-gray-300">${stats.team2.row[subCat] || 0}</td>
-                            </tr>
-                        `;
-                    }
+                    // Always render these rows if we are currently inside the Parent Category loop
+                    tableHtml += `
+                        <tr class="hover:bg-gray-700/50">
+                            <td class="px-3 py-1 whitespace-nowrap text-sm font-normal text-gray-400 pl-8">${subCat}</td>
+                            <td class="px-3 py-1 whitespace-nowrap text-sm text-center text-gray-300">${stats.team1.live[subCat] || 0}</td>
+                            <td class="px-3 py-1 whitespace-nowrap text-sm text-center text-gray-300">${stats.team1.row[subCat] || 0}</td>
+                            <td class="px-3 py-1 whitespace-nowrap text-sm text-center text-gray-300">${stats.team2.live[subCat] || 0}</td>
+                            <td class="px-3 py-1 whitespace-nowrap text-sm text-center text-gray-300">${stats.team2.row[subCat] || 0}</td>
+                        </tr>
+                    `;
                 });
             }
         });
@@ -302,7 +308,6 @@
                         <tbody class="bg-gray-800"> `;
 
             sortedDays.forEach(day => {
-                 // MODIFIED: Fixed /5G typo
                 tableHtml += `<tr class="hover:bg-gray-700/50">
                     <td class="px-2 py-1 whitespace-nowrap text-sm font-medium text-gray-300">${day}</td>`;
                 positionOrder.forEach(pos => {
@@ -363,16 +368,14 @@
                 gameCountsContainer.innerHTML = tableHtml;
             }
 
-    // --- NEW FUNCTION ---
     function renderSimulatedMovesLog() {
-        if (!simLogContainer) return; // Don't error if element doesn't exist
+        if (!simLogContainer) return;
 
         if (simulatedMoves.length === 0) {
-            simLogContainer.innerHTML = ''; // Clear the container if no moves
+            simLogContainer.innerHTML = '';
             return;
         }
 
-        // Sort moves by date to display them in chronological order
         const sortedMoves = [...simulatedMoves].sort((a, b) => {
             if (a.date < b.date) return -1;
             if (a.date > b.date) return 1;
@@ -395,10 +398,8 @@
         `;
 
         sortedMoves.forEach(move => {
-            // --- MODIFIED: Handle null/undefined players for one-sided moves ---
             const addedName = move.added_player ? move.added_player.player_name : '<span class="text-gray-500 italic">-</span>';
             const droppedName = move.dropped_player ? move.dropped_player.player_name : '<span class="text-gray-500 italic">-</span>';
-            // --- END MODIFICATION ---
 
             logHtml += `
                 <tr class="hover:bg-gray-700/50">
