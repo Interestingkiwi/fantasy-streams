@@ -547,7 +547,7 @@ def fetch_and_update_faceoff_stats():
             params = {
                 "isAggregate": "false",
                 "cayenneExp": f"gameTypeId=2 and seasonId={season_id}",
-                "sort": '[{"property":"totalFaceoffWins","direction":"DESC"},{"property":"faceoffWinPct","direction":"DESC"}]',
+                "sort": '[{"property":"totalFaceoffWins","direction":"DESC"},{"property":"faceoffWinPct","direction":"DESC"},{"property":"playerId","direction":"ASC"}]',
                 "start": start,
                 "limit": 100
             }

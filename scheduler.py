@@ -95,19 +95,29 @@ def process_subscription_expirations():
     except Exception as e:
         logger.error(f"Error processing expirations: {e}", exc_info=True)
 
-def run_league_updates(force_full_history=False):
-    logger.info(f"--- Starting Scheduled League Updates (Force Full History: {force_full_history}) ---")
+def run_league_updates(target_league_id=None, force_full_history=False):
+    logger.info(f"--- Starting Scheduled League Updates (Target: {target_league_id}, Force Full: {force_full_history}) ---")
 
-    # Run subscription expiration checks
-    process_subscription_expirations()
+    # Only run subscription expiration checks if we are doing a full run (no target)
+    if not target_league_id:
+        process_subscription_expirations()
 
     with get_db_connection() as conn:
         with conn.cursor() as cursor:
-            # Standard Query for all leagues
-            cursor.execute("""
-                SELECT l.league_id, u.* FROM league_updaters l
-                JOIN users u ON l.user_guid = u.guid
-            """)
+            if target_league_id:
+                # Targeted Query for one league
+                cursor.execute("""
+                    SELECT l.league_id, u.* FROM league_updaters l
+                    JOIN users u ON l.user_guid = u.guid
+                    WHERE l.league_id = %s
+                """, (target_league_id,))
+                logger.info(f"Running manual update for single league: {target_league_id}")
+            else:
+                # Standard Query for all leagues
+                cursor.execute("""
+                    SELECT l.league_id, u.* FROM league_updaters l
+                    JOIN users u ON l.user_guid = u.guid
+                """)
 
             rows = cursor.fetchall()
 
