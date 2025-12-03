@@ -314,7 +314,7 @@ class DBFinalizer:
         # --- FIX: Dynamically determine active roster columns ---
         active_roster_columns = []
         for col in column_names:
-            if col.startswith(('c', 'l', 'r', 'd', 'g', 'u', 'n')) and not col.startswith(('b', 'i')):
+            if col.startswith(('c', 'l', 'r', 'f', 'w', 'd', 'g', 'u', 'n')) and not col.startswith(('b', 'i')):
                  # Ensure we don't accidentally pick up 'league_id' or 'date_' or 'team_id'
                  if len(col) > 1 and col[1].isdigit():
                      active_roster_columns.append(col)
@@ -775,8 +775,8 @@ def _update_daily_lineups(yq, cursor, conn, league_id, num_teams, league_start_d
         else:
             # Map Yahoo positions to our DB prefixes
             prefix_map = {
-                'C': 'c', 'LW': 'l', 'RW': 'r', 'D': 'd', 'G': 'g',
-                'Util': 'u', 'NA': 'n', 'IR': 'i', 'IR+': 'i', 'BN': 'b'
+                'C': 'c', 'LW': 'l', 'RW': 'r', 'D': 'd', 'G': 'g', 'F', 'f'
+                'Util': 'u', 'NA': 'n', 'IR': 'i', 'IR+': 'i', 'BN': 'b', 'W': 'w'
             }
 
             prefix_counts = defaultdict(int)
@@ -802,7 +802,7 @@ def _update_daily_lineups(yq, cursor, conn, league_id, num_teams, league_start_d
             # 3. Build the final sorted list of columns
             # Order matters for readability but not for SQL logic.
             # We'll follow standard order: C, L, R, D, U, G, I, N, BN
-            order = ['c', 'l', 'r', 'd', 'u', 'g', 'i', 'n', 'b']
+            order = ['c', 'l', 'r', 'w', 'f', 'd', 'u', 'g', 'i', 'n', 'b']
             roster_cols = []
 
             for p in order:
