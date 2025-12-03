@@ -4,7 +4,7 @@ Refactored for Multi-Tenancy (League ID) and Postgres Syntax
 
 Author: Jason Druckenmiller
 Created: 10/17/2025
-Updated: 11/28/2025
+Updated: 12/03/2025
 """
 
 import os
@@ -22,6 +22,7 @@ from pathlib import Path
 from database import get_db_connection
 import psycopg2.extras
 import pytz
+from collections import defaultdict
 
 
 # --- API Imports ---
@@ -424,9 +425,14 @@ class DBFinalizer:
         pos_pattern = re.compile(r"([a-zA-Z]+)")
         # --- FIX END ---
 
-        bench_roster_columns = ['b1', 'b2', 'b3', 'b4', 'b5', 'b6', 'b7', 'b8', 'b9',
-                                'b10', 'b11', 'b12', 'b13', 'b14', 'b15', 'b16', 'b17', 'b18', 'b19',
-                                'i1', 'i2', 'i3', 'i4', 'i5']
+        # [FIX] This needs to be dynamic too if we want full coverage, but for now
+        # the main roster fetch is the priority.
+        # Since this finalizer parses columns that *exist*, we can just grab all columns
+        # starting with 'b', 'i', or 'n' if we wanted to be truly dynamic.
+        # For safety in this update, we will fetch all columns from the table schema.
+
+        # Determine Bench Columns dynamically from the cursor description
+        bench_roster_columns = [col for col in column_names if col.startswith('b') or col.startswith('i') or col.startswith('n') or col.startswith('u')]
 
         for row in all_lineups:
             try:
@@ -719,6 +725,13 @@ def _get_current_week_start_date(cursor, league_id, logger):
         return date.today().isoformat()
 
 def _update_daily_lineups(yq, cursor, conn, league_id, num_teams, league_start_date, is_full_mode, logger):
+    """
+    Fetches daily roster snapshots.
+    UPDATED:
+    1. Fetches valid Team IDs first (handles non-sequential IDs).
+    2. Dynamically generates required columns based on lineup_settings.
+    3. Alters the table to add missing columns if necessary.
+    """
     try:
         cursor.execute("SELECT MAX(date_) FROM daily_lineups_dump WHERE league_id = %s", (league_id,))
         res = cursor.fetchone()
@@ -738,54 +751,136 @@ def _update_daily_lineups(yq, cursor, conn, league_id, num_teams, league_start_d
             logger.info("Daily lineups up to date.")
             return
 
-        roster_cols = [
-            'c1', 'c2', 'l1', 'l2', 'r1', 'r2', 'd1', 'd2', 'd3', 'd4',
-            'g1', 'g2', 'b1', 'b2', 'b3', 'b4', 'b5', 'b6',
-            'b7', 'b8', 'b9', 'b10', 'b11', 'b12', 'b13', 'b14',
-            'b15', 'b16', 'b17', 'b18', 'b19', 'i1', 'i2', 'i3', 'i4', 'i5'
-        ]
+        # --- DYNAMIC COLUMN GENERATION ---
+        logger.info("Generating dynamic roster columns based on settings...")
+        cursor.execute("SELECT position, position_count FROM lineup_settings WHERE league_id = %s", (league_id,))
+        settings = cursor.fetchall()
 
-        team_id = 1
+        if not settings:
+            logger.warning("No lineup settings found! Falling back to standard defaults.")
+            # Default fallback just in case
+            roster_cols = ['c1', 'c2', 'l1', 'l2', 'r1', 'r2', 'd1', 'd2', 'd3', 'd4', 'g1', 'g2', 'b1', 'b2', 'b3', 'b4']
+        else:
+            # Map Yahoo positions to our DB prefixes
+            prefix_map = {
+                'C': 'c', 'LW': 'l', 'RW': 'r', 'F': 'f', 'D': 'd', 'G': 'g',
+                'Util': 'u', 'NA': 'n', 'IR': 'i', 'IR+': 'i', 'BN': 'bn'
+            }
+
+            prefix_counts = defaultdict(int)
+            total_roster_spots = 0
+
+            # 1. Sum up counts per prefix (excluding BN first)
+            for row in settings:
+                pos = row[0] # position
+                count = row[1] # position_count
+
+                if pos == 'BN':
+                    continue
+
+                prefix = prefix_map.get(pos, pos[0].lower())
+                prefix_counts[prefix] += count
+                total_roster_spots += count
+
+            # 2. Handle BN: "BN should have as many spots as total position_count"
+            # We use the calculated total_roster_spots for the BN count
+            # (plus some padding to be safe, e.g. +5, but user asked for total)
+            prefix_counts['bn'] = total_roster_spots
+
+            # 3. Build the final sorted list of columns
+            # Order matters for readability but not for SQL logic.
+            # We'll follow standard order: C, L, R, D, U, G, I, N, BN
+            order = ['c', 'l', 'r', 'f', 'd', 'u', 'g', 'i', 'n', 'bn']
+            roster_cols = []
+
+            for p in order:
+                count = prefix_counts.get(p, 0)
+                for i in range(1, count + 1):
+                    roster_cols.append(f"{p}{i}")
+
+        # --- DYNAMIC SCHEMA UPDATE ---
+        # Check which columns exist in the DB and add missing ones
+        logger.info(f"Required roster columns: {roster_cols}")
+
+        # Get existing columns in the table
+        cursor.execute("""
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_name = 'daily_lineups_dump'
+        """)
+        existing_cols = {row[0] for row in cursor.fetchall()}
+
+        for col in roster_cols:
+            if col not in existing_cols:
+                logger.info(f"Adding missing column to daily_lineups_dump: {col}")
+                cursor.execute(f"ALTER TABLE daily_lineups_dump ADD COLUMN IF NOT EXISTS {col} TEXT")
+
+        # Commit schema changes immediately
+        conn.commit()
+
+        # --- FETCH TEAMS (Sequential ID Fix) ---
+        logger.info("Fetching valid team IDs from Yahoo to handle non-sequential IDs...")
+        league_teams = yq.get_league_teams()
+        sorted_teams = sorted(league_teams, key=lambda t: int(t.team_id))
+
         lineup_data_to_insert = []
 
-        while team_id <= num_teams:
+        for team in sorted_teams:
+            team_id = int(team.team_id)
             current_date = start_date_for_fetch
+
             while current_date < today_iso:
                 logger.info(f"Fetching daily lineups for team {team_id}, {current_date}...")
-                players = yq.get_team_roster_player_info_by_date(team_id, current_date)
 
-                counts = {'C':0, 'LW':0, 'RW':0, 'D':0, 'G':0, 'BN':0, 'IR':0, 'IR+':0}
+                try:
+                    players = yq.get_team_roster_player_info_by_date(team_id, current_date)
+                except Exception as e:
+                    logger.error(f"Failed to fetch roster for team {team_id} on {current_date}: {e}")
+                    # Skip day on error to prevent crashing entire loop
+                    current_date = (date.fromisoformat(current_date) + timedelta(1)).isoformat()
+                    continue
+
+                # Counters for this specific roster
+                counts = defaultdict(int)
                 lineup_data_raw = {}
 
                 for player in players:
                     pos_type = player.selected_position.position
-                    bucket_key = 'IR' if pos_type == 'IR+' else pos_type
 
-                    if bucket_key in counts:
-                        counts[bucket_key] += 1
-                        prefix = bucket_key.lower()[0]
-                        if pos_type == 'LW': prefix = 'l'
-                        if pos_type == 'RW': prefix = 'r'
-                        if pos_type == 'BN': prefix = 'b'
-                        if pos_type in ['IR', 'IR+']: prefix = 'i'
+                    # Map API position to our DB prefix
+                    if pos_type == 'IR+':
+                        bucket_key = 'i'
+                    elif pos_type in prefix_map:
+                        bucket_key = prefix_map[pos_type]
+                    else:
+                        # Fallback for unknown
+                        bucket_key = pos_type.lower()[0]
 
-                        col_name = f"{prefix}{counts[bucket_key]}"
+                    counts[bucket_key] += 1
+                    col_name = f"{bucket_key}{counts[bucket_key]}"
+
+                    # Store data if this column is tracked in our roster_cols
+                    if col_name in roster_cols:
                         p_stats = []
                         if player.player_stats and player.player_stats.stats:
                             p_stats = [(s.stat_id, s.value) for s in player.player_stats.stats]
 
-                        lineup_data_raw[col_name] = f"ID: {player.player_id}, Name: {player.name.full}, Stats: {p_stats}"
+                        # Safe name string
+                        p_name = player.name.full.decode('utf-8') if isinstance(player.name.full, bytes) else player.name.full
 
+                        lineup_data_raw[col_name] = f"ID: {player.player_id}, Name: {p_name}, Stats: {p_stats}"
+
+                # Build row
                 roster_values = [lineup_data_raw.get(col) for col in roster_cols]
                 full_row = [league_id, current_date, team_id] + roster_values
                 lineup_data_to_insert.append(tuple(full_row))
 
                 current_date = (date.fromisoformat(current_date) + timedelta(1)).isoformat()
-            team_id += 1
 
         if not lineup_data_to_insert:
             return
 
+        # --- DYNAMIC INSERT QUERY ---
         update_clause = ", ".join([f"{col} = EXCLUDED.{col}" for col in roster_cols])
         placeholders = ", ".join(["%s"] * (3 + len(roster_cols)))
         col_list_str = ", ".join(roster_cols)
