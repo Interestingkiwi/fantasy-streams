@@ -14,6 +14,7 @@ import redis
 from rq import Queue
 from apscheduler.schedulers.background import BackgroundScheduler
 from database import get_db_connection
+from datetime import datetime
 
 # Basic config
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -70,22 +71,22 @@ def run_league_updates(target_league_id=None, force_full_history=False):
         league_id = str(row[0])
         guid = row[1]
 
-        # Job ID: scheduled_{league_id}
-        # Using a fixed ID prevents duplicate jobs in the queue
         job_id = f"scheduled_{league_id}"
 
-        # Data packet for db_builder
         task_data = {
             'league_id': league_id,
             'token': {'xoauth_yahoo_guid': guid},
             'dev_mode': False
         }
 
-        # Options with Freshness Threshold
+        # --- FIX: Add Rate Limit Instruction ---
         options = {
             'capture_lineups': True,
             'force_full_history': force_full_history,
-            'freshness_minutes': 240 # 4 Hours (Background jobs shouldn't run if updated recently)
+            'freshness_minutes': 240,
+
+            # TELL THE WORKER: "After you finish this job, sleep for 1.5 mins."
+            'rate_limit_seconds': 90
         }
 
         try:
@@ -93,7 +94,7 @@ def run_league_updates(target_league_id=None, force_full_history=False):
                 'db_builder.run_task',
                 args=(job_id, None, options, task_data),
                 job_id=job_id,
-                job_timeout=1800
+                job_timeout=3600 # Increased timeout to account for the sleep
             )
             logger.info(f"Enqueued Low-Priority job for {league_id}")
         except Exception as e:
@@ -110,6 +111,6 @@ def start_scheduler():
     scheduler.add_job(update_global_data, trigger='cron', hour=10, minute=0)
 
     # League updates (Runs every hour, but freshness check prevents over-updating)
-    scheduler.add_job(run_league_updates, trigger='cron', hour='*/1')
+    scheduler.add_job(run_league_updates, trigger='cron', hour='*/1', minute=0)
 
     scheduler.start()

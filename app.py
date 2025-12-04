@@ -1210,6 +1210,22 @@ def home():
     league_id = session.get('league_id')
     guid = session['yahoo_token'].get('xoauth_yahoo_guid')
 
+    # --- NEW: TRACK USER ACTIVITY ---
+    if guid:
+        try:
+            with get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    # Simple "fire and forget" update
+                    cursor.execute("""
+                        UPDATE users
+                        SET last_seen_at = NOW()
+                        WHERE guid = %s
+                    """, (guid,))
+                conn.commit()
+        except Exception as e:
+            logging.error(f"Failed to update last_seen_at: {e}")
+    # --------------------------------
+
     auto_update_info = None
     if league_id and guid:
         auto_update_info = trigger_smart_update(league_id, guid)

@@ -242,6 +242,13 @@ def run_task(build_id, log_file_path, options, data):
             with db_build_status_lock:
                 db_build_status["error"] = error_msg
 
+        # We only reach here if we actually attempted an update.
+        sleep_seconds = options.get('rate_limit_seconds', 0)
+        if sleep_seconds > 0:
+            logger.info(f"Rate Limiting: Sleeping for {sleep_seconds} seconds...")
+            time.sleep(sleep_seconds)
+            logger.info("Sleep complete. Worker released.")
+
     except Exception as e:
         error_str = f"--- FATAL ERROR: {str(e)} ---"
         logger.error(error_str, exc_info=True)
