@@ -161,6 +161,10 @@ def run_league_updates(target_league_id=None, force_full_history=False):
         except Exception as e:
             logger.error(f"Error updating {league_id}: {e}", exc_info=True)
 
+        # Pause for 2 minutes after each league to avoid rate limits
+        logger.info("Pausing for 2 minutes to avoid rate limiting...")
+        time.sleep(61)
+
 # Import your global update function
 from jobs.global_update import update_global_data
 
@@ -169,7 +173,7 @@ def start_scheduler():
     scheduler = BackgroundScheduler(timezone="UTC")
 
     # Global data update
-    scheduler.add_job(update_global_data, trigger='cron', hour=9, minute=0)
+    scheduler.add_job(update_global_data, trigger='cron', hour=9, minute=30)
 
     # League updates
     scheduler.add_job(run_league_updates, trigger='cron', hour=10, minute=0)
