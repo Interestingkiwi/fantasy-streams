@@ -57,6 +57,7 @@ class PostgresHandler(logging.Handler):
             # Fallback to stderr if DB logging fails
             print(f"Failed to log to DB: {e}", file=sys.stderr)
 
+
 def run_task(build_id, log_file_path, options, data):
     global db_build_status
 
@@ -77,7 +78,7 @@ def run_task(build_id, log_file_path, options, data):
         stream_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
         logger.addHandler(stream_handler)
 
-    # --- [NEW] FRESHNESS CHECK (Check-at-Runtime) ---
+    # --- [UPDATED] FRESHNESS CHECK (UTC ENFORCED) ---
     freshness_minutes = options.get('freshness_minutes', 0)
     if freshness_minutes > 0:
         try:
@@ -90,13 +91,22 @@ def run_task(build_id, log_file_path, options, data):
                     row = cursor.fetchone()
 
                     if row and row[0]:
-                        # Format is "%Y-%m-%d %H:%M:%S"
+                        # Parse the stored timestamp (Assumed UTC)
                         last_ts = datetime.strptime(row[0], "%Y-%m-%d %H:%M:%S")
-                        elapsed = datetime.now() - last_ts
+
+                        # Compare against current UTC time
+                        now_utc = datetime.utcnow()
+                        elapsed = now_utc - last_ts
+                        elapsed_minutes = int(elapsed.total_seconds() / 60)
+
+                        logger.info(f"Freshness Check: Last Update (UTC): {last_ts} | Now (UTC): {now_utc} | Elapsed: {elapsed_minutes} min | Threshold: {freshness_minutes} min")
 
                         if elapsed < timedelta(minutes=freshness_minutes):
-                            logger.info(f"SKIPPING: Data is fresh (Updated {int(elapsed.total_seconds()/60)} mins ago). Threshold: {freshness_minutes} mins.")
-                            return # <--- EXIT SCRIPT HERE
+                            logger.info(f"SKIPPING: Data is fresh (Updated {elapsed_minutes} mins ago).")
+                            return
+                    else:
+                        logger.info("Freshness Check: No previous timestamp found. Proceeding with update.")
+
         except Exception as e:
             logger.warning(f"Freshness check failed, proceeding with update: {e}")
     # ------------------------------------------------
@@ -1193,7 +1203,8 @@ def _update_rostered_players(lg, cursor, league_id, logger):
     """, data)
 
 def _update_db_metadata(cursor, league_id, logger, update_available_players_timestamp=False, is_full_update=False):
-    now = datetime.now()
+    # Use UTC explicitly for consistency across different servers/workers
+    now = datetime.utcnow()
     date_str = now.strftime("%Y-%m-%d")
     ts_str = now.strftime("%Y-%m-%d %H:%M:%S")
 
@@ -1209,7 +1220,6 @@ def _update_db_metadata(cursor, league_id, logger, update_available_players_time
             (league_id, 'last_updated_date', date_str),
             (league_id, 'last_updated_timestamp', ts_str)
         ]
-        # [NEW] Track Full Updates separately
         if is_full_update:
             data.append((league_id, 'last_full_updated_timestamp', ts_str))
 
