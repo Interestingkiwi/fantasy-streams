@@ -726,7 +726,7 @@
             unusedRosterSpotsContainer.innerHTML = '';
             return;
         }
-        const positionOrder = ['C', 'LW', 'RW', 'D', 'G'];
+        const positionOrder = ['C', 'LW', 'RW', 'F', 'W', 'D', 'Util', 'G'];
         const dayOrder = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
         const sortedDays = Object.keys(unusedSpotsData).sort((a, b) => dayOrder.indexOf(a) - dayOrder.indexOf(b));
         let tableHtml = `

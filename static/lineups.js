@@ -244,7 +244,7 @@
         const skaters = roster.filter(p => !(p.eligible_positions || p.positions || '').includes('G'));
         const goalies = roster.filter(p => (p.eligible_positions || p.positions || '').includes('G'));
 
-        const positionOrder = ['C', 'LW', 'RW', 'D', 'G', 'IR', 'IR+'];
+        const positionOrder = ['C', 'LW', 'RW', 'F', 'W', 'D', 'Util', 'G', 'IR', 'IR+'];
         const sortFn = (a, b) => {
             const getBestPosIndex = (posArr) => {
                 let minIndex = Infinity;
@@ -437,7 +437,7 @@
 
     function renderOptimalLineups(dailyLineups, lineupSettings) { /* ... (Unchanged) ... */
         let finalHtml = '<div class="flex flex-wrap gap-4 justify-center">';
-        const positionOrder = ['C', 'LW', 'RW', 'D', 'G'];
+        const positionOrder = ['C', 'LW', 'RW', 'F', 'W', 'D', 'Util', 'G'];
 
         const sortedDays = Object.keys(dailyLineups).sort((a, b) => {
             const currentYear = new Date().getFullYear();
@@ -489,7 +489,7 @@
             unusedRosterSpotsContainer.innerHTML = '';
             return;
         }
-        const positionOrder = ['C', 'LW', 'RW', 'D', 'G'];
+        const positionOrder = ['C', 'LW', 'RW', 'F', 'W', 'D', 'Util', 'G'];
         const dayOrder = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
         const sortedDays = Object.keys(unusedSpotsData).sort((a, b) => dayOrder.indexOf(a) - dayOrder.indexOf(b));
 

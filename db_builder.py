@@ -797,7 +797,7 @@ def _update_daily_lineups(yq, cursor, conn, league_id, num_teams, league_start_d
             # 2. Handle BN: "BN should have as many spots as total position_count"
             # We use the calculated total_roster_spots for the BN count
             # (plus some padding to be safe, e.g. +5, but user asked for total)
-            prefix_counts['bn'] = total_roster_spots
+            prefix_counts['b'] = total_roster_spots
 
             # 3. Build the final sorted list of columns
             # Order matters for readability but not for SQL logic.
