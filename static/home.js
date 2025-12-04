@@ -17,13 +17,17 @@ document.addEventListener('DOMContentLoaded', () => {
                 // 2. Programmatically click it to load the page content
                 leagueDbBtn.click();
 
-                // 3. Wait for the 'db-log-output' box to appear in the DOM
+                // 3. Wait for the 'log-container' box to appear in the DOM
                 // (We check every 100ms because the page load is async)
                 const waitForLogBox = setInterval(() => {
-                    const staticLogBox = document.getElementById('db-log-output');
+                    // [FIX 1] Changed ID from 'db-log-output' to 'log-container'
+                    const staticLogBox = document.getElementById('log-container');
 
                     if (staticLogBox) {
                         clearInterval(waitForLogBox); // Stop checking
+
+                        // [FIX 2] Force the box to be visible (it is usually hidden by default)
+                        staticLogBox.classList.remove('hidden');
 
                         // 4. Insert Initial Message
                         staticLogBox.innerHTML = `<div class="text-blue-400">➤ ${info.message}</div>`;
@@ -240,8 +244,13 @@ document.addEventListener('DOMContentLoaded', () => {
 
 // [START] LOG STREAMING FUNCTION (Required for automated updates)
 function startLogStream(buildId) {
-    const logOutput = document.getElementById('db-log-output');
-    if (!logOutput) return;
+    // [FIX 3] Ensure this function looks for 'log-container' too
+    const logOutput = document.getElementById('log-container');
+
+    if (!logOutput) {
+        console.error("Log output container not found!");
+        return;
+    }
 
     // Connect to the Flask EventSource route
     const eventSource = new EventSource(`/api/db_log_stream?build_id=${buildId}`);
