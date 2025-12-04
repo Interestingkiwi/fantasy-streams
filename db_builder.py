@@ -65,23 +65,45 @@ def run_task(build_id, log_file_path, options, data):
     logger.setLevel(logging.INFO)
     logger.propagate = False
 
-    # 2. Add Handlers
     if not logger.handlers:
-        # Database Handler (For UI Streaming)
         db_handler = PostgresHandler(build_id)
         db_handler.setLevel(logging.INFO)
         formatter = logging.Formatter('%(message)s')
         db_handler.setFormatter(formatter)
         logger.addHandler(db_handler)
 
-        # Console Handler (For Render Dashboard visibility)
         stream_handler = logging.StreamHandler(sys.stdout)
         stream_handler.setLevel(logging.INFO)
         stream_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
         logger.addHandler(stream_handler)
 
-    logger.info(f"Build task {build_id} received. Preparing API connections...")
+    # --- [NEW] FRESHNESS CHECK (Check-at-Runtime) ---
+    freshness_minutes = options.get('freshness_minutes', 0)
+    if freshness_minutes > 0:
+        try:
+            with get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("""
+                        SELECT value FROM db_metadata
+                        WHERE league_id = %s AND key = 'last_updated_timestamp'
+                    """, (data['league_id'],))
+                    row = cursor.fetchone()
 
+                    if row and row[0]:
+                        # Format is "%Y-%m-%d %H:%M:%S"
+                        last_ts = datetime.strptime(row[0], "%Y-%m-%d %H:%M:%S")
+                        elapsed = datetime.now() - last_ts
+
+                        if elapsed < timedelta(minutes=freshness_minutes):
+                            logger.info(f"SKIPPING: Data is fresh (Updated {int(elapsed.total_seconds()/60)} mins ago). Threshold: {freshness_minutes} mins.")
+                            return # <--- EXIT SCRIPT HERE
+        except Exception as e:
+            logger.warning(f"Freshness check failed, proceeding with update: {e}")
+    # ------------------------------------------------
+
+    logger.info(f"Build task {build_id} starting for League {data['league_id']}...")
+
+    # ... (Rest of the function remains exactly the same as your original file)
     yq = None
     lg = None
 

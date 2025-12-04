@@ -1,81 +1,30 @@
 """
 Schedules daily jobs for fantasystreams.app
-Refactored for Multi-Tenancy (League ID) and Postgres Syntax
+Refactored for Priority Queues (Redis)
 
 Author: Jason Druckenmiller
 Created: 11/02/2025
-Updated: 11/26/2025
+Updated: 12/03/2025
 """
 
 import os
 import logging
-import time
-import json
-import tempfile
-from datetime import datetime
+import uuid
+import redis
+from rq import Queue
 from apscheduler.schedulers.background import BackgroundScheduler
-from yahoo_oauth import OAuth2
-from yfpy.query import YahooFantasySportsQuery
-import yahoo_fantasy_api as yfa
-import db_builder
 from database import get_db_connection
 
 # Basic config
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
-def get_refreshed_token(user_row):
-    # Unpack tuple from Postgres
-    guid, access_token, refresh_token, token_type, expires_in, token_time, consumer_key, consumer_secret, _, _ = user_row
+# Redis Connection
+redis_url = os.getenv('REDIS_URL', 'redis://red-d4ae0rur433s73eil750:6379')
+conn = redis.from_url(redis_url)
 
-    creds = {
-        "consumer_key": consumer_key,
-        "consumer_secret": consumer_secret,
-        "access_token": access_token,
-        "refresh_token": refresh_token,
-        "token_type": token_type,
-        "expires_in": expires_in,
-        "token_time": token_time,
-        "xoauth_yahoo_guid": guid
-    }
-
-    # 1. Create temp file
-    fd, temp_path = tempfile.mkstemp(suffix=".json")
-    with os.fdopen(fd, 'w') as f:
-        json.dump(creds, f)
-
-    try:
-        # 2. Refresh
-        sc = OAuth2(None, None, from_file=temp_path)
-        if not sc.token_is_valid():
-            sc.refresh_access_token()
-
-        # 3. Read back new token
-        with open(temp_path, 'r') as f:
-            new_creds = json.load(f)
-
-        # 4. Update DB
-        with get_db_connection() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute("""
-                    UPDATE users
-                    SET access_token = %s, refresh_token = %s, token_time = %s, expires_in = %s
-                    WHERE guid = %s
-                """, (
-                    new_creds['access_token'],
-                    new_creds['refresh_token'],
-                    new_creds['token_time'],
-                    new_creds.get('expires_in', 3600),
-                    guid
-                ))
-            conn.commit()
-
-        # Return updated creds dict
-        return new_creds
-
-    finally:
-        if os.path.exists(temp_path):
-            os.remove(temp_path)
+# Define Queues
+low_queue = Queue('low', connection=conn)
 
 def process_subscription_expirations():
     """Checks for expired premium subscriptions and downgrades them."""
@@ -96,74 +45,59 @@ def process_subscription_expirations():
         logger.error(f"Error processing expirations: {e}", exc_info=True)
 
 def run_league_updates(target_league_id=None, force_full_history=False):
-    logger.info(f"--- Starting Scheduled League Updates (Target: {target_league_id}, Force Full: {force_full_history}) ---")
+    logger.info(f"--- Scheduling League Updates (Target: {target_league_id}) ---")
 
-    # Only run subscription expiration checks if we are doing a full run (no target)
     if not target_league_id:
         process_subscription_expirations()
 
+    rows = []
     with get_db_connection() as conn:
         with conn.cursor() as cursor:
             if target_league_id:
-                # Targeted Query for one league
                 cursor.execute("""
-                    SELECT l.league_id, u.* FROM league_updaters l
+                    SELECT l.league_id, u.guid FROM league_updaters l
                     JOIN users u ON l.user_guid = u.guid
                     WHERE l.league_id = %s
                 """, (target_league_id,))
-                logger.info(f"Running manual update for single league: {target_league_id}")
             else:
-                # Standard Query for all leagues
                 cursor.execute("""
-                    SELECT l.league_id, u.* FROM league_updaters l
+                    SELECT l.league_id, u.guid FROM league_updaters l
                     JOIN users u ON l.user_guid = u.guid
                 """)
-
             rows = cursor.fetchall()
 
     for row in rows:
-        # Row structure: (league_id, guid, access_token, ...)
-        # Postgres returns tuples. Index 0 is league_id. Index 1 onwards is User columns.
         league_id = str(row[0])
-        # User columns start at index 1
-        user_row = row[1:]
+        guid = row[1]
 
-        logger.info(f"Processing League {league_id}...")
+        # Job ID: scheduled_{league_id}
+        # Using a fixed ID prevents duplicate jobs in the queue
+        job_id = f"scheduled_{league_id}"
+
+        # Data packet for db_builder
+        task_data = {
+            'league_id': league_id,
+            'token': {'xoauth_yahoo_guid': guid},
+            'dev_mode': False
+        }
+
+        # Options with Freshness Threshold
+        options = {
+            'capture_lineups': True,
+            'force_full_history': force_full_history,
+            'freshness_minutes': 240 # 4 Hours (Background jobs shouldn't run if updated recently)
+        }
 
         try:
-            creds = get_refreshed_token(user_row)
-
-            auth_data = {
-                'consumer_key': creds['consumer_key'],
-                'consumer_secret': creds['consumer_secret'],
-                'access_token': creds['access_token'],
-                'refresh_token': creds['refresh_token'],
-                'token_type': creds['token_type'],
-                'token_time': creds['token_time'],
-                'guid': creds['xoauth_yahoo_guid']
-            }
-            yq = YahooFantasySportsQuery(league_id, game_code="nhl", yahoo_access_token_json=auth_data)
-
-            fd, temp_path = tempfile.mkstemp(suffix=".json")
-            with os.fdopen(fd, 'w') as f: json.dump(creds, f)
-            sc = OAuth2(creds['consumer_key'], creds['consumer_secret'], from_file=temp_path)
-            gm = yfa.Game(sc, 'nhl')
-            lg = gm.to_league(f"nhl.l.{league_id}")
-            os.remove(temp_path)
-
-            db_builder.update_league_db(
-                yq,
-                lg,
-                league_id,
-                logger,
-                force_full_history=force_full_history
+            low_queue.enqueue(
+                'db_builder.run_task',
+                args=(job_id, None, options, task_data),
+                job_id=job_id,
+                job_timeout=1800
             )
+            logger.info(f"Enqueued Low-Priority job for {league_id}")
         except Exception as e:
-            logger.error(f"Error updating {league_id}: {e}", exc_info=True)
-
-        # Pause for 2 minutes after each league to avoid rate limits
-        logger.info("Pausing for 2 minutes to avoid rate limiting...")
-        time.sleep(61)
+            logger.error(f"Failed to enqueue {league_id}: {e}")
 
 # Import your global update function
 from jobs.global_update import update_global_data
@@ -173,9 +107,9 @@ def start_scheduler():
     scheduler = BackgroundScheduler(timezone="UTC")
 
     # Global data update
-    scheduler.add_job(update_global_data, trigger='cron', hour=9, minute=30)
+    scheduler.add_job(update_global_data, trigger='cron', hour=10, minute=0)
 
-    # League updates
-    scheduler.add_job(run_league_updates, trigger='cron', hour=10, minute=0)
+    # League updates (Runs every hour, but freshness check prevents over-updating)
+    scheduler.add_job(run_league_updates, trigger='cron', hour='*/1')
 
     scheduler.start()

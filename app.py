@@ -58,6 +58,10 @@ db_build_status_lock = threading.Lock()
 authorization_base_url = 'https://api.login.yahoo.com/oauth2/request_auth'
 token_url = 'https://api.login.yahoo.com/oauth2/get_token'
 
+redis_conn = redis.from_url(os.environ.get('REDIS_URL', 'redis://red-d4ae0rur433s73eil750:6379'))
+high_queue = Queue('high', connection=redis_conn)
+
+
 def model_to_dict(obj):
     """
     Recursively converts yfpy model objects, lists, and bytes into a structure
@@ -1084,10 +1088,47 @@ def index():
         return redirect(url_for('home'))
     return render_template('index.html')
 
+def trigger_smart_update(league_id, user_guid):
+    """
+    Triggers a High Priority update if the data is stale (controlled by worker).
+    """
+    try:
+        job_id = f"user_visit_{league_id}"
+
+        task_data = {
+            'league_id': league_id,
+            'token': {'xoauth_yahoo_guid': user_guid},
+            'dev_mode': session.get('dev_mode', False)
+        }
+
+        options = {
+            'capture_lineups': True,
+            'freshness_minutes': 15 # 15 Mins (If user visits, we want pretty fresh data)
+        }
+
+        # Enqueue to HIGH priority
+        high_queue.enqueue(
+            'db_builder.run_task',
+            args=(job_id, None, options, task_data),
+            job_id=job_id, # Prevents duplicates if they spam refresh
+            job_timeout=1800,
+            result_ttl=60
+        )
+        logging.info(f"Triggered smart update for {league_id} (High Priority)")
+    except Exception as e:
+        logging.error(f"Failed to trigger smart update: {e}")
+
 @app.route('/home')
 def home():
     if 'yahoo_token' not in session:
         return redirect(url_for('index'))
+
+    # [NEW] Trigger the background update on visit
+    league_id = session.get('league_id')
+    guid = session['yahoo_token'].get('xoauth_yahoo_guid')
+    if league_id and guid:
+        trigger_smart_update(league_id, guid)
+
     return render_template('home.html')
 
 @app.route('/login', methods=['POST'])
@@ -3805,28 +3846,74 @@ def update_db_in_background(yq, lg, league_id, capture_lineups):
 
 @app.route('/api/update_db', methods=['POST'])
 def update_db_route():
+    """
+    Handles the manual 'Update League' button click.
+    Uses High Priority Queue with a 2-minute freshness check.
+    """
+    # 1. Dev Mode Check
     if session.get('dev_mode'):
         return jsonify({'success': False, 'error': 'Database updates are disabled in dev mode.'}), 403
 
-    yq = get_yfpy_instance()
-    lg = get_yfa_lg_instance()
-    if not yq or not lg:
+    # 2. Auth Check
+    if 'yahoo_token' not in session:
         return jsonify({"error": "Authentication failed. Please log in again."}), 401
 
     league_id = session.get('league_id')
     if not league_id:
         return jsonify({'success': False, 'error': 'League ID not found in session.'}), 400
 
+    # 3. Prepare Job Data
     data = request.get_json() or {}
-    capture_lineups = data.get('capture_lineups', False)
 
-    thread = threading.Thread(
-        target=update_db_in_background,
-        args=(yq, lg, league_id, capture_lineups)
-    )
-    thread.start()
+    # Define a unique Job ID for manual updates
+    # This automatically de-duplicates: if a job with this ID is already queued/running,
+    # RQ won't add a second one (or we can catch it).
+    job_id = f"manual_update_{league_id}"
 
-    return jsonify({'success': True, 'message': 'Database update started.'})
+    task_data = {
+        'league_id': league_id,
+        'token': session.get('yahoo_token'),
+        'consumer_key': session.get('consumer_key'),
+        'consumer_secret': session.get('consumer_secret'),
+        'dev_mode': False
+    }
+
+    options = {
+        'capture_lineups': data.get('capture_lineups', False),
+        'roster_updates_only': data.get('roster_updates_only', False),
+
+        # --- THE MAGIC SETTING ---
+        # 2 Minutes: If data is younger than 2 mins, the worker will skip this job.
+        # This allows users to catch "just made" moves, but prevents spam.
+        'freshness_minutes': 2
+    }
+
+    try:
+        logging.info(f"Enqueuing MANUAL update for {league_id} (High Priority)")
+
+        # 4. Enqueue to High Priority
+        job = high_queue.enqueue(
+            'db_builder.run_task',
+            args=(job_id, None, options, task_data),
+            job_id=job_id,       # Prevents duplicates in the queue
+            job_timeout=1800,    # 30 mins max
+            result_ttl=300       # Keep result for 5 mins
+        )
+
+        # Update global status so the UI knows something is happening
+        global db_build_status
+        with db_build_status_lock:
+             db_build_status = {"running": True, "error": None, "current_build_id": job_id}
+
+        return jsonify({
+            'success': True,
+            'message': 'Update queued.',
+            'build_id': job.id
+        })
+
+    except Exception as e:
+        logging.error(f"Failed to enqueue manual update: {e}", exc_info=True)
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 
 @app.route('/api/download_db')
