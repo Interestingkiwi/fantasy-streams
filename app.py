@@ -652,7 +652,14 @@ def _calculate_unused_spots(days_in_week, active_players, lineup_settings, simul
         simulated_moves = []
 
     unused_spots_data = {}
-    position_order = ['C', 'LW', 'RW', 'F', 'W', 'D', 'Util', 'G']
+
+    # 1. Define Master Order for sorting purposes
+    master_order = ['C', 'LW', 'RW', 'F', 'W', 'D', 'Util', 'G']
+
+    # 2. Determine which positions are actually used in this league
+    # We filter master_order to ensure we only include positions present in settings,
+    # and we maintain the standard hockey order.
+    active_positions = [pos for pos in master_order if pos in lineup_settings]
 
     today = date.today()
     for day_date in days_in_week:
@@ -666,23 +673,22 @@ def _calculate_unused_spots(days_in_week, active_players, lineup_settings, simul
             # Check both 'game_dates_this_week' (for base roster) and 'game_dates_this_week_full' (for added players)
             game_dates = p.get('game_dates_this_week') or p.get('game_dates_this_week_full', [])
             if day_str in game_dates:
-                # --- FIX START: Filter out IR/IR+ players ---
+                # Filter out IR/IR+ players
                 eligible_ops = (p.get('eligible_positions') or p.get('positions', '')).split(',')
                 if any(pos.strip().startswith('IR') for pos in eligible_ops):
                     continue
-                # --- FIX END ---
                 players_playing_today.append(p)
 
         daily_lineup = get_optimal_lineup(players_playing_today, lineup_settings)
 
         if day_date < today:
-            open_slots = {pos: '-' for pos in position_order}
+            open_slots = {pos: '-' for pos in active_positions}
         else:
-            open_slots = {pos: lineup_settings.get(pos, 0) - len(daily_lineup.get(pos, [])) for pos in position_order}
+            open_slots = {pos: lineup_settings.get(pos, 0) - len(daily_lineup.get(pos, [])) for pos in active_positions}
 
         # Asterisk logic: check if a starter could move to an open slot
         for pos, players in daily_lineup.items():
-            if pos not in position_order: continue
+            if pos not in active_positions: continue
 
             # If this position is full, check if any of its players could move
             if open_slots[pos] == 0:

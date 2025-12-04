@@ -489,9 +489,15 @@
             unusedRosterSpotsContainer.innerHTML = '';
             return;
         }
-        const positionOrder = ['C', 'LW', 'RW', 'F', 'W', 'D', 'Util', 'G'];
+
         const dayOrder = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
         const sortedDays = Object.keys(unusedSpotsData).sort((a, b) => dayOrder.indexOf(a) - dayOrder.indexOf(b));
+
+        const firstDayData = unusedSpotsData[sortedDays[0]];
+        const availablePositions = Object.keys(firstDayData);
+
+        const masterOrder = ['C', 'LW', 'RW', 'F', 'W', 'D', 'Util', 'G'];
+        const positionOrder = masterOrder.filter(pos => availablePositions.includes(pos));
 
         let tableHtml = `
             <div class="bg-gray-900 rounded-lg shadow mt-6">
