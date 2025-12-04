@@ -30,6 +30,7 @@ import threading
 import tempfile
 import redis
 from rq import Queue
+from rq.job import Job
 from functools import wraps
 from database import get_db_connection
 import psycopg2.extras
@@ -4290,69 +4291,93 @@ def db_log_stream():
     if not build_id:
         return Response("data: ERROR: No build_id provided.\n\ndata: __DONE__\n\n", mimetype='text/event-stream')
 
+    # --- FIX 1: Ensure we use the correct Redis connection ---
+    # We redefine it here to be 100% sure we aren't using a stale/localhost connection object
+    redis_url = os.getenv('REDIS_URL', 'redis://red-d4ae0rur433s73eil750:6379')
+    stream_conn = redis.from_url(redis_url)
+
     def generate():
         last_log_id = 0
+        job_exists = False
 
+        # --- FIX 2: Robust Job Check ---
         try:
-            # 1. Check if job exists (using Redis queue)
-            job = job_queue.fetch_job(build_id)
-            if not job:
-                yield f"data: ERROR: Job {build_id} not found.\n\n"
-                yield 'data: __DONE__\n\n'
-                return
+            # Try to find the job in Redis
+            job = Job.fetch(build_id, connection=stream_conn)
+            job_exists = True
+        except Exception:
+            job = None
 
-            yield f"data: Connected to log stream...\n\n"
+        # --- FIX 3: Fallback to DB if Redis misses it ---
+        # If the job finished quickly, it might be gone from Redis but have logs in Postgres
+        if not job:
+            with get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("SELECT 1 FROM job_logs WHERE job_id = %s LIMIT 1", (build_id,))
+                    if cursor.fetchone():
+                        job_exists = True # It existed, so we can stream its logs
 
-            # 2. Polling Loop
-            while True:
-                # Fetch new logs from Postgres
-                with get_db_connection() as conn:
-                    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cursor:
-                        cursor.execute("""
-                            SELECT log_id, message
-                            FROM job_logs
-                            WHERE job_id = %s AND log_id > %s
-                            ORDER BY log_id ASC
-                        """, (build_id, last_log_id))
-                        new_logs = cursor.fetchall()
+        if not job_exists:
+            yield f"data: ERROR: Job {build_id} not found.\n\n"
+            yield 'data: __DONE__\n\n'
+            return
 
-                if new_logs:
-                    for log in new_logs:
-                        yield f"data: {log['message']}\n\n"
-                        last_log_id = log['log_id']
+        yield f"data: Connected to log stream...\n\n"
 
-                # Check Job Status
-                job.refresh()
-                status = job.get_status()
+        # Polling Loop
+        while True:
+            # Fetch new logs from Postgres
+            with get_db_connection() as conn:
+                with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cursor:
+                    cursor.execute("""
+                        SELECT log_id, message
+                        FROM job_logs
+                        WHERE job_id = %s AND log_id > %s
+                        ORDER BY log_id ASC
+                    """, (build_id, last_log_id))
+                    new_logs = cursor.fetchall()
 
-                if status in ['finished', 'failed', 'canceled']:
-                    # One final check for logs
-                    with get_db_connection() as conn:
-                        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cursor:
-                            cursor.execute("""
-                                SELECT log_id, message
-                                FROM job_logs
-                                WHERE job_id = %s AND log_id > %s
-                                ORDER BY log_id ASC
-                            """, (build_id, last_log_id))
-                            final_logs = cursor.fetchall()
-                            for log in final_logs:
-                                yield f"data: {log['message']}\n\n"
+            if new_logs:
+                for log in new_logs:
+                    yield f"data: {log['message']}\n\n"
+                    last_log_id = log['log_id']
 
-                    if status == 'failed':
-                        yield f"data: ERROR: Job failed unexpectedly.\n\n"
-                    else:
-                        yield "data: Success! Update complete.\n\n"
+            # Check Job Status (Only if we have a Redis job object)
+            if job:
+                try:
+                    job.refresh()
+                    status = job.get_status()
+                    if status in ['finished', 'failed', 'canceled']:
+                        # Flush remaining logs one last time
+                        with get_db_connection() as conn:
+                            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cursor:
+                                cursor.execute("""
+                                    SELECT log_id, message
+                                    FROM job_logs
+                                    WHERE job_id = %s AND log_id > %s
+                                    ORDER BY log_id ASC
+                                """, (build_id, last_log_id))
+                                for log in cursor.fetchall():
+                                    yield f"data: {log['message']}\n\n"
 
+                        if status == 'failed':
+                            yield f"data: ERROR: Job failed unexpectedly.\n\n"
+                        else:
+                            yield "data: Success! Update complete.\n\n"
+
+                        yield "data: __DONE__\n\n"
+                        break
+                except Exception:
+                    # Job might have expired from Redis during the loop; just exit gracefully
                     yield "data: __DONE__\n\n"
                     break
+            else:
+                # If we are streaming from DB only (Redis job missing), we stop when logs stop coming?
+                # Better approach: If we found logs in DB but no Job, assume it's finished.
+                yield "data: __DONE__\n\n"
+                break
 
-                time.sleep(2) # Poll every 2 seconds
-
-        except Exception as e:
-            logging.error(f"Log stream error: {e}")
-            yield f"data: ERROR: Stream disconnect ({e})\n\n"
-            yield 'data: __DONE__\n\n'
+            time.sleep(2) # Poll every 2 seconds
 
     return Response(generate(), mimetype='text/event-stream')
 
