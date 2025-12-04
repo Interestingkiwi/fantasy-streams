@@ -1099,7 +1099,7 @@ def trigger_smart_update(league_id, user_guid):
     - {'status': 'queued', 'job_id': ..., 'message': ...} if update is queued.
     - {'status': 'error', 'message': ...} on failure.
     """
-    job_id = f"user_visit_{league_id}"
+    job_id = f"user_visit_{league_id}_{int(time.time())}"
     freshness_minutes = 15
 
     try:
