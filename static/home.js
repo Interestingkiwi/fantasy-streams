@@ -3,36 +3,46 @@ document.addEventListener('DOMContentLoaded', () => {
     const timestampText = document.getElementById('timestamp-text');
     const dropdownContainer = document.getElementById('dropdown-container');
 
-
+    // --- [START] AUTOMATED UPDATE LOGIC ---
     if (window.autoUpdateInfo) {
         const info = window.autoUpdateInfo;
-        const statusLog = document.getElementById('db-log-output'); // Assuming you have a log div
-        const statusContainer = document.getElementById('db-status-container'); // Container for the log area
 
         if (info.status === 'queued') {
             console.log("Automated update queued: " + info.job_id);
 
-            // 1. Open the log window/modal immediately
-            if (statusContainer) statusContainer.style.display = 'block';
+            // 1. Find the "League Database" button
+            const leagueDbBtn = document.querySelector('button[data-page="league-database"]');
 
-            // 2. Add initial message
-            if (statusLog) {
-                statusLog.innerHTML += `<div class="text-blue-400">➤ ${info.message}</div>`;
-                statusLog.innerHTML += `<div class="text-gray-400">➤ Connecting to live stream...</div>`;
-            }
+            if (leagueDbBtn) {
+                // 2. Programmatically click it to load the page content
+                leagueDbBtn.click();
 
-            // 3. Connect to stream using your existing logic
-            // Assuming you have a function like startLogStream(buildId) in db.js or home.js
-            if (typeof startLogStream === 'function') {
-                startLogStream(info.job_id);
+                // 3. Wait for the 'db-log-output' box to appear in the DOM
+                // (We check every 100ms because the page load is async)
+                const waitForLogBox = setInterval(() => {
+                    const staticLogBox = document.getElementById('db-log-output');
+
+                    if (staticLogBox) {
+                        clearInterval(waitForLogBox); // Stop checking
+
+                        // 4. Insert Initial Message
+                        staticLogBox.innerHTML = `<div class="text-blue-400">➤ ${info.message}</div>`;
+                        staticLogBox.innerHTML += `<div class="text-gray-400">➤ Connecting to live stream...</div>`;
+
+                        // 5. Connect to the stream
+                        if (typeof startLogStream === 'function') {
+                            startLogStream(info.job_id);
+                        }
+                    }
+                }, 100);
             }
 
         } else if (info.status === 'fresh') {
-            console.log("Data is fresh.");
-            // Optional: Flash a small toast or append to log if visible
-            // showToast(info.message);
+            console.log("Data is fresh. No update needed.");
         }
     }
+    // --- [END] AUTOMATED UPDATE LOGIC ---
+
     // --- Event Delegation for Raw Data Toggle ---
     document.addEventListener('change', (e) => {
         if (e.target && e.target.id === 'global-show-raw-data') {
@@ -227,3 +237,45 @@ document.addEventListener('DOMContentLoaded', () => {
 
     initDropdowns();
 });
+
+// [START] LOG STREAMING FUNCTION (Required for automated updates)
+function startLogStream(buildId) {
+    const logOutput = document.getElementById('db-log-output');
+    if (!logOutput) return;
+
+    // Connect to the Flask EventSource route
+    const eventSource = new EventSource(`/api/db_log_stream?build_id=${buildId}`);
+
+    eventSource.onmessage = function(event) {
+        const message = event.data;
+
+        // Handle "Done" signal
+        if (message === '__DONE__') {
+            eventSource.close();
+            logOutput.innerHTML += '<div class="text-green-400 font-bold mt-2">➤ Update Complete.</div>';
+
+            // Refresh the page after a short delay
+            setTimeout(() => {
+                window.location.reload();
+            }, 1500);
+
+        }
+        // Handle Errors
+        else if (message.startsWith('ERROR:')) {
+            logOutput.innerHTML += `<div class="text-red-500 font-bold">➤ ${message}</div>`;
+            eventSource.close();
+        }
+        // Handle Normal Logs
+        else {
+            logOutput.innerHTML += `<div>➤ ${message}</div>`;
+            // Auto-scroll to bottom
+            logOutput.scrollTop = logOutput.scrollHeight;
+        }
+    };
+
+    eventSource.onerror = function() {
+        logOutput.innerHTML += '<div class="text-red-400">➤ Connection lost (Stream closed).</div>';
+        eventSource.close();
+    };
+}
+// [END] LOG STREAMING FUNCTION
