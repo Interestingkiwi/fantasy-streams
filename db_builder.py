@@ -773,9 +773,10 @@ def _update_daily_lineups(yq, cursor, conn, league_id, num_teams, league_start_d
         if force_full_history:
             logger.info("FORCE FULL HISTORY requested: Overwriting all data from league start.")
             start_date_for_fetch = league_start_date
-        elif is_full_mode or not last_fetch_date_str:
+        elif not last_fetch_date_str:
             start_date_for_fetch = league_start_date
             logger.info(f"Fetching full history from: {start_date_for_fetch}")
+
         else:
             last_fetch_date = date.fromisoformat(last_fetch_date_str)
             start_date_for_fetch = (last_fetch_date + timedelta(days=1)).isoformat()
@@ -1184,10 +1185,11 @@ def _update_rostered_players(lg, cursor, league_id, logger):
         VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING
     """, data)
 
-def _update_db_metadata(cursor, league_id, logger, update_available_players_timestamp=False):
+def _update_db_metadata(cursor, league_id, logger, update_available_players_timestamp=False, is_full_update=False):
     now = datetime.now()
     date_str = now.strftime("%Y-%m-%d")
     ts_str = now.strftime("%Y-%m-%d %H:%M:%S")
+
     data = []
     if update_available_players_timestamp:
         data = [
@@ -1195,10 +1197,14 @@ def _update_db_metadata(cursor, league_id, logger, update_available_players_time
             (league_id, 'available_players_last_updated_timestamp', ts_str)
         ]
     else:
+        # Standard Update Metadata
         data = [
             (league_id, 'last_updated_date', date_str),
             (league_id, 'last_updated_timestamp', ts_str)
         ]
+        # [NEW] Track Full Updates separately
+        if is_full_update:
+            data.append((league_id, 'last_full_updated_timestamp', ts_str))
 
     sql = """
         INSERT INTO db_metadata (league_id, key, value) VALUES (%s, %s, %s)
@@ -1215,11 +1221,14 @@ def update_league_db(yq, lg, league_id, logger, capture_lineups=False, roster_up
     league_metadata = yq.get_league_metadata()
     league_name = league_metadata.name.decode('utf-8', 'ignore') if isinstance(league_metadata.name, bytes) else league_metadata.name
 
-    # Use centralized DB connection
     with get_db_connection() as conn:
         with conn.cursor() as cursor:
             _create_tables(cursor, logger)
-            _update_db_metadata(cursor, league_id, logger)
+
+            # [MODIFIED] Pass the 'is_full_update' flag
+            # If roster_updates_only is FALSE, then it IS a full update.
+            _update_db_metadata(cursor, league_id, logger, is_full_update=(not roster_updates_only))
+
             _update_league_info(yq, cursor, league_id, league_name, league_metadata, logger)
 
             if not roster_updates_only:
@@ -1229,6 +1238,7 @@ def update_league_db(yq, lg, league_id, logger, capture_lineups=False, roster_up
                 _update_fantasy_weeks(yq, cursor, league_id, league_metadata.league_key, logger)
                 _update_league_matchups(yq, cursor, league_id, playoff_week, logger)
                 _update_league_transactions(yq, cursor, league_id, logger)
+                # Pass force_full_history down
                 _update_daily_lineups(yq, cursor, conn, league_id, league_metadata.num_teams, league_metadata.start_date, capture_lineups, logger, force_full_history=force_full_history)
 
             _update_current_rosters(yq, cursor, conn, league_id, league_metadata.num_teams, logger)

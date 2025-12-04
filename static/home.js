@@ -3,6 +3,36 @@ document.addEventListener('DOMContentLoaded', () => {
     const timestampText = document.getElementById('timestamp-text');
     const dropdownContainer = document.getElementById('dropdown-container');
 
+
+    if (window.autoUpdateInfo) {
+        const info = window.autoUpdateInfo;
+        const statusLog = document.getElementById('db-log-output'); // Assuming you have a log div
+        const statusContainer = document.getElementById('db-status-container'); // Container for the log area
+
+        if (info.status === 'queued') {
+            console.log("Automated update queued: " + info.job_id);
+
+            // 1. Open the log window/modal immediately
+            if (statusContainer) statusContainer.style.display = 'block';
+
+            // 2. Add initial message
+            if (statusLog) {
+                statusLog.innerHTML += `<div class="text-blue-400">➤ ${info.message}</div>`;
+                statusLog.innerHTML += `<div class="text-gray-400">➤ Connecting to live stream...</div>`;
+            }
+
+            // 3. Connect to stream using your existing logic
+            // Assuming you have a function like startLogStream(buildId) in db.js or home.js
+            if (typeof startLogStream === 'function') {
+                startLogStream(info.job_id);
+            }
+
+        } else if (info.status === 'fresh') {
+            console.log("Data is fresh.");
+            // Optional: Flash a small toast or append to log if visible
+            // showToast(info.message);
+        }
+    }
     // --- Event Delegation for Raw Data Toggle ---
     document.addEventListener('change', (e) => {
         if (e.target && e.target.id === 'global-show-raw-data') {

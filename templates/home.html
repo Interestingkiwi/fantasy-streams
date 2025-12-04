@@ -111,6 +111,12 @@
         <div id="page-content" class="bg-gray-800 border border-gray-700 rounded-lg p-4 min-h-[60vh]">
             </div>
     </div>
+    <script>
+        // Pass Python data to JS from Flask
+        // 'auto_update' is passed from app.py
+        // We use |tojson|safe to render it as a valid JS object
+        window.autoUpdateInfo = {{ auto_update | tojson | safe }};
+    </script>
 
     <script src="{{ url_for('static', filename='home.js') }}"></script>
 

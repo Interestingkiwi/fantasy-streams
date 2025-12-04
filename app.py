@@ -35,6 +35,7 @@ from database import get_db_connection
 import psycopg2.extras
 import tempfile
 import pandas as pd
+import pytz
 
 
 # --- Flask App Configuration ---
@@ -1090,11 +1091,80 @@ def index():
 
 def trigger_smart_update(league_id, user_guid):
     """
-    Triggers a High Priority update if the data is stale (controlled by worker).
-    """
-    try:
-        job_id = f"user_visit_{league_id}"
+    Triggers a High Priority update on login.
 
+    Returns a dictionary:
+    - {'status': 'fresh', 'message': ...} if data is < 15 mins old (skips update).
+    - {'status': 'queued', 'job_id': ..., 'message': ...} if update is queued.
+    - {'status': 'error', 'message': ...} on failure.
+    """
+    job_id = f"user_visit_{league_id}"
+    freshness_minutes = 15
+
+    try:
+        # Default settings
+        roster_updates_only = False
+
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                # --- QUERY 1: Fetch BOTH timestamps we need ---
+                cursor.execute("""
+                    SELECT key, value FROM db_metadata
+                    WHERE league_id = %s
+                    AND key IN ('last_updated_timestamp', 'last_full_updated_timestamp')
+                """, (league_id,))
+
+                # Convert list of rows [(key, val), ...] into a dict {'key': 'val'}
+                meta_map = {row[0]: row[1] for row in cursor.fetchall()}
+
+                # ---------------------------------------------------------
+                # CHECK 1: GENERAL FRESHNESS (Should we update at all?)
+                # ---------------------------------------------------------
+                last_updated_str = meta_map.get('last_updated_timestamp')
+
+                if last_updated_str:
+                    # Parse DB Timestamp (Format: "YYYY-MM-DD HH:MM:SS")
+                    last_ts = datetime.strptime(last_updated_str, "%Y-%m-%d %H:%M:%S")
+                    elapsed = datetime.now() - last_ts
+
+                    if elapsed < timedelta(minutes=freshness_minutes):
+                        # Data is fresh. RETURN IMMEDIATELY.
+                        logging.info(f"Smart Update: Data is fresh ({elapsed.seconds//60}m old). Skipping.")
+                        return {
+                             'status': 'fresh',
+                             'job_id': None,
+                             'message': f"Data is up to date (Updated {last_ts.strftime('%H:%M')}). Automated update skipped."
+                        }
+
+                # ---------------------------------------------------------
+                # CHECK 2: UPDATE TYPE (Full Run vs. Roster Only)
+                # ---------------------------------------------------------
+                last_full_str = meta_map.get('last_full_updated_timestamp')
+
+                if last_full_str:
+                    # 1. Parse Timestamp
+                    last_full_ts_naive = datetime.strptime(last_full_str, "%Y-%m-%d %H:%M:%S")
+                    last_full_ts_utc = pytz.utc.localize(last_full_ts_naive)
+
+                    # 2. Get "Start of Today" in Pacific Time
+                    pacific_tz = pytz.timezone('US/Pacific')
+                    now_pacific = datetime.now(pacific_tz)
+                    today_start_pacific = now_pacific.replace(hour=0, minute=0, second=0, microsecond=0)
+
+                    # 3. Compare
+                    last_run_pacific = last_full_ts_utc.astimezone(pacific_tz)
+
+                    if last_run_pacific >= today_start_pacific:
+                        logging.info(f"Smart Update: Full update ran today ({last_run_pacific.strftime('%H:%M')} PT). Switching to Roster Only.")
+                        roster_updates_only = True
+                    else:
+                        logging.info(f"Smart Update: No full update today. Queueing Full Run.")
+                else:
+                    logging.info("Smart Update: No history found. Queueing Full Run.")
+
+        # ---------------------------------------------------------
+        # ENQUEUE THE JOB
+        # ---------------------------------------------------------
         task_data = {
             'league_id': league_id,
             'token': {'xoauth_yahoo_guid': user_guid},
@@ -1102,34 +1172,48 @@ def trigger_smart_update(league_id, user_guid):
         }
 
         options = {
-            'capture_lineups': True,
-            'freshness_minutes': 15 # 15 Mins (If user visits, we want pretty fresh data)
+            'capture_lineups': True, # Always true unless manually disabled
+            'roster_updates_only': roster_updates_only, # Determined by Check 2
+            'freshness_minutes': freshness_minutes # Pass this to worker as a double-check
         }
 
-        # Enqueue to HIGH priority
         high_queue.enqueue(
             'db_builder.run_task',
             args=(job_id, None, options, task_data),
-            job_id=job_id, # Prevents duplicates if they spam refresh
+            job_id=job_id,
             job_timeout=1800,
-            result_ttl=60
+            result_ttl=300
         )
-        logging.info(f"Triggered smart update for {league_id} (High Priority)")
+
+        # Update global status for other API endpoints
+        global db_build_status
+        with db_build_status_lock:
+             db_build_status = {"running": True, "error": None, "current_build_id": job_id}
+
+        return {
+            'status': 'queued',
+            'job_id': job_id,
+            'message': "Automated update queued..."
+        }
+
     except Exception as e:
-        logging.error(f"Failed to trigger smart update: {e}")
+        logging.error(f"Failed to trigger smart update: {e}", exc_info=True)
+        return {'status': 'error', 'message': str(e)}
+
 
 @app.route('/home')
 def home():
     if 'yahoo_token' not in session:
         return redirect(url_for('index'))
 
-    # [NEW] Trigger the background update on visit
     league_id = session.get('league_id')
     guid = session['yahoo_token'].get('xoauth_yahoo_guid')
-    if league_id and guid:
-        trigger_smart_update(league_id, guid)
 
-    return render_template('home.html')
+    auto_update_info = None
+    if league_id and guid:
+        auto_update_info = trigger_smart_update(league_id, guid)
+
+    return render_template('home.html', auto_update=auto_update_info)
 
 @app.route('/login', methods=['POST'])
 def login():
