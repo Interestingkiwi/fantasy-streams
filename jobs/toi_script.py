@@ -536,6 +536,8 @@ def fetch_and_update_bangers_stats():
     except Exception as e: print(f"Error bangers: {e}")
 
 def fetch_and_update_faceoff_stats():
+#   API URL
+#    https://api.nhle.com/stats/rest/en/skater/faceoffwins?isAggregate=false&isGame=false&sort=%5B%7B%22property%22:%22totalFaceoffWins%22,%22direction%22:%22DESC%22%7D,%7B%22property%22:%22faceoffWinPct%22,%22direction%22:%22DESC%22%7D%5D&start=0&limit=50&cayenneExp=gameTypeId=2%20and%20seasonId=20252026
     print("Fetching Faceoffs...")
     season_id = "20252026"
     base_url = "https://api.nhle.com/stats/rest/en/skater/faceoffwins"

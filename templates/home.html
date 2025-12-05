@@ -75,7 +75,7 @@
                     <label for="dev-league-select" class="text-xs font-bold text-red-400 uppercase tracking-wider">Dev Switch:</label>
                     <select id="dev-league-select" class="bg-gray-800 text-white text-xs border border-gray-600 rounded px-2 py-1 focus:ring-red-500 focus:border-red-500">
                         {% for lid in dev_leagues %}
-                            <option value="{{ lid }}" {% if lid == session['league_id'] %}selected{% endif %}>
+                            <option value="{{ lid }}" {% if lid|string == session['league_id']|string %}selected{% endif %}>
                                 {{ lid }}
                             </option>
                         {% endfor %}
