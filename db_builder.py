@@ -78,7 +78,8 @@ def run_task(build_id, log_file_path, options, data):
         stream_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
         logger.addHandler(stream_handler)
 
-    # --- [UPDATED] FRESHNESS CHECK (UTC ENFORCED) ---
+    # --- [SECTION A] FRESHNESS CHECK (UTC ENFORCED) ---
+    # Checks if we have updated recently to prevent spamming Yahoo.
     freshness_minutes = options.get('freshness_minutes', 0)
     if freshness_minutes > 0:
         try:
@@ -91,7 +92,7 @@ def run_task(build_id, log_file_path, options, data):
                     row = cursor.fetchone()
 
                     if row and row[0]:
-                        # Parse the stored timestamp (Assumed UTC)
+                        # Parse stored timestamp (Assumed UTC)
                         last_ts = datetime.strptime(row[0], "%Y-%m-%d %H:%M:%S")
 
                         # Compare against current UTC time
@@ -99,27 +100,64 @@ def run_task(build_id, log_file_path, options, data):
                         elapsed = now_utc - last_ts
                         elapsed_minutes = int(elapsed.total_seconds() / 60)
 
-                        logger.info(f"Freshness Check: Last Update (UTC): {last_ts} | Now (UTC): {now_utc} | Elapsed: {elapsed_minutes} min | Threshold: {freshness_minutes} min")
-
                         if elapsed < timedelta(minutes=freshness_minutes):
-                            logger.info(f"SKIPPING: Data is fresh (Updated {elapsed_minutes} mins ago).")
+                            logger.info(f"SKIPPING: Data is fresh (Updated {elapsed_minutes} mins ago). Threshold: {freshness_minutes} mins.")
                             return
-                    else:
-                        logger.info("Freshness Check: No previous timestamp found. Proceeding with update.")
-
         except Exception as e:
             logger.warning(f"Freshness check failed, proceeding with update: {e}")
+
+    # --- [SECTION B] FULL vs ROSTER UPDATE LOGIC ---
+    # Determines if we need a full history scrape or just a quick roster update.
+    roster_updates_only = options.get('roster_updates_only', False)
+
+    # If a full update is requested (default), check if we already did one TODAY (Pacific Time)
+    if not roster_updates_only:
+        try:
+            with get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("""
+                        SELECT value FROM db_metadata
+                        WHERE league_id = %s AND key = 'last_full_updated_timestamp'
+                    """, (data['league_id'],))
+                    row = cursor.fetchone()
+
+                    if row and row[0]:
+                        # 1. Parse DB Timestamp (UTC)
+                        last_full_utc = datetime.strptime(row[0], "%Y-%m-%d %H:%M:%S")
+
+                        # 2. Define Timezones
+                        utc_tz = pytz.utc
+                        pacific_tz = pytz.timezone('US/Pacific')
+
+                        # 3. Convert Last Full Update to Pacific Time
+                        last_full_pt = utc_tz.localize(last_full_utc).astimezone(pacific_tz)
+
+                        # 4. Determine "Start of Today" in Pacific (12:00 AM)
+                        now_pt = datetime.now(pacific_tz)
+                        start_of_today_pt = now_pt.replace(hour=0, minute=0, second=0, microsecond=0)
+
+                        # 5. Compare
+                        if last_full_pt >= start_of_today_pt:
+                            logger.info(f"FULL Update already done today (Last: {last_full_pt.strftime('%H:%M')} PT). Switching to ROSTER ONLY.")
+                            roster_updates_only = True
+                        else:
+                            logger.info(f"First FULL update of the day (Last: {last_full_pt.strftime('%Y-%m-%d %H:%M')} PT).")
+                    else:
+                        logger.info("No previous full update found. Proceeding with FULL update.")
+
+        except Exception as e:
+            logger.warning(f"Could not verify last full update time: {e}. Proceeding as requested.")
+
     # ------------------------------------------------
 
     logger.info(f"Build task {build_id} starting for League {data['league_id']}...")
 
-    # ... (Rest of the function remains exactly the same as your original file)
     yq = None
     lg = None
 
     try:
         if not data.get('dev_mode'):
-            # --- STEP 1: FETCH CREDENTIALS FROM DB ---
+            # --- [SECTION C] AUTHENTICATION ---
             guid = data['token'].get('xoauth_yahoo_guid')
 
             db_creds = None
@@ -152,7 +190,7 @@ def run_task(build_id, log_file_path, options, data):
                     "xoauth_yahoo_guid": data['token'].get('xoauth_yahoo_guid')
                 }
 
-            # --- STEP 2: REFRESH TOKEN ---
+            # --- Refresh Token ---
             temp_dir = os.path.join(tempfile.gettempdir(), 'temp_creds')
             os.makedirs(temp_dir, exist_ok=True)
             temp_file_path = os.path.join(temp_dir, f"thread_{build_id}.json")
@@ -170,15 +208,14 @@ def run_task(build_id, log_file_path, options, data):
             if not sc.token_is_valid():
                  raise Exception("Token refresh failed. User may need to re-authenticate.")
 
-            # --- STEP 3: READ & FIX TOKEN ---
+            # --- Read & Fix Token ---
             with open(temp_file_path, 'r') as f:
                 new_creds = json.load(f)
 
-            # Inject 'guid' key for yfpy
             if 'guid' not in new_creds:
                 new_creds['guid'] = new_creds.get('xoauth_yahoo_guid') or guid
 
-            # --- STEP 4: SAVE TO DB ---
+            # --- Save to DB ---
             with get_db_connection() as conn:
                 with conn.cursor() as cursor:
                     cursor.execute("""
@@ -198,7 +235,7 @@ def run_task(build_id, log_file_path, options, data):
                 conn.commit()
             logger.info("Token refreshed and saved to DB.")
 
-            # --- STEP 5: INIT LIBRARIES ---
+            # --- Init Libraries ---
             logger.info("Initializing Yahoo APIs with fresh token...")
 
             yq = YahooFantasySportsQuery(
@@ -226,22 +263,22 @@ def run_task(build_id, log_file_path, options, data):
         logger.info(f"League ID: {data['league_id']}")
         logger.info(f"Build ID: {build_id}")
 
-        roster_updates_only = options.get('roster_updates_only', False)
-        force_full_history = options.get('force_full_history', False) # NEW FLAG
+        force_full_history = options.get('force_full_history', False)
 
         if roster_updates_only:
              logger.info("Mode: Roster Updates Only")
         else:
              logger.info(f"Mode: Standard Update (Capture Lineups: {options['capture_lineups']}, Force Full History: {force_full_history})")
 
+        # --- [SECTION D] EXECUTE UPDATE ---
         result = update_league_db(
             yq,
             lg,
             data['league_id'],
             logger,
             capture_lineups=options['capture_lineups'],
-            roster_updates_only=roster_updates_only,
-            force_full_history=force_full_history # Pass it down
+            roster_updates_only=roster_updates_only, # <--- Dynamically passed
+            force_full_history=force_full_history
         )
 
         if result and result.get('success'):
@@ -252,7 +289,7 @@ def run_task(build_id, log_file_path, options, data):
             with db_build_status_lock:
                 db_build_status["error"] = error_msg
 
-        # We only reach here if we actually attempted an update.
+        # --- [SECTION E] RATE LIMITING ---
         sleep_seconds = options.get('rate_limit_seconds', 0)
         if sleep_seconds > 0:
             logger.info(f"Rate Limiting: Sleeping for {sleep_seconds} seconds...")
@@ -1203,7 +1240,7 @@ def _update_rostered_players(lg, cursor, league_id, logger):
     """, data)
 
 def _update_db_metadata(cursor, league_id, logger, update_available_players_timestamp=False, is_full_update=False):
-    # Use UTC explicitly for consistency across different servers/workers
+    # Use UTC for consistency
     now = datetime.utcnow()
     date_str = now.strftime("%Y-%m-%d")
     ts_str = now.strftime("%Y-%m-%d %H:%M:%S")
@@ -1220,6 +1257,7 @@ def _update_db_metadata(cursor, league_id, logger, update_available_players_time
             (league_id, 'last_updated_date', date_str),
             (league_id, 'last_updated_timestamp', ts_str)
         ]
+        # [IMPORTANT] Record the Full Update Timestamp
         if is_full_update:
             data.append((league_id, 'last_full_updated_timestamp', ts_str))
 
