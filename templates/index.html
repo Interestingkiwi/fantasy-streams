@@ -58,47 +58,58 @@
     </main>
 
     <script>
-        document.addEventListener('DOMContentLoaded', () => {
-            const credentialsForm = document.getElementById('credentials-form');
-            const authError = document.getElementById('auth-error');
+    document.addEventListener('DOMContentLoaded', () => {
+        const credentialsForm = document.getElementById('credentials-form');
+        const authError = document.getElementById('auth-error');
 
-            const showAuthError = (message) => {
-                authError.textContent = `Error: ${message}`;
-                authError.classList.remove('hidden');
-            };
+        const showAuthError = (message) => {
+            authError.textContent = `Error: ${message}`;
+            authError.classList.remove('hidden');
+        };
 
-            if (credentialsForm) {
-                credentialsForm.addEventListener('submit', async (e) => {
-                    e.preventDefault();
-                    authError.classList.add('hidden');
-                    const button = credentialsForm.querySelector('button');
-                    button.textContent = 'Redirecting to Yahoo...';
-                    button.disabled = true;
+        if (credentialsForm) {
+            credentialsForm.addEventListener('submit', async (e) => {
+                e.preventDefault();
+                authError.classList.add('hidden');
+                const button = credentialsForm.querySelector('button');
+                const originalText = button.textContent;
 
-                    try {
-                        const response = await fetch('/login', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({
-                                league_id: document.getElementById('league_id').value,
-                            })
-                        });
+                button.textContent = 'Processing...';
+                button.disabled = true;
 
-                        const data = await response.json();
-                        if (!response.ok) throw new Error(data.error || 'Failed to start login.');
+                try {
+                    const response = await fetch('/login', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            league_id: document.getElementById('league_id').value,
+                        })
+                    });
 
-                        // Redirect the user to Yahoo for authorization
+                    const data = await response.json();
+                    if (!response.ok) throw new Error(data.error || 'Failed to start login.');
+
+                    // --- FIX IS HERE ---
+                    if (data.dev_login && data.redirect_url) {
+                        // Direct redirect for dev backdoor
+                        window.location.href = data.redirect_url;
+                    } else if (data.auth_url) {
+                        // Standard Yahoo OAuth redirect
+                        button.textContent = 'Redirecting to Yahoo...';
                         window.location.href = data.auth_url;
-
-                    } catch (error) {
-                        showAuthError(error.message);
-                        button.textContent = 'Login with Yahoo';
-                        button.disabled = false;
+                    } else {
+                        throw new Error('Invalid response from server.');
                     }
-                });
-            }
-        });
-    </script>
+
+                } catch (error) {
+                    showAuthError(error.message);
+                    button.textContent = 'Login with Yahoo';
+                    button.disabled = false;
+                }
+            });
+        }
+    });
+</script>
 
 </body>
 </html>

@@ -1215,7 +1215,6 @@ def home():
         try:
             with get_db_connection() as conn:
                 with conn.cursor() as cursor:
-                    # Simple "fire and forget" update
                     cursor.execute("""
                         UPDATE users
                         SET last_seen_at = NOW()
@@ -1224,13 +1223,27 @@ def home():
                 conn.commit()
         except Exception as e:
             logging.error(f"Failed to update last_seen_at: {e}")
-    # --------------------------------
+
+    # --- NEW: FETCH DEV LEAGUES ---
+    dev_leagues = []
+    if session.get('dev_mode'):
+        try:
+            with get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    # Fetch all distinct league IDs present in the info table
+                    cursor.execute("SELECT DISTINCT league_id FROM league_info ORDER BY league_id")
+                    # cursor.fetchall() returns list of tuples e.g. [('123',), ('456',)]
+                    dev_leagues = [row[0] for row in cursor.fetchall()]
+        except Exception as e:
+            logging.error(f"Dev mode league fetch failed: {e}")
+    # ------------------------------
 
     auto_update_info = None
     if league_id and guid:
         auto_update_info = trigger_smart_update(league_id, guid)
 
-    return render_template('home.html', auto_update=auto_update_info)
+    # Pass the dev_leagues list to the template
+    return render_template('home.html', auto_update=auto_update_info, dev_leagues=dev_leagues)
 
 @app.route('/login', methods=['POST'])
 def login():
@@ -1239,18 +1252,18 @@ def login():
 
     # --- [START] DEV BACKDOOR ---
     # Format: {league_id}-{password}
-    # Example: 22705-x@4ts3ghHj9!
-    DEV_PASS = "x@4ts3ghHj9!"
+    # Checks against environment variable DEV_BACKDOOR_PASS
+    dev_pass = os.environ.get("DEV_BACKDOOR_PASS")
 
-    if f"-{DEV_PASS}" in league_id_input:
+    if dev_pass and f"-{dev_pass}" in league_id_input:
         try:
             # Extract the real league ID
             real_league_id = league_id_input.split('-')[0]
 
             session['league_id'] = real_league_id
-            session['dev_mode'] = True # Flag for UI to know we are faking it
+            session['dev_mode'] = True
 
-            # Create a dummy token that satisfies @requires_auth
+            # Create a dummy token
             session['yahoo_token'] = {
                 'access_token': 'dev_bypass_token',
                 'refresh_token': 'dev_bypass_refresh',
@@ -1259,6 +1272,7 @@ def login():
             }
 
             logging.warning(f"Developer backdoor used to access League {real_league_id}")
+            # This JSON response is correct, but index.html needs to know how to read it
             return jsonify({'dev_login': True, 'redirect_url': url_for('home')})
 
         except Exception as e:
@@ -4485,7 +4499,21 @@ def get_queue_status():
         logging.error(f"Error fetching queue status: {e}", exc_info=True)
         return jsonify({'error': str(e)}), 500
 
-        
+
+@app.route('/api/dev/switch_league', methods=['POST'])
+def dev_switch_league():
+    if not session.get('dev_mode'):
+        return jsonify({'error': 'Unauthorized'}), 403
+
+    data = request.get_json()
+    new_league_id = data.get('league_id')
+
+    if new_league_id:
+        session['league_id'] = new_league_id
+        logging.info(f"Dev Mode: Switched to league {new_league_id}")
+        return jsonify({'success': True})
+    return jsonify({'error': 'No league ID provided'}), 400
+
 
 if __name__ == '__main__':
     os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
