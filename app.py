@@ -1239,7 +1239,7 @@ def home():
     # ------------------------------
 
     auto_update_info = None
-    if league_id and guid:
+    if league_id and guid and not session.get('dev_mode'):
         auto_update_info = trigger_smart_update(league_id, guid)
 
     # Pass the dev_leagues list to the template
