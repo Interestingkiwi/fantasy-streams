@@ -65,9 +65,63 @@
                 </div>
             </div>
 
-            <button id="logout-button" class="bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-4 rounded-lg transition duration-300 ease-in-out">
-                Logout
-            </button>
+            <div class="flex flex-col gap-2 items-end">
+                <button id="logout-button" class="bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-4 rounded-lg transition duration-300 ease-in-out">
+                    Logout
+                </button>
+
+                {% if session.get('dev_mode') and dev_leagues %}
+                <div class="flex items-center gap-2 mt-2 bg-red-900/30 p-2 rounded border border-red-500/50">
+                    <label for="dev-league-select" class="text-xs font-bold text-red-400 uppercase tracking-wider">Dev Switch:</label>
+                    <select id="dev-league-select" class="bg-gray-800 text-white text-xs border border-gray-600 rounded px-2 py-1 focus:ring-red-500 focus:border-red-500">
+                        {% for lid in dev_leagues %}
+                            <option value="{{ lid }}" {% if lid == session['league_id'] %}selected{% endif %}>
+                                {{ lid }}
+                            </option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <script>
+                    // Inline script to handle the Dev Switch logic
+                    document.addEventListener('DOMContentLoaded', () => {
+                        const devSelect = document.getElementById('dev-league-select');
+
+                        if (devSelect) {
+                            devSelect.addEventListener('change', async (e) => {
+                                const newLeagueId = e.target.value;
+
+                                // Disable to prevent multiple clicks
+                                devSelect.disabled = true;
+                                devSelect.classList.add('opacity-50');
+
+                                try {
+                                    const response = await fetch('/api/dev/switch_league', {
+                                        method: 'POST',
+                                        headers: {
+                                            'Content-Type': 'application/json'
+                                        },
+                                        body: JSON.stringify({ league_id: newLeagueId })
+                                    });
+
+                                    if (response.ok) {
+                                        // Reload page to refresh data context
+                                        window.location.reload();
+                                    } else {
+                                        alert('Failed to switch league.');
+                                        devSelect.disabled = false;
+                                        devSelect.classList.remove('opacity-50');
+                                    }
+                                } catch (err) {
+                                    console.error('Dev switch error:', err);
+                                    alert('Error switching league.');
+                                    devSelect.disabled = false;
+                                }
+                            });
+                        }
+                    });
+                </script>
+                {% endif %}
+            </div>
         </div>
 
         <div id="toggle-buttons-container" class="flex items-center gap-2 mb-4">
