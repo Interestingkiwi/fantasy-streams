@@ -16,6 +16,8 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from database import get_db_connection
 from datetime import datetime
 
+
+
 # Basic config
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -25,7 +27,25 @@ redis_url = os.getenv('REDIS_URL', 'redis://red-d4ae0rur433s73eil750:6379')
 conn = redis.from_url(redis_url)
 
 # Define Queues
+high_queue = Queue('high', connection=conn)
 low_queue = Queue('low', connection=conn)
+
+def queue_global_update_job():
+    """
+    Instead of running the heavy update here, we just tell
+    the High Queue to pick it up.
+    """
+    try:
+        # We pass the string path to the function so the worker can import it
+        high_queue.enqueue(
+            'jobs.global_update.update_global_data',
+            job_timeout=3600,  # Give it 1 hour to run
+            result_ttl=86400   # Keep result for 24 hours
+        )
+        logger.info("Enqueued Global Update to High Priority Queue.")
+    except Exception as e:
+        logger.error(f"Failed to enqueue Global Update: {e}")
+
 
 def process_subscription_expirations():
     """Checks for expired premium subscriptions and downgrades them."""
@@ -86,7 +106,7 @@ def run_league_updates(target_league_id=None, force_full_history=False):
             'freshness_minutes': 240,
 
             # TELL THE WORKER: "After you finish this job, sleep for 1.5 mins."
-            'rate_limit_seconds': 90
+            'rate_limit_seconds': 61
         }
 
         try:
@@ -107,10 +127,10 @@ def start_scheduler():
     logger.info("Initializing scheduler...")
     scheduler = BackgroundScheduler(timezone="UTC")
 
-    # Global data update
-    scheduler.add_job(update_global_data, trigger='cron', hour=10, minute=0)
+    # 3. Schedule the TRIGGER, not the job itself
+    scheduler.add_job(queue_global_update_job, trigger='cron', hour=10, minute=5)
 
-    # League updates (Runs every hour, but freshness check prevents over-updating)
+    # League updates
     scheduler.add_job(run_league_updates, trigger='cron', hour='*/1', minute=0)
 
     scheduler.start()

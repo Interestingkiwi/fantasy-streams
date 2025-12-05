@@ -4440,7 +4440,52 @@ def download_debug_dump(filename):
         logging.error(f"Error retrieving debug dump {filename}: {e}", exc_info=True)
         return jsonify({'error': f"Database error: {e}"}), 500
 
+@app.route('/api/admin/queues')
+def get_queue_status():
+    # 1. Security Check (Optional: restrict to specific admins)
+    if 'yahoo_token' not in session:
+        return jsonify({'error': 'Unauthorized'}), 401
 
+    # 2. Define Queues to Inspect
+    # Ensure you look at all queues your worker listens to
+    queues_to_check = ['high', 'low', 'default']
+    queue_data = {}
+
+    try:
+        for q_name in queues_to_check:
+            # Re-use existing redis_conn from app.py
+            q = Queue(q_name, connection=redis_conn)
+
+            # Fetch jobs (limit to first 50 to prevent huge JSON responses)
+            jobs = q.get_jobs(offset=0, length=50)
+
+            job_list = []
+            for job in jobs:
+                job_list.append({
+                    'id': job.id,
+                    'status': job.get_status(),
+                    'created_at': str(job.created_at),
+                    'enqueued_at': str(job.enqueued_at),
+                    'func_name': job.func_name,
+                    'args': str(job.args) # Optional: see what arguments were passed
+                })
+
+            queue_data[q_name] = {
+                'count': q.count, # Total number of jobs in queue
+                'jobs': job_list
+            }
+
+        return jsonify({
+            'success': True,
+            'timestamp': int(time.time()),
+            'queues': queue_data
+        })
+
+    except Exception as e:
+        logging.error(f"Error fetching queue status: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+        
 
 if __name__ == '__main__':
     os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
