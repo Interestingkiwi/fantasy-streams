@@ -3156,7 +3156,7 @@ def get_trade_helper_league_roster_data():
                             player['alt_lines'] = l_data.get('alt_lines')
                             player['pp_line'] = l_data.get('pp_line')
                             player['timeonice'] = l_data.get('timeonice')
-                _enrich_goalie_data(cursor, players)
+                _enrich_goalie_data(cursor, all_players)
                 return jsonify({
                     'players': all_players,
                     'skater_categories': skater_categories,
@@ -3808,7 +3808,7 @@ def get_roster_data():
                     player['starts_this_week'] = player_starts_counter.get(player.get('player_id'), 0)
 
                 unused_roster_spots = _calculate_unused_spots(days_in_week, base_roster_players, lineup_settings, simulated_moves)
-                _enrich_goalie_data(cursor, players)
+                _enrich_goalie_data(cursor, all_players)
                 return jsonify({
                     'players': all_players,
                     'daily_optimal_lineups': daily_optimal_lineups,
