@@ -424,116 +424,122 @@
         }
 
         function renderPlayerTable(title, players, container, tableType, categories, shouldCap = false) {
-            const showRaw = localStorage.getItem('showRawData') === 'true';
-            if (!players) { container.innerHTML = `<h3 class="text-xl font-bold text-white mb-2">${title}</h3><p class="text-gray-400">No players found.</p>`; return; }
-            const playersToDisplay = shouldCap ? players.slice(0, 100) : players;
-            const totalColumns = 9 + categories.length;
+        const showRaw = localStorage.getItem('showRawData') === 'true';
+        if (!players) { container.innerHTML = `<h3 class="text-xl font-bold text-white mb-2">${title}</h3><p class="text-gray-400">No players found.</p>`; return; }
+        const playersToDisplay = shouldCap ? players.slice(0, 100) : players;
+        const totalColumns = 9 + categories.length;
 
-            let tableHtml = `
-                <div class="bg-gray-900 rounded-lg shadow mb-8">
-                    <h3 class="text-xl font-bold text-white p-4 bg-gray-800 rounded-t-lg flex justify-between items-center">${title} <span class="text-sm font-normal text-gray-400">${players.length} players</span></h3>
-                    <div class="overflow-x-auto">
-                        <table class="min-w-full divide-y divide-gray-700">
-                            <thead class="bg-gray-700/50">
-                                <tr>
-                                    <th class="px-2 py-2 text-left text-xs font-bold text-gray-300 uppercase tracking-wider">Add</th>
-                                    <th class="px-2 py-2 text-left text-xs font-bold text-gray-300 uppercase tracking-wider sortable" data-sort-key="player_name" data-table-type="${tableType}">Player Name</th>
-                                    <th class="px-2 py-2 text-left text-xs font-bold text-gray-300 uppercase tracking-wider">Team</th>
-                                    <th class="px-2 py-2 text-left text-xs font-bold text-gray-300 uppercase tracking-wider">Positions</th>
-                                    <th class="px-2 py-2 text-left text-xs font-bold text-gray-300 uppercase tracking-wider">This Week</th>
-                                    <th class="px-2 py-2 text-left text-xs font-bold text-gray-300 uppercase tracking-wider">Opponents</th>
-                                    <th class="px-2 py-2 text-left text-xs font-bold text-gray-300 uppercase tracking-wider">Next Week</th>
-                                    <th class="px-2 py-2 text-left text-xs font-bold text-gray-300 uppercase tracking-wider">PP Utilization<span class="text-xs text-gray-400 font-light block">(Click)</span></th>
-                                    <th class="px-2 py-2 text-left text-xs font-bold text-gray-300 uppercase tracking-wider sortable" data-sort-key="total_cat_rank" data-table-type="${tableType}">Total Cat Rank</th>
-            `;
-            categories.forEach(cat => {
-                const isChecked = checkedCategories.includes(cat);
-                tableHtml += `<th class="px-2 py-2 text-center text-xs font-bold text-gray-300 uppercase tracking-wider sortable" data-sort-key="${cat}_cat_rank" data-table-type="${tableType}">${isChecked ? cat : cat + '*'}</th>`;
-            });
-            tableHtml += `</tr><tr><td colspan="${totalColumns}" class="text-center text-xs text-gray-500 py-1">Click headers to sort</td></tr></thead><tbody class="bg-gray-800 divide-y divide-gray-700">`;
+        let tableHtml = `
+            <div class="bg-gray-900 rounded-lg shadow mb-8">
+                <h3 class="text-xl font-bold text-white p-4 bg-gray-800 rounded-t-lg flex justify-between items-center">${title} <span class="text-sm font-normal text-gray-400">${players.length} players</span></h3>
+                <div class="overflow-x-auto">
+                    <table class="min-w-full divide-y divide-gray-700">
+                        <thead class="bg-gray-700/50">
+                            <tr>
+                                <th class="px-2 py-2 text-left text-xs font-bold text-gray-300 uppercase tracking-wider">Add</th>
+                                <th class="px-2 py-2 text-left text-xs font-bold text-gray-300 uppercase tracking-wider sortable" data-sort-key="player_name" data-table-type="${tableType}">Player Name</th>
+                                <th class="px-2 py-2 text-left text-xs font-bold text-gray-300 uppercase tracking-wider">Team</th>
+                                <th class="px-2 py-2 text-left text-xs font-bold text-gray-300 uppercase tracking-wider">Positions</th>
+                                <th class="px-2 py-2 text-left text-xs font-bold text-gray-300 uppercase tracking-wider">This Week</th>
+                                <th class="px-2 py-2 text-left text-xs font-bold text-gray-300 uppercase tracking-wider">Opponents</th>
+                                <th class="px-2 py-2 text-left text-xs font-bold text-gray-300 uppercase tracking-wider">Next Week</th>
+                                <th class="px-2 py-2 text-left text-xs font-bold text-gray-300 uppercase tracking-wider">PP Utilization<span class="text-xs text-gray-400 font-light block">(Click)</span></th>
+                                <th class="px-2 py-2 text-left text-xs font-bold text-gray-300 uppercase tracking-wider sortable" data-sort-key="total_cat_rank" data-table-type="${tableType}">Total Cat Rank</th>
+        `;
+        categories.forEach(cat => {
+            const isChecked = checkedCategories.includes(cat);
+            tableHtml += `<th class="px-2 py-2 text-center text-xs font-bold text-gray-300 uppercase tracking-wider sortable" data-sort-key="${cat}_cat_rank" data-table-type="${tableType}">${isChecked ? cat : cat + '*'}</th>`;
+        });
+        tableHtml += `</tr><tr><td colspan="${totalColumns}" class="text-center text-xs text-gray-500 py-1">Click headers to sort</td></tr></thead><tbody class="bg-gray-800 divide-y divide-gray-700">`;
 
-            if (playersToDisplay.length === 0) {
-                tableHtml += `<tr><td colspan="${totalColumns}" class="text-center py-4 text-gray-400">No players match the current filter.</td></tr>`;
-            } else {
-                playersToDisplay.forEach(player => {
-                    // --- [FIX] Check for added_player before accessing player_id ---
-                    const isAlreadyAdded = simulatedMoves.some(m => m.added_player && m.added_player.player_id === player.player_id);
-                    // --- [END FIX] ---
-                    const checkboxDisabled = isAlreadyAdded ? 'disabled' : '';
-                    const statusHtml = player.status ? ` <a href="https://sports.yahoo.com/nhl/players/${player.player_id}/news/" target="_blank" rel="noopener noreferrer" class="text-red-400 ml-1 hover:text-red-300 hover:underline">(${player.status})</a>` : '';
+        if (playersToDisplay.length === 0) {
+            tableHtml += `<tr><td colspan="${totalColumns}" class="text-center py-4 text-gray-400">No players match the current filter.</td></tr>`;
+        } else {
+            playersToDisplay.forEach(player => {
+                const isAlreadyAdded = simulatedMoves.some(m => m.added_player && m.added_player.player_id === player.player_id);
+                const checkboxDisabled = isAlreadyAdded ? 'disabled' : '';
+                const statusHtml = player.status ? ` <a href="https://sports.yahoo.com/nhl/players/${player.player_id}/news/" target="_blank" rel="noopener noreferrer" class="text-red-400 ml-1 hover:text-red-300 hover:underline">(${player.status})</a>` : '';
 
-                    // Logic for Games This Week (highlighting available spots)
-                    const playerPositions = player.positions ? player.positions.split(',') : [];
-                    const gamesThisWeek = player.games_this_week || [];
-                    let gamesThisWeekHtml = gamesThisWeek.map(day => {
-                        if (!currentUnusedSpots || !currentUnusedSpots[day]) return day;
-                        for (const pos of playerPositions) {
-                            if (String(currentUnusedSpots[day][pos.trim()] || 0) !== '0') return `<strong class="text-yellow-300">${day}</strong>`;
-                        }
-                        return day;
-                    }).join(', ');
+                // --- LINE INFO PILL LOGIC ---
+                // Shows "L# | PP#" (e.g. "L1 | PP1" or "L2 | N/A")
+                const lineVal = player.line_number ? `L${player.line_number}` : 'N/A';
+                const ppVal = player.pp_unit ? `${player.pp_unit}` : 'N/A';
+                const pillHtml = `
+                    <span class="ml-2 px-2 py-0.5 rounded text-[10px] font-bold bg-red-900 text-red-200 border border-red-700 cursor-pointer hover:bg-red-800 line-info-pill"
+                          data-player-id="${player.player_id}">
+                        ${lineVal} | ${ppVal}
+                    </span>`;
+                // ----------------------------
 
-                    const opponentsList = (player.opponents_list || []).join(', ');
-                    const opponentStatsJson = JSON.stringify(player.opponent_stats_this_week || []);
-                    const isGoalie = (player.positions || '').includes('G');
+                const playerPositions = player.positions ? player.positions.split(',') : [];
+                const gamesThisWeek = player.games_this_week || [];
+                let gamesThisWeekHtml = gamesThisWeek.map(day => {
+                    if (!currentUnusedSpots || !currentUnusedSpots[day]) return day;
+                    for (const pos of playerPositions) {
+                        if (String(currentUnusedSpots[day][pos.trim()] || 0) !== '0') return `<strong class="text-yellow-300">${day}</strong>`;
+                    }
+                    return day;
+                }).join(', ');
 
-                    // --- NEW: Clickable Cat Rank ---
-                    tableHtml += `
-                        <tr class="hover:bg-gray-700/50">
-                            <td class="px-2 py-2 whitespace-nowrap text-sm text-center"><input type="checkbox" name="player-to-add" class="h-4 w-4 bg-gray-700 border-gray-600 text-indigo-600 focus:ring-indigo-500 rounded" value="${player.player_id}" data-table="${tableType}" ${checkboxDisabled}></td>
-                            <td class="px-2 py-2 whitespace-nowrap text-sm font-medium text-gray-300">${player.player_name}${statusHtml}</td>
-                            <td class="px-2 py-2 whitespace-nowrap text-sm text-gray-300">${player.player_team}</td>
-                            <td class="px-2 py-2 whitespace-nowrap text-sm text-gray-300">${player.positions}</td>
-                            <td class="px-2 py-2 whitespace-nowrap text-sm text-gray-300">${gamesThisWeekHtml}</td>
-                            <td class="px-2 py-2 whitespace-nowrap text-sm text-gray-300 cursor-pointer hover:bg-gray-700 opponent-stats-cell" data-player-name="${player.player_name}" data-is-goalie="${isGoalie}" data-opponent-stats='${opponentStatsJson}'>${opponentsList}</td>
-                            <td class="px-2 py-2 whitespace-nowrap text-sm text-gray-300">${(player.games_next_week || []).join(', ')}</td>
-                            <td class="px-2 py-2 whitespace-nowrap text-sm text-gray-300 cursor-pointer hover:bg-gray-700 pp-util-cell" data-player-name="${player.player_name}" data-avg-pp-pct="${player.avg_ppTimeOnIcePctPerGame}" data-lg-pp-toi="${player.lg_ppTimeOnIce}" data-lg-pp-pct="${player.lg_ppTimeOnIcePctPerGame}" data-lg-ppa="${player.lg_ppAssists}" data-lg-ppg="${player.lg_ppGoals}" data-lw-pp-toi="${player.avg_ppTimeOnIce}" data-lw-pp-pct="${player.avg_ppTimeOnIcePctPerGame}" data-lw-ppa="${player.total_ppAssists}" data-lw-ppg="${player.total_ppGoals}" data-lw-gp="${player.team_games_played}">${formatPercentage(player.avg_ppTimeOnIcePctPerGame)}</td>
+                const opponentsList = (player.opponents_list || []).join(', ');
+                const opponentStatsJson = JSON.stringify(player.opponent_stats_this_week || []);
+                const isGoalie = (player.positions || '').includes('G');
 
-                            <td class="px-2 py-2 whitespace-nowrap text-sm font-bold text-blue-400 cursor-pointer hover:text-blue-300 cat-rank-cell" data-player-id="${player.player_id}">${player.total_cat_rank}</td>
-                    `;
+                tableHtml += `
+                    <tr class="hover:bg-gray-700/50">
+                        <td class="px-2 py-2 whitespace-nowrap text-sm text-center"><input type="checkbox" name="player-to-add" class="h-4 w-4 bg-gray-700 border-gray-600 text-indigo-600 focus:ring-indigo-500 rounded" value="${player.player_id}" data-table="${tableType}" ${checkboxDisabled}></td>
+                        <td class="px-2 py-2 whitespace-nowrap text-sm font-medium text-gray-300 flex items-center">
+                            ${player.player_name}${statusHtml}
+                            ${pillHtml}
+                        </td>
+                        <td class="px-2 py-2 whitespace-nowrap text-sm text-gray-300">${player.player_team}</td>
+                        <td class="px-2 py-2 whitespace-nowrap text-sm text-gray-300">${player.positions}</td>
+                        <td class="px-2 py-2 whitespace-nowrap text-sm text-gray-300">${gamesThisWeekHtml}</td>
+                        <td class="px-2 py-2 whitespace-nowrap text-sm text-gray-300 cursor-pointer hover:bg-gray-700 opponent-stats-cell" data-player-name="${player.player_name}" data-is-goalie="${isGoalie}" data-opponent-stats='${opponentStatsJson}'>${opponentsList}</td>
+                        <td class="px-2 py-2 whitespace-nowrap text-sm text-gray-300">${(player.games_next_week || []).join(', ')}</td>
+                        <td class="px-2 py-2 whitespace-nowrap text-sm text-gray-300 cursor-pointer hover:bg-gray-700 pp-util-cell" data-player-name="${player.player_name}" data-avg-pp-pct="${player.avg_ppTimeOnIcePctPerGame}" data-lg-pp-toi="${player.lg_ppTimeOnIce}" data-lg-pp-pct="${player.lg_ppTimeOnIcePctPerGame}" data-lg-ppa="${player.lg_ppAssists}" data-lg-ppg="${player.lg_ppGoals}" data-lw-pp-toi="${player.avg_ppTimeOnIce}" data-lw-pp-pct="${player.avg_ppTimeOnIcePctPerGame}" data-lw-ppa="${player.total_ppAssists}" data-lw-ppg="${player.total_ppGoals}" data-lw-gp="${player.team_games_played}">${formatPercentage(player.avg_ppTimeOnIcePctPerGame)}</td>
 
-                    // --- MODIFIED: Use rank color in both Raw and Rank views ---
-                    (categories || []).forEach(cat => {
-                        const rank = player[`${cat}_cat_rank`];
-                        const heatColor = getHeatmapColor(rank);
-                        let displayValue = '-';
+                        <td class="px-2 py-2 whitespace-nowrap text-sm font-bold text-blue-400 cursor-pointer hover:text-blue-300 cat-rank-cell" data-player-id="${player.player_id}">${player.total_cat_rank}</td>
+                `;
 
-                        if (showRaw) {
-                            const val = player[cat];
-                            displayValue = (val != null && !isNaN(val)) ? parseFloat(val).toFixed(2).replace(/[.,]00$/, "") : (val || '-');
-                        } else {
-                            displayValue = (rank != null) ? rank.toFixed(2) : '-';
-                        }
+                (categories || []).forEach(cat => {
+                    const rank = player[`${cat}_cat_rank`];
+                    const heatColor = getHeatmapColor(rank);
+                    let displayValue = '-';
 
-                        let cellStyle = '';
-                        let cellClass = 'px-2 py-1 whitespace-nowrap text-sm text-center font-semibold';
+                    if (showRaw) {
+                        const val = player[cat];
+                        displayValue = (val != null && !isNaN(val)) ? parseFloat(val).toFixed(2).replace(/[.,]00$/, "") : (val || '-');
+                    } else {
+                        displayValue = (rank != null) ? rank.toFixed(2) : '-';
+                    }
 
-                        if (heatColor) {
-                            // Apply heat color with dark text for contrast
-                            cellStyle = `background-color: ${heatColor}; color: #1f2937; font-weight: 600;`;
-                        } else {
-                            // Default gray text if no rank available
-                            cellClass += ' text-gray-400';
-                        }
+                    let cellStyle = '';
+                    let cellClass = 'px-2 py-1 whitespace-nowrap text-sm text-center font-semibold';
 
-                        tableHtml += `<td class="${cellClass}" style="${cellStyle}">${displayValue}</td>`;
-                    });
-                    // --- END MODIFICATION ---
+                    if (heatColor) {
+                        cellStyle = `background-color: ${heatColor}; color: #1f2937; font-weight: 600;`;
+                    } else {
+                        cellClass += ' text-gray-400';
+                    }
 
-                    tableHtml += `</tr>`;
+                    tableHtml += `<td class="${cellClass}" style="${cellStyle}">${displayValue}</td>`;
                 });
-            }
-            tableHtml += `</tbody></table></div></div>`;
-            container.innerHTML = tableHtml;
 
-            // Re-attach Sort Listeners
-            document.querySelectorAll(`[data-table-type="${tableType}"].sortable`).forEach(header => {
-                header.classList.remove('sort-asc', 'sort-desc');
-                if (header.dataset.sortKey === sortConfig[tableType].key) header.classList.add(sortConfig[tableType].direction === 'ascending' ? 'sort-desc' : 'sort-asc');
-                header.removeEventListener('click', handleSortClick);
-                header.addEventListener('click', handleSortClick);
+                tableHtml += `</tr>`;
             });
         }
+        tableHtml += `</tbody></table></div></div>`;
+        container.innerHTML = tableHtml;
+
+        // Re-attach Sort Listeners
+        document.querySelectorAll(`[data-table-type="${tableType}"].sortable`).forEach(header => {
+            header.classList.remove('sort-asc', 'sort-desc');
+            if (header.dataset.sortKey === sortConfig[tableType].key) header.classList.add(sortConfig[tableType].direction === 'ascending' ? 'sort-desc' : 'sort-asc');
+            header.removeEventListener('click', handleSortClick);
+            header.addEventListener('click', handleSortClick);
+        });
+    }
 
 
     function handleSortClick(e) {
@@ -735,7 +741,7 @@
 
         const masterOrder = ['C', 'LW', 'RW', 'F', 'W', 'D', 'Util', 'G'];
         const positionOrder = masterOrder.filter(pos => availablePositions.includes(pos));
-        
+
         let tableHtml = `
             <div class="bg-gray-900 rounded-lg shadow">
                 <h2 class="text-xl font-bold text-white p-3 bg-gray-800 rounded-t-lg">Unused Roster Spots</h2>
@@ -785,7 +791,16 @@
             if (ppCell) { /* ... (PP logic handled above) ... */ }
             const oppCell = e.target.closest('.opponent-stats-cell');
             if (oppCell) { /* ... (Opp logic handled above) ... */ }
-
+            const pill = e.target.closest('.line-info-pill');
+            if (pill && window.openLineInfoModal) {
+                const pid = String(pill.dataset.playerId);
+                // Search both arrays since we don't know which table triggered it
+                const player = [...allWaiverPlayers, ...allFreeAgents].find(p => String(p.player_id) === pid);
+                if (player) {
+                    window.openLineInfoModal(player);
+                }
+                return;
+            }
             // --- [NEW] Cat Rank Logic ---
             const rankCell = e.target.closest('.cat-rank-cell');
             if (rankCell && window.openCatRankModal) {

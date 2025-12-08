@@ -69,7 +69,15 @@
                 document.getElementById('pp-stats-modal').classList.remove('hidden');
                 return;
             }
-
+            const pill = e.target.closest('.line-info-pill');
+            if (pill && window.openLineInfoModal && currentRosterData) {
+                const pid = String(pill.dataset.playerId);
+                const player = currentRosterData.players.find(p => String(p.player_id) === pid);
+                if (player) {
+                    window.openLineInfoModal(player);
+                }
+                return;
+            }
             // 2. Opponent Stats Cell
             const oppCell = e.target.closest('.opponent-stats-cell');
             if (oppCell) {
@@ -305,6 +313,16 @@
             const gamesThisWeekHtml = (player.games_this_week || []).map(day => (playerStartsByDay[player.player_name]?.has(day) ? `<strong class="text-yellow-300">${day}</strong>` : day)).join(', ');
             const statusHtml = (player.status && player.status !== 'FA') ? `<span class="text-red-400 ml-1">(${player.status})</span>` : '';
 
+            // --- LINE INFO PILL ---
+            const lineVal = player.line_number ? `L${player.line_number}` : 'N/A';
+            const ppVal = player.pp_unit ? `${player.pp_unit}` : 'N/A';
+            const pillHtml = `
+                <span class="ml-2 px-2 py-0.5 rounded text-[10px] font-bold bg-red-900 text-red-200 border border-red-700 cursor-pointer hover:bg-red-800 line-info-pill"
+                      data-player-id="${player.player_id}">
+                    ${lineVal} | ${ppVal}
+                </span>`;
+            // ----------------------
+
             const opponentsList = (player.opponents_list || []).join(', ');
             const opponentStatsJson = JSON.stringify(player.opponent_stats_this_week || []);
             const isGoalie = (player.eligible_positions || player.positions || '').includes('G');
@@ -317,7 +335,10 @@
 
             tableHtml += `
                 <tr class="hover:bg-gray-700/50">
-                    <td class="px-2 py-1 text-sm font-medium text-gray-300">${player.player_name}${statusHtml}</td>
+                    <td class="px-2 py-1 text-sm font-medium text-gray-300 flex items-center">
+                        ${player.player_name}${statusHtml}
+                        ${pillHtml}
+                    </td>
                     <td class="px-2 py-1 text-sm text-gray-300">${player.team || player.player_team}</td>
                     <td class="px-2 py-1 text-sm text-gray-300">${player.eligible_positions}</td>
                     <td class="px-2 py-1 text-sm text-gray-300">${gamesThisWeekHtml}</td>

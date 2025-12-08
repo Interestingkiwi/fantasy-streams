@@ -720,6 +720,7 @@ def _get_ranked_players(cursor, player_ids, cat_rank_columns, raw_stat_columns, 
     """
     Internal helper to fetch player details, ranks, and schedules for a list of player IDs.
     Handles mapping between '+/-' (App/Frontend) and 'plus_minus' (DB).
+    Updated to include Line/PP Info.
     """
     source_table = get_stat_source_table(sourcing)
     if not player_ids:
@@ -777,6 +778,12 @@ def _get_ranked_players(cursor, player_ids, cat_rank_columns, raw_stat_columns, 
         'total_ppGoals', 'team_games_played'
     ]
 
+    # --- NEW: Line Info Columns ---
+    line_info_columns = [
+        'pl.line_number', 'pl.pp_unit', 'pl.full_line',
+        'pl.alt_lines', 'pl.pp_line', 'pl.timeonice'
+    ]
+
     # --- FIX: Create DB-safe column names (plus_minus) ---
     db_cat_rank_columns = [c.replace('+/-', 'plus_minus') for c in cat_rank_columns]
     db_raw_stat_columns = [c.replace('+/-', 'plus_minus') for c in raw_stat_columns]
@@ -794,7 +801,7 @@ def _get_ranked_players(cursor, player_ids, cat_rank_columns, raw_stat_columns, 
         END as availability_status
     """
 
-    columns_to_select = base_columns + [status_col] + stat_cols_select
+    columns_to_select = base_columns + [status_col] + stat_cols_select + line_info_columns
 
     query = f"""
         SELECT {', '.join(columns_to_select)}
@@ -803,6 +810,8 @@ def _get_ranked_players(cursor, player_ids, cat_rank_columns, raw_stat_columns, 
         LEFT JOIN free_agents fa ON p.player_id = CAST(fa.player_id AS TEXT) AND fa.league_id = %s
         LEFT JOIN waiver_players w ON p.player_id = CAST(w.player_id AS TEXT) AND w.league_id = %s
         LEFT JOIN rostered_players r ON p.player_id = CAST(r.player_id AS TEXT) AND r.league_id = %s
+        -- NEW: Join Line Info Table
+        LEFT JOIN player_lines pl ON p.player_name_normalized = pl.player_name_normalized
         WHERE p.player_id IN ({placeholders})
     """
 
@@ -814,7 +823,6 @@ def _get_ranked_players(cursor, player_ids, cat_rank_columns, raw_stat_columns, 
     # 4. Enrich Results
     for player in players:
         # --- FIX: Map DB keys back to original keys for Frontend ---
-        # e.g. Copy value from 'plus_minus_cat_rank' to '+/-_cat_rank'
         for orig, db in zip(cat_rank_columns, db_cat_rank_columns):
              if orig != db and db in player:
                  player[orig] = player[db]
@@ -823,7 +831,7 @@ def _get_ranked_players(cursor, player_ids, cat_rank_columns, raw_stat_columns, 
              if orig != db and db in player:
                  player[orig] = player[db]
 
-        # Calculate total rank using the original keys (which are now populated)
+        # Calculate total rank using the original keys
         total_rank = sum(player.get(col, 0) or 0 for col in cat_rank_columns)
         player['total_cat_rank'] = round(total_rank, 2)
 
@@ -2931,12 +2939,8 @@ def get_trade_helper_league_roster_data():
                 ]
 
                 # 4. Get all players
-                # Use the Dynamic Join Helper to get roster info + status
-                # We only want Rostered players here
                 base_joins = build_player_query_base(stat_table)
 
-                # We specifically want rosters_tall joined with the player data
-                # The helper gives us 'p' and 'r' aliases.
                 query = """
                     SELECT
                         p.player_id, p.player_name, p.player_team as team,
@@ -2956,10 +2960,7 @@ def get_trade_helper_league_roster_data():
                     player['fantasy_team_name'] = teams_map.get(str(player['fantasy_team_id']), 'Unknown Team')
 
                 # 6. Get Ranks AND Stats
-                # [FIX] Sanitize column names for query
                 cat_rank_columns = [f"{cat.replace('+/-', 'plus_minus')}_cat_rank" for cat in all_scoring_categories]
-
-                # [FIX] Sanitize raw stats too
                 sanitized_cats = [cat.replace('+/-', 'plus_minus') for cat in all_scoring_categories]
                 raw_stats_to_fetch = list(set(sanitized_cats) | {'GA', 'SV', 'SA', 'TOI/G'})
 
@@ -2967,30 +2968,38 @@ def get_trade_helper_league_roster_data():
 
                 if valid_normalized_names:
                     cols_to_select = list(set(cat_rank_columns + pp_cols + raw_stats_to_fetch))
-                    # Quote columns for Postgres safety ("G", "TOI/G")
                     quoted_cols = [f'"{col}"' for col in cols_to_select]
 
                     placeholders = ','.join(['%s'] * len(valid_normalized_names))
 
-                    # Query the GLOBAL stat table
+                    # A. Fetch Stats
                     query = f"""
                         SELECT player_name_normalized, {', '.join(quoted_cols)}
                         FROM {stat_table}
                         WHERE player_name_normalized IN ({placeholders})
                     """
                     cursor.execute(query, valid_normalized_names)
-
-                    # Map results
                     player_stats = {row['player_name_normalized']: dict(row) for row in cursor.fetchall()}
+
+                    # B. Fetch Line Info (NEW)
+                    line_query = f"""
+                        SELECT player_name_normalized, line_number, pp_unit, full_line, alt_lines, pp_line, timeonice
+                        FROM player_lines
+                        WHERE player_name_normalized IN ({placeholders})
+                    """
+                    cursor.execute(line_query, valid_normalized_names)
+                    player_lines_info = {row['player_name_normalized']: dict(row) for row in cursor.fetchall()}
 
                     # 7. Enrich players
                     for player in all_players:
-                        p_data = player_stats.get(player.get('player_name_normalized'))
+                        norm_name = player.get('player_name_normalized')
+
+                        # Enrich Stats
+                        p_data = player_stats.get(norm_name)
                         if p_data:
                             for key, val in p_data.items():
                                 player[key] = val
 
-                            # [FIX] Map sanitized rank keys back to standard keys if missing
                             for cat in all_scoring_categories:
                                 sanitized_rank_key = f"{cat.replace('+/-', 'plus_minus')}_cat_rank"
                                 if sanitized_rank_key in p_data:
@@ -2998,6 +3007,16 @@ def get_trade_helper_league_roster_data():
                         else:
                             for cat in all_scoring_categories:
                                 player[f"{cat}_cat_rank"] = None
+
+                        # Enrich Lines (NEW)
+                        l_data = player_lines_info.get(norm_name)
+                        if l_data:
+                            player['line_number'] = l_data.get('line_number')
+                            player['pp_unit'] = l_data.get('pp_unit')
+                            player['full_line'] = l_data.get('full_line')
+                            player['alt_lines'] = l_data.get('alt_lines')
+                            player['pp_line'] = l_data.get('pp_line')
+                            player['timeonice'] = l_data.get('timeonice')
 
                 return jsonify({
                     'players': all_players,
@@ -3009,7 +3028,6 @@ def get_trade_helper_league_roster_data():
     except Exception as e:
         logging.error(f"Error fetching league roster data: {e}", exc_info=True)
         return jsonify({'error': f"An error occurred: {e}"}), 500
-
 
 
 @app.route('/api/schedules_page_data')
@@ -3489,7 +3507,6 @@ def get_roster_data():
                         rp.eligible_positions, p.player_name_normalized, p.status
                     FROM rosters_tall r
                     JOIN rostered_players rp ON r.player_id = rp.player_id AND r.league_id = rp.league_id
-                    -- FIX: Cast rp.player_id to TEXT
                     JOIN players p ON CAST(rp.player_id AS TEXT) = p.player_id
                     WHERE r.league_id = %s AND r.team_id = %s
                 """, (league_id, team_id))
@@ -3513,11 +3530,7 @@ def get_roster_data():
                             existing_ids.add(int(added.get('player_id', 0)))
 
                 # 8. Fetch Stats & Ranks
-                # [FIX] Sanitize column names (+/- -> plus_minus)
                 cat_rank_columns = [f"{cat.replace('+/-', 'plus_minus')}_cat_rank" for cat in all_scoring_categories]
-
-                # FIX: Do NOT double-quote column names here, helper does it
-                # [FIX] Sanitize raw stat columns too
                 raw_stat_columns = [cat.replace('+/-', 'plus_minus') for cat in all_scoring_categories]
 
                 all_cols = list(set(cat_rank_columns + raw_stat_columns))
@@ -3529,27 +3542,39 @@ def get_roster_data():
 
                 valid_names = [p.get('player_name_normalized') for p in all_players if p.get('player_name_normalized')]
                 player_stats = {}
+                player_lines_info = {} # --- NEW STORE FOR LINE INFO ---
 
                 if valid_names:
-                    # Manually quote columns for the SQL query here
                     quoted_cols = [f'"{c}"' for c in (all_cols + pp_stat_columns)]
                     placeholders = ','.join(['%s'] * len(valid_names))
 
+                    # A. Fetch Stats
                     query = f"SELECT player_name_normalized, {', '.join(quoted_cols)} FROM {stat_table} WHERE player_name_normalized IN ({placeholders})"
                     cursor.execute(query, valid_names)
                     player_stats = {row['player_name_normalized']: dict(row) for row in cursor.fetchall()}
+
+                    # B. Fetch Line Info (NEW)
+                    line_query = f"""
+                        SELECT player_name_normalized, line_number, pp_unit, full_line, alt_lines, pp_line, timeonice
+                        FROM player_lines
+                        WHERE player_name_normalized IN ({placeholders})
+                    """
+                    cursor.execute(line_query, valid_names)
+                    player_lines_info = {row['player_name_normalized']: dict(row) for row in cursor.fetchall()}
 
                 # 9. Enrich All Players
                 player_custom_rank_map = {}
                 active_player_map = {p['player_name']: p for p in active_players}
 
                 for player in all_players:
+                    norm_name = player.get('player_name_normalized')
+
+                    # ... (Existing Schedule/Opponent Enrich Logic) ...
                     if player['player_name'] in active_player_map:
                         source = active_player_map[player['player_name']]
                         for k in ['total_rank', 'game_dates_this_week', 'games_this_week', 'games_next_week', 'opponents_list', 'opponent_stats_this_week']:
                             player[k] = source.get(k, [])
                     else:
-                        # Simulated player logic
                         player['games_this_week'] = []
                         player['game_dates_this_week'] = []
                         player['games_next_week'] = []
@@ -3581,11 +3606,11 @@ def get_roster_data():
                                 g_date = datetime.strptime(g['game_date'], '%Y-%m-%d').date()
                                 player['games_next_week'].append(g_date.strftime('%a'))
 
-                    p_data = player_stats.get(player.get('player_name_normalized'))
+                    # Stats Enrichment
+                    p_data = player_stats.get(norm_name)
                     new_total_rank = 0
                     if p_data:
                         for cat in all_scoring_categories:
-                            # [FIX] Look up using sanitized keys, assign using original keys
                             sanitized_cat = cat.replace('+/-', 'plus_minus')
                             sanitized_rank_col = f"{sanitized_cat}_cat_rank"
 
@@ -3603,6 +3628,17 @@ def get_roster_data():
                     player['total_rank'] = round(new_total_rank, 2) if p_data else None
                     if player.get('player_id'):
                         player_custom_rank_map[int(player['player_id'])] = player['total_rank']
+
+                    # --- NEW: Line Info Enrichment ---
+                    l_data = player_lines_info.get(norm_name)
+                    if l_data:
+                        player['line_number'] = l_data.get('line_number')
+                        player['pp_unit'] = l_data.get('pp_unit')
+                        player['full_line'] = l_data.get('full_line')
+                        player['alt_lines'] = l_data.get('alt_lines')
+                        player['pp_line'] = l_data.get('pp_line')
+                        player['timeonice'] = l_data.get('timeonice')
+                    # ---------------------------------
 
                 # 10. Final Lineup
                 cursor.execute("SELECT position, position_count FROM lineup_settings WHERE league_id = %s AND position NOT IN ('BN', 'IR', 'IR+')", (league_id,))

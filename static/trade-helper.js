@@ -98,7 +98,15 @@
                 </div>`;
                 document.getElementById('pp-stats-modal').classList.remove('hidden');
             }
-
+            const pill = e.target.closest('.line-info-pill');
+            if (pill && window.openLineInfoModal && rosterData.players) {
+                const pid = String(pill.dataset.playerId);
+                const player = rosterData.players.find(p => String(p.player_id) === pid);
+                if (player) {
+                    window.openLineInfoModal(player);
+                }
+                return;
+            }
             // B. Cat Rank Cell (Global Modal)
             const rankCell = e.target.closest('.cat-rank-cell');
             if (rankCell && rosterData.players && window.openCatRankModal) {
@@ -559,7 +567,13 @@
         players.forEach(p => {
             const isChecked = selectedPlayerIds.has(String(p.player_id)) ? 'checked' : '';
             const teamClass = p.fantasy_team_name === userTeamName ? 'border-l-4 border-blue-500' : '';
-
+            const lineVal = p.line_number ? `L${p.line_number}` : 'N/A';
+            const ppVal = p.pp_unit ? `${p.pp_unit}` : 'N/A';
+            const pillHtml = `
+                <span class="ml-2 px-2 py-0.5 rounded text-[10px] font-bold bg-red-900 text-red-200 border border-red-700 cursor-pointer hover:bg-red-800 line-info-pill"
+                      data-player-id="${p.player_id}">
+                    ${lineVal} | ${ppVal}
+                </span>`;
             html += `<tr class="hover:bg-gray-700/50 ${teamClass}">`;
             html += `<td class="px-2 py-1 text-center"><input type="checkbox" value="${p.player_id}" class="trade-player-checkbox form-checkbox h-4 w-4 text-blue-600 rounded bg-gray-700 border-gray-600" ${isChecked}></td>`;
             html += `<td class="px-2 py-1 whitespace-nowrap font-medium text-gray-300">${p.player_name}</td>`;

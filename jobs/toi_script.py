@@ -187,6 +187,8 @@ def log_unmatched_players(conn, df_unmatched, source_table_name):
 # --- FETCH FUNCTIONS ---
 
 def fetch_daily_pp_stats():
+#   API url
+#   https://api.nhle.com/stats/rest/en/skater/powerplay?isAggregate=false&sort=[{"property":"ppTimeOnIce","direction":"DESC"},{"property":"playerId","direction":"ASC"}]&start=0&limit=100&cayenneExp=gameDate>="2025-10-27" and gameDate<="2025-10-27" and gameTypeId=2
     print("\n--- Fetching Daily PP Stats ---")
     est = pytz.timezone('US/Eastern')
     today = datetime.now(est).date()
@@ -682,6 +684,870 @@ def fetch_and_update_goalie_stats():
 
     except Exception as e: print(f"Error goalies: {e}")
 
+
+def fetch_daily_historical_stats():
+#TOI API
+#https://api.nhle.com/stats/rest/en/skater/timeonice?isAggregate=false&isGame=true&sort=[{%22property%22:%22timeOnIce%22,%22direction%22:%22DESC%22}]&start=0&limit=50&cayenneExp=gameDate%3E=%222025-10-07%22%20and%20gameDate%3C=%222025-10-07%22%20and%20gameTypeId=2
+
+    print("\n--- Fetching Daily Historical Stats (Time On Ice) ---")
+    est = pytz.timezone('US/Eastern')
+    today = datetime.now(est).date()
+    target_end_date = today - timedelta(days=1)
+    target_start_date = today - timedelta(days=7)
+
+    print(f"Self-Healing: Checking schema and clearing records from {target_start_date} to {target_end_date}...")
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            # 1. Create the base table if it doesn't exist
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS historical_stats (
+                    gameid INTEGER,
+                    gamedate DATE,
+                    nhlplayerid INTEGER,
+                    skaterfullname TEXT,
+                    player_name_normalized TEXT,
+                    teamabbrev TEXT,
+                    opponentteamabbrev TEXT,
+                    homeroad TEXT,
+                    timeonice INTEGER,
+                    evtimeonice INTEGER,
+                    pptimeonice INTEGER,
+                    shtimeonice INTEGER,
+                    ottimeonice INTEGER,
+                    shifts INTEGER,
+                    timeonicepershift INTEGER,
+                    PRIMARY KEY (gamedate, nhlplayerid)
+                )
+            """)
+
+            # 2. Delete only the specific range to allow for re-insertion/updates
+            cursor.execute(
+                "DELETE FROM historical_stats WHERE gamedate >= %s AND gamedate <= %s",
+                (target_start_date.strftime("%Y-%m-%d"), target_end_date.strftime("%Y-%m-%d"))
+            )
+        conn.commit()
+
+    dates = []
+    curr = target_start_date
+    while curr <= target_end_date:
+        dates.append(curr.strftime("%Y-%m-%d"))
+        curr += timedelta(days=1)
+
+    all_data = []
+    BASE_URL = "https://api.nhle.com/stats/rest/en/skater/timeonice"
+
+    for d in dates:
+        print(f"Querying {d}...")
+        idx = 0
+        try:
+            while True:
+                params = {
+                    "isAggregate": "false",
+                    "isGame": "true",
+                    "sort": '[{"property":"timeOnIce","direction":"DESC"},{"property":"playerId","direction":"ASC"}]',
+                    "start": idx, "limit": 100,
+                    "cayenneExp": f'gameDate>="{d}" and gameDate<="{d}" and gameTypeId=2'
+                }
+                resp = requests.get(BASE_URL, params=params, timeout=10)
+                data = resp.json().get("data", [])
+                if not data: break
+
+                for p in data:
+                    # Map API fields to your requested column names
+                    rec = {
+                        "gameid": p.get("gameId"), # FIX: API uses camelCase "gameId"
+                        "gamedate": d,
+                        "nhlplayerid": p.get("playerId"),
+                        "skaterfullname": p.get("skaterFullName"),
+                        "teamabbrev": p.get("teamAbbrev"),
+                        "opponentteamabbrev": p.get("opponentTeamAbbrev"),
+                        "homeroad": p.get("homeRoad"),
+                        "timeonice": p.get("timeOnIce"),
+                        "evtimeonice": p.get("evTimeOnIce"),
+                        "pptimeonice": p.get("ppTimeOnIce"),
+                        "shtimeonice": p.get("shTimeOnIce"),
+                        "ottimeonice": p.get("otTimeOnIce"),
+                        "shifts": p.get("shifts"),
+                        "timeonicepershift": p.get("timeOnIcePerShift")
+                    }
+                    all_data.append(rec)
+                idx += 100
+                time.sleep(0.1)
+        except Exception as e:
+            print(f"Error fetching {d}: {e}")
+
+    if all_data:
+        df = pd.DataFrame(all_data)
+
+        # --- Type Conversion & ID Logic ---
+        df['nhlplayerid'] = pd.to_numeric(df['nhlplayerid'], errors='coerce')
+
+        # Normalize Names
+        if 'skaterfullname' in df.columns:
+            df['player_name_normalized'] = df['skaterfullname'].apply(normalize_name)
+
+        # Specific Player ID / Name Fixes
+        df.loc[df['nhlplayerid'] == 8480012, 'player_name_normalized'] = 'eliaspetterssonf'
+        df.loc[df['nhlplayerid'] == 8478427, 'player_name_normalized'] = 'sebastianahof'
+
+        # Dedup based on Date + PlayerID (Primary Key)
+        df.drop_duplicates(subset=['gamedate', 'nhlplayerid'], inplace=True)
+
+        with get_db_connection() as conn:
+            # Ensure columns are lowercased for Postgres mapping
+            df.columns = [c.lower() for c in df.columns]
+
+            # Define the exact column order for the INSERT
+            # FIX: Used 'gameid' (lowercase) to match df.columns
+            cols_to_insert = [
+                'gameid', 'gamedate', 'nhlplayerid', 'skaterfullname', 'player_name_normalized',
+                'teamabbrev', 'opponentteamabbrev', 'homeroad',
+                'timeonice', 'evtimeonice', 'pptimeonice', 'shtimeonice', 'ottimeonice',
+                'shifts', 'timeonicepershift'
+            ]
+
+            vals = [tuple(x) for x in df[cols_to_insert].to_numpy()]
+
+            with conn.cursor() as cursor:
+                cursor.executemany("""
+                    INSERT INTO historical_stats (
+                        gameid, gamedate, nhlplayerid, skaterfullname, player_name_normalized,
+                        teamabbrev, opponentteamabbrev, homeroad,
+                        timeonice, evtimeonice, pptimeonice, shtimeonice, ottimeonice,
+                        shifts, timeonicepershift
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (gamedate, nhlplayerid) DO UPDATE SET
+                        gameid = EXCLUDED.gameid,
+                        timeonice = EXCLUDED.timeonice,
+                        evtimeonice = EXCLUDED.evtimeonice,
+                        pptimeonice = EXCLUDED.pptimeonice,
+                        shtimeonice = EXCLUDED.shtimeonice,
+                        ottimeonice = EXCLUDED.ottimeonice,
+                        shifts = EXCLUDED.shifts,
+                        timeonicepershift = EXCLUDED.timeonicepershift
+                """, vals)
+                conn.commit()
+
+        return True
+    return False
+
+def fetch_daily_summary_stats():
+    # SUMMARY API
+#https://api.nhle.com/stats/rest/en/skater/summary?isAggregate=false&isGame=true&sort=%5B%7B%22property%22:%22points%22,%22direction%22:%22DESC%22%7D,%7B%22property%22:%22goals%22,%22direction%22:%22DESC%22%7D,%7B%22property%22:%22assists%22,%22direction%22:%22DESC%22%7D,%7B%22property%22:%22playerId%22,%22direction%22:%22ASC%22%7D%5D&start=0&limit=50&factCayenneExp=gamesPlayed%3E=1&cayenneExp=gameDate%3E=%222025-10-07%22%20and%20gameDate%3C=%222025-10-07%22%20and%20gameTypeId=2
+
+    print("\n--- Fetching Daily Summary Stats (Goals, Assists, Points) ---")
+    est = pytz.timezone('US/Eastern')
+    today = datetime.now(est).date()
+    target_end_date = today - timedelta(days=1)
+    target_start_date = today - timedelta(days=7)
+
+    # 1. Ensure columns exist
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            # We assume historical_stats exists (created by previous function)
+            # but we must ensure these specific scoring columns exist.
+            new_cols = [
+                "assists", "evgoals", "evpoints", "gamewinninggoals",
+                "goals", "otgoals", "penaltyminutes", "plusminus",
+                "points", "ppgoals", "pppoints", "shgoals",
+                "shpoints", "shootingpct", "shots"
+            ]
+            for col in new_cols:
+                # Most are INTEGER, shootingpct is likely REAL
+                dtype = "REAL" if col == "shootingpct" else "INTEGER"
+                cursor.execute(f"ALTER TABLE historical_stats ADD COLUMN IF NOT EXISTS {col} {dtype}")
+        conn.commit()
+
+    dates = []
+    curr = target_start_date
+    while curr <= target_end_date:
+        dates.append(curr.strftime("%Y-%m-%d"))
+        curr += timedelta(days=1)
+
+    all_data = []
+    BASE_URL = "https://api.nhle.com/stats/rest/en/skater/summary"
+
+    for d in dates:
+        print(f"Querying {d}...")
+        idx = 0
+        try:
+            while True:
+                params = {
+                    "isAggregate": "false",
+                    "isGame": "true",
+                    "sort": '[{"property":"points","direction":"DESC"}]',
+                    "start": idx, "limit": 100,
+                    "factCayenneExp": "gamesPlayed>=1",
+                    "cayenneExp": f'gameDate>="{d}" and gameDate<="{d}" and gameTypeId=2'
+                }
+                resp = requests.get(BASE_URL, params=params, timeout=10)
+                data = resp.json().get("data", [])
+                if not data: break
+
+                for p in data:
+                    # Map API fields to your requested column names
+                    rec = {
+                        "gameid": p.get("gameId"),
+                        "gamedate": d,
+                        "nhlplayerid": p.get("playerId"),
+                        "skaterfullname": p.get("skaterFullName"), # kept for safe keeping
+
+                        # New Columns
+                        "assists": p.get("assists"),
+                        "evgoals": p.get("evGoals"),
+                        "evpoints": p.get("evPoints"),
+                        "gamewinninggoals": p.get("gameWinningGoals"),
+                        "goals": p.get("goals"),
+                        "otgoals": p.get("otGoals"),
+                        "penaltyminutes": p.get("penaltyMinutes"),
+                        "plusminus": p.get("plusMinus"),
+                        "points": p.get("points"),
+                        "ppgoals": p.get("ppGoals"),
+                        "pppoints": p.get("ppPoints"),
+                        "shgoals": p.get("shGoals"),
+                        "shpoints": p.get("shPoints"),
+                        "shootingpct": p.get("shootingPct"),
+                        "shots": p.get("shots")
+                    }
+                    all_data.append(rec)
+                idx += 100
+                time.sleep(0.1)
+        except Exception as e:
+            print(f"Error fetching {d}: {e}")
+
+    if all_data:
+        df = pd.DataFrame(all_data)
+
+        # --- Type Conversion & ID Logic ---
+        df['nhlplayerid'] = pd.to_numeric(df['nhlplayerid'], errors='coerce')
+
+        # We don't need name normalization here because we are relying on ID matching
+        # from the row created in the previous function, but strictly speaking,
+        # we still drop duplicates based on the primary key.
+        df.drop_duplicates(subset=['gamedate', 'nhlplayerid'], inplace=True)
+
+        with get_db_connection() as conn:
+            # Ensure columns are lowercased for Postgres mapping
+            # (Though I manually lowercased keys in the dict above)
+
+            # Define the exact column order for the INSERT/UPDATE
+            cols_to_insert = [
+                'gameid', 'gamedate', 'nhlplayerid',
+                'assists', 'evgoals', 'evpoints', 'gamewinninggoals',
+                'goals', 'otgoals', 'penaltyminutes', 'plusminus',
+                'points', 'ppgoals', 'pppoints', 'shgoals',
+                'shpoints', 'shootingpct', 'shots'
+            ]
+
+            vals = [tuple(x) for x in df[cols_to_insert].to_numpy()]
+
+            with conn.cursor() as cursor:
+                # We use INSERT ... ON CONFLICT DO UPDATE.
+                # If the row exists (from TOI function), it updates the stats.
+                # If the row doesn't exist (weird edge case), it creates it.
+                cursor.executemany("""
+                    INSERT INTO historical_stats (
+                        gameid, gamedate, nhlplayerid,
+                        assists, evgoals, evpoints, gamewinninggoals,
+                        goals, otgoals, penaltyminutes, plusminus,
+                        points, ppgoals, pppoints, shgoals,
+                        shpoints, shootingpct, shots
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (gamedate, nhlplayerid) DO UPDATE SET
+                        assists = EXCLUDED.assists,
+                        evgoals = EXCLUDED.evgoals,
+                        evpoints = EXCLUDED.evpoints,
+                        gamewinninggoals = EXCLUDED.gamewinninggoals,
+                        goals = EXCLUDED.goals,
+                        otgoals = EXCLUDED.otgoals,
+                        penaltyminutes = EXCLUDED.penaltyminutes,
+                        plusminus = EXCLUDED.plusminus,
+                        points = EXCLUDED.points,
+                        ppgoals = EXCLUDED.ppgoals,
+                        pppoints = EXCLUDED.pppoints,
+                        shgoals = EXCLUDED.shgoals,
+                        shpoints = EXCLUDED.shpoints,
+                        shootingpct = EXCLUDED.shootingpct,
+                        shots = EXCLUDED.shots
+                """, vals)
+                conn.commit()
+
+        return True
+    return False
+
+
+def fetch_daily_realtime_stats():
+    # REALTIME (MISCELLANEOUS) API
+#https://api.nhle.com/stats/rest/en/skater/realtime?isAggregate=false&isGame=true&sort=%5B%7B%22property%22:%22hits%22,%22direction%22:%22DESC%22%7D%5D&start=0&limit=50&factCayenneExp=gamesPlayed%3E=1&cayenneExp=gameDate%3E=%222025-10-07%22%20and%20gameDate%3C=%222025-10-07%22%20and%20gameTypeId=2
+    print("\n--- Fetching Daily Realtime Stats (Hits, Blocks, etc.) ---")
+    est = pytz.timezone('US/Eastern')
+    today = datetime.now(est).date()
+    target_end_date = today - timedelta(days=1)
+    target_start_date = today - timedelta(days=7)
+
+    # 1. Ensure columns exist
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            new_cols = [
+                "hits", "blockedshots", "giveaways",
+                "takeaways", "shotattemptsblocked", "missedshots"
+            ]
+            for col in new_cols:
+                cursor.execute(f"ALTER TABLE historical_stats ADD COLUMN IF NOT EXISTS {col} INTEGER")
+        conn.commit()
+
+    dates = []
+    curr = target_start_date
+    while curr <= target_end_date:
+        dates.append(curr.strftime("%Y-%m-%d"))
+        curr += timedelta(days=1)
+
+    all_data = []
+    BASE_URL = "https://api.nhle.com/stats/rest/en/skater/realtime"
+
+    for d in dates:
+        print(f"Querying {d}...")
+        idx = 0
+        try:
+            while True:
+                params = {
+                    "isAggregate": "false",
+                    "isGame": "true",
+                    "sort": '[{"property":"hits","direction":"DESC"}]',
+                    "start": idx, "limit": 100,
+                    "factCayenneExp": "gamesPlayed>=1",
+                    "cayenneExp": f'gameDate>="{d}" and gameDate<="{d}" and gameTypeId=2'
+                }
+                resp = requests.get(BASE_URL, params=params, timeout=10)
+                data = resp.json().get("data", [])
+                if not data: break
+
+                for p in data:
+                    rec = {
+                        "gameid": p.get("gameId"),
+                        "gamedate": d,
+                        "nhlplayerid": p.get("playerId"),
+                        "skaterfullname": p.get("skaterFullName"),
+
+                        # New Columns for Realtime Report
+                        "hits": p.get("hits"),
+                        "blockedshots": p.get("blockedShots"), # API uses camelCase
+                        "giveaways": p.get("giveaways"),
+                        "takeaways": p.get("takeaways"),
+                        "shotattemptsblocked": p.get("shotAttemptsBlocked"),
+                        "missedshots": p.get("missedShots")
+                    }
+                    all_data.append(rec)
+                idx += 100
+                time.sleep(0.1)
+        except Exception as e:
+            print(f"Error fetching {d}: {e}")
+
+    if all_data:
+        df = pd.DataFrame(all_data)
+
+        # --- Type Conversion & ID Logic ---
+        df['nhlplayerid'] = pd.to_numeric(df['nhlplayerid'], errors='coerce')
+        df.drop_duplicates(subset=['gamedate', 'nhlplayerid'], inplace=True)
+
+        with get_db_connection() as conn:
+
+            # Define columns to extract from DataFrame
+            cols_to_insert = [
+                'gameid', 'gamedate', 'nhlplayerid',
+                'hits', 'blockedshots', 'giveaways', 'takeaways',
+                'shotattemptsblocked', 'missedshots'
+            ]
+
+            vals = [tuple(x) for x in df[cols_to_insert].to_numpy()]
+
+            with conn.cursor() as cursor:
+                # UPDATE existing rows found by (gamedate, nhlplayerid)
+                # FIX: Removed the trailing comma after 'missedshots' in the INSERT line below
+                cursor.executemany("""
+                    INSERT INTO historical_stats (
+                        gameid, gamedate, nhlplayerid,
+                        hits, blockedshots, giveaways, takeaways,
+                        shotattemptsblocked, missedshots
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (gamedate, nhlplayerid) DO UPDATE SET
+                        hits = EXCLUDED.hits,
+                        blockedshots = EXCLUDED.blockedshots,
+                        giveaways = EXCLUDED.giveaways,
+                        takeaways = EXCLUDED.takeaways,
+                        shotattemptsblocked = EXCLUDED.shotattemptsblocked,
+                        missedshots = EXCLUDED.missedshots
+                """, vals)
+                conn.commit()
+
+        return True
+    return False
+
+
+def fetch_game_shifts():
+    print("\n--- Fetching Shift Data (Raw Line Info) ---")
+#api URL
+#https://api.nhle.com/stats/rest/en/shiftcharts?cayenneExp=gameId=2025020407
+    est = pytz.timezone('US/Eastern')
+    today = datetime.now(est).date()
+    target_date = today - timedelta(days=1)
+    date_str = target_date.strftime("%Y-%m-%d")
+
+    # 1. Create table if not exists
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS game_shifts (
+                    gameid INTEGER,
+                    nhlplayerid INTEGER,
+                    period INTEGER,
+                    starttime TEXT,
+                    endtime TEXT,
+                    duration TEXT,
+                    start_seconds INTEGER,
+                    end_seconds INTEGER,
+                    PRIMARY KEY (gameid, nhlplayerid, period, starttime)
+                )
+            """)
+        conn.commit()
+
+    # 2. Get the Game IDs for this date first
+    game_ids = []
+    print(f"Identifying Game IDs for {date_str}...")
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT DISTINCT gameid FROM historical_stats WHERE gamedate = %s", (date_str,))
+            rows = cursor.fetchall()
+            game_ids = [r[0] for r in rows]
+
+    if not game_ids:
+        print("No game IDs found to fetch shifts for.")
+        return
+
+    # 3. Fetch Shifts for each Game
+    base_url = "https://api.nhle.com/stats/rest/en/shiftcharts"
+
+    all_shifts = []
+
+    for gid in game_ids:
+        print(f"Fetching shifts for Game {gid}...")
+        try:
+            params = {
+                "cayenneExp": f"gameId={gid}"
+            }
+            resp = requests.get(base_url, params=params, timeout=10)
+            data = resp.json().get("data", [])
+
+            for s in data:
+                # FIX: Added Try/Except to handle cases where time is None or malformed
+                try:
+                    start_min, start_sec = map(int, s.get("startTime").split(':'))
+                    end_min, end_sec = map(int, s.get("endTime").split(':'))
+
+                    start_seconds = (start_min * 60) + start_sec
+                    end_seconds = (end_min * 60) + end_sec
+                except (ValueError, AttributeError):
+                    start_seconds = 0
+                    end_seconds = 0
+
+                rec = {
+                    "gameid": s.get("gameId"),
+                    "nhlplayerid": s.get("playerId"),
+                    "period": s.get("period"),
+                    "starttime": s.get("startTime"),
+                    "endtime": s.get("endTime"),
+                    "duration": s.get("duration"),
+                    "start_seconds": start_seconds,
+                    "end_seconds": end_seconds
+                }
+                all_shifts.append(rec)
+
+            time.sleep(0.1)
+
+        except Exception as e:
+            print(f"Error fetching shifts for {gid}: {e}")
+
+    # 4. Insert into Database
+    if all_shifts:
+        print(f"Saving {len(all_shifts)} shift records...")
+
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                sql = """
+                    INSERT INTO game_shifts (
+                        gameid, nhlplayerid, period, starttime, endtime,
+                        duration, start_seconds, end_seconds
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (gameid, nhlplayerid, period, starttime) DO NOTHING
+                """
+
+                vals = []
+                for row in all_shifts:
+                    vals.append((
+                        row["gameid"], row["nhlplayerid"], row["period"],
+                        row["starttime"], row["endtime"], row["duration"],
+                        row["start_seconds"], row["end_seconds"]
+                    ))
+
+                cursor.executemany(sql, vals)
+            conn.commit()
+            print("Shifts saved.")
+
+
+def fetch_daily_historical_goalie_stats():
+    # GOALIE SUMMARY API
+    # https://api.nhle.com/stats/rest/en/goalie/summary?isAggregate=false&isGame=true&sort=%5B%7B%22property%22:%22wins%22,%22direction%22:%22DESC%22%7D,%7B%22property%22:%22savePct%22,%22direction%22:%22DESC%22%7D%5D&start=0&limit=50&factCayenneExp=gamesPlayed%3E=1&cayenneExp=gameDate%3E=%222025-10-07%22%20and%20gameDate%3C=%222025-10-07%22%20and%20gameTypeId=2
+
+    print("\n--- Fetching Daily Historical Goalie Stats ---")
+    est = pytz.timezone('US/Eastern')
+    today = datetime.now(est).date()
+    target_end_date = today - timedelta(days=1)
+    target_start_date = today - timedelta(days=7)
+
+    print(f"Self-Healing: Clearing goalie records from {target_start_date} to {target_end_date}...")
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            # Create the table if it doesn't exist yet
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS historical_goalie_stats (
+                    gameid INTEGER,
+                    gamedate DATE,
+                    nhlplayerid INTEGER,
+                    goaliefullname TEXT,
+                    player_name_normalized TEXT,
+                    teamabbrev TEXT,
+                    opponentteamabbrev TEXT,
+                    homeroad TEXT,
+                    wins INTEGER,
+                    losses INTEGER,
+                    overtimelosses INTEGER,
+                    shotsagainst INTEGER,
+                    saves INTEGER,
+                    goalsagainst INTEGER,
+                    timeonice INTEGER,
+                    goals INTEGER,
+                    assists INTEGER,
+                    points INTEGER,
+                    penaltyminutes INTEGER,
+                    shutouts INTEGER,
+                    PRIMARY KEY (gamedate, nhlplayerid)
+                )
+            """)
+
+            # Delete the specific range to allow for re-insertion
+            cursor.execute(
+                "DELETE FROM historical_goalie_stats WHERE gamedate >= %s AND gamedate <= %s",
+                (target_start_date.strftime("%Y-%m-%d"), target_end_date.strftime("%Y-%m-%d"))
+            )
+        conn.commit()
+
+    dates = []
+    curr = target_start_date
+    while curr <= target_end_date:
+        dates.append(curr.strftime("%Y-%m-%d"))
+        curr += timedelta(days=1)
+
+    all_data = []
+    BASE_URL = "https://api.nhle.com/stats/rest/en/goalie/summary"
+
+    for d in dates:
+        print(f"Querying Goalies for {d}...")
+        idx = 0
+        try:
+            while True:
+                params = {
+                    "isAggregate": "false",
+                    "isGame": "true",
+                    "sort": '[{"property":"wins","direction":"DESC"},{"property":"savePct","direction":"DESC"}]',
+                    "start": idx,
+                    "limit": 100,
+                    "cayenneExp": f'gameDate>="{d}" and gameDate<="{d}" and gameTypeId=2'
+                }
+                resp = requests.get(BASE_URL, params=params, timeout=10)
+                data = resp.json().get("data", [])
+                if not data: break
+
+                for p in data:
+                    rec = {
+                        "gameid": p.get("gameId"),
+                        "gamedate": d,
+                        "nhlplayerid": p.get("playerId"),
+                        "goaliefullname": p.get("goalieFullName"),
+                        "teamabbrev": p.get("teamAbbrev"),
+                        "opponentteamabbrev": p.get("opponentTeamAbbrev"),
+                        "homeroad": p.get("homeRoad"),
+
+                        # Stats you requested
+                        "wins": p.get("wins"),
+                        "losses": p.get("losses"),
+                        "overtimelosses": p.get("otLosses"), # API usually calls this otLosses
+                        "shotsagainst": p.get("shotsAgainst"),
+                        "saves": p.get("saves"),
+                        "goalsagainst": p.get("goalsAgainst"),
+                        "timeonice": p.get("timeOnIce"),
+                        "goals": p.get("goals"),
+                        "assists": p.get("assists"),
+                        "points": p.get("points"),
+                        "penaltyminutes": p.get("penaltyMinutes"),
+                        "shutouts": p.get("shutouts")
+                    }
+                    all_data.append(rec)
+                idx += 100
+                time.sleep(0.1)
+        except Exception as e:
+            print(f"Error fetching goalies for {d}: {e}")
+
+    if all_data:
+        df = pd.DataFrame(all_data)
+
+        # --- Type Conversion & ID Logic ---
+        df['nhlplayerid'] = pd.to_numeric(df['nhlplayerid'], errors='coerce')
+
+        # Normalize Names
+        if 'goaliefullname' in df.columns:
+            df['player_name_normalized'] = df['goaliefullname'].apply(normalize_name)
+
+        # Dedup based on Date + PlayerID (Primary Key)
+        df.drop_duplicates(subset=['gamedate', 'nhlplayerid'], inplace=True)
+
+        with get_db_connection() as conn:
+            # Ensure columns are lowercased
+            df.columns = [c.lower() for c in df.columns]
+
+            cols_to_insert = [
+                'gameid', 'gamedate', 'nhlplayerid', 'goaliefullname', 'player_name_normalized',
+                'teamabbrev', 'opponentteamabbrev', 'homeroad',
+                'wins', 'losses', 'overtimelosses', 'shotsagainst', 'saves',
+                'goalsagainst', 'timeonice', 'goals', 'assists', 'points',
+                'penaltyminutes', 'shutouts'
+            ]
+
+            vals = [tuple(x) for x in df[cols_to_insert].to_numpy()]
+
+            with conn.cursor() as cursor:
+                cursor.executemany("""
+                    INSERT INTO historical_goalie_stats (
+                        gameid, gamedate, nhlplayerid, goaliefullname, player_name_normalized,
+                        teamabbrev, opponentteamabbrev, homeroad,
+                        wins, losses, overtimelosses, shotsagainst, saves,
+                        goalsagainst, timeonice, goals, assists, points,
+                        penaltyminutes, shutouts
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (gamedate, nhlplayerid) DO UPDATE SET
+                        gameid = EXCLUDED.gameid,
+                        wins = EXCLUDED.wins,
+                        losses = EXCLUDED.losses,
+                        overtimelosses = EXCLUDED.overtimelosses,
+                        shotsagainst = EXCLUDED.shotsagainst,
+                        saves = EXCLUDED.saves,
+                        goalsagainst = EXCLUDED.goalsagainst,
+                        timeonice = EXCLUDED.timeonice,
+                        goals = EXCLUDED.goals,
+                        assists = EXCLUDED.assists,
+                        points = EXCLUDED.points,
+                        penaltyminutes = EXCLUDED.penaltyminutes,
+                        shutouts = EXCLUDED.shutouts
+                """, vals)
+                conn.commit()
+
+        return True
+    return False
+
+
+def fetch_daily_goalie_advanced_stats():
+    # GOALIE ADVANCED REPORT API
+    # https://api.nhle.com/stats/rest/en/goalie/advanced?isAggregate=false&isGame=true&sort=%5B%7B%22property%22:%22goalsFor%22,%22direction%22:%22DESC%22%7D%5D&start=0&limit=100&cayenneExp=gameDate%3E=%222025-10-07%22%20and%20gameDate%3C=%222025-10-07%22%20and%20gameTypeId=2
+
+    print("\n--- Fetching Daily Goalie Advanced Stats (Goals For) ---")
+    est = pytz.timezone('US/Eastern')
+    today = datetime.now(est).date()
+    target_end_date = today - timedelta(days=1)
+    target_start_date = today - timedelta(days=7)
+
+    # 1. Ensure the 'goalsfor' column exists in the table
+    print("Verifying schema...")
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            # We use a safe check to add the column if it doesn't exist
+            cursor.execute("""
+                ALTER TABLE historical_goalie_stats
+                ADD COLUMN IF NOT EXISTS goalsfor INTEGER
+            """)
+        conn.commit()
+
+    # 2. Setup Dates and Loop
+    dates = []
+    curr = target_start_date
+    while curr <= target_end_date:
+        dates.append(curr.strftime("%Y-%m-%d"))
+        curr += timedelta(days=1)
+
+    all_data = []
+    BASE_URL = "https://api.nhle.com/stats/rest/en/goalie/advanced"
+
+    for d in dates:
+        print(f"Querying Advanced Goalie Stats for {d}...")
+        idx = 0
+        try:
+            while True:
+                params = {
+                    "isAggregate": "false",
+                    "isGame": "true",
+                    "sort": '[{"property":"goalsFor","direction":"DESC"}]',
+                    "start": idx,
+                    "limit": 100,
+                    "cayenneExp": f'gameDate>="{d}" and gameDate<="{d}" and gameTypeId=2'
+                }
+                resp = requests.get(BASE_URL, params=params, timeout=10)
+                data = resp.json().get("data", [])
+                if not data: break
+
+                for p in data:
+                    rec = {
+                        "gameid": p.get("gameId"),
+                        "nhlplayerid": p.get("playerId"),
+                        # The specific stat you requested
+                        "goalsfor": p.get("goalsFor")
+                    }
+                    all_data.append(rec)
+                idx += 100
+                time.sleep(0.1)
+        except Exception as e:
+            print(f"Error fetching advanced stats for {d}: {e}")
+
+    # 3. Update the Database
+    if all_data:
+        print(f"Updating {len(all_data)} records with Advanced Stats...")
+        df = pd.DataFrame(all_data)
+
+        # Ensure IDs are numeric
+        df['nhlplayerid'] = pd.to_numeric(df['nhlplayerid'], errors='coerce')
+
+        # Prepare data for bulk update
+        vals = df[['goalsfor', 'gameid', 'nhlplayerid']].values.tolist()
+
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                # Update existing rows based on GameID and PlayerID
+                cursor.executemany("""
+                    UPDATE historical_goalie_stats
+                    SET goalsfor = %s
+                    WHERE gameid = %s AND nhlplayerid = %s
+                """, vals)
+            conn.commit()
+            print("Advanced stats updated.")
+        return True
+
+    print("No advanced data found to update.")
+    return False
+
+
+
+def fetch_daily_goalie_days_rest_stats():
+    # GOALIE DAYS REST REPORT API
+    # https://api.nhle.com/stats/rest/en/goalie/daysrest
+
+    print("\n--- Fetching Daily Goalie Days Rest Stats ---")
+    est = pytz.timezone('US/Eastern')
+    today = datetime.now(est).date()
+    target_end_date = today - timedelta(days=1)
+    target_start_date = today - timedelta(days=7)
+
+    # 1. Ensure the 'daysrest' column exists in the table
+    print("Verifying schema...")
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                ALTER TABLE historical_goalie_stats
+                ADD COLUMN IF NOT EXISTS daysrest INTEGER
+            """)
+        conn.commit()
+
+    # 2. Setup Dates and Loop
+    dates = []
+    curr = target_start_date
+    while curr <= target_end_date:
+        dates.append(curr.strftime("%Y-%m-%d"))
+        curr += timedelta(days=1)
+
+    all_data = []
+    BASE_URL = "https://api.nhle.com/stats/rest/en/goalie/daysrest"
+
+    for d in dates:
+        print(f"Querying Days Rest Stats for {d}...")
+        idx = 0
+        try:
+            while True:
+                params = {
+                    "isAggregate": "false",
+                    "isGame": "true",
+                    "sort": '[{"property":"wins","direction":"DESC"}]', # Sort doesn't matter much for fetching all
+                    "start": idx,
+                    "limit": 100,
+                    "cayenneExp": f'gameDate>="{d}" and gameDate<="{d}" and gameTypeId=2'
+                }
+                resp = requests.get(BASE_URL, params=params, timeout=10)
+                data = resp.json().get("data", [])
+                if not data: break
+
+                for p in data:
+                    # Logic to determine the single 'daysrest' integer from the buckets
+                    rest_val = 0 # Default
+                    if p.get("gamesPlayedDaysRest0") == 1:
+                        rest_val = 0
+                    elif p.get("gamesPlayedDaysRest1") == 1:
+                        rest_val = 1
+                    elif p.get("gamesPlayedDaysRest2") == 1:
+                        rest_val = 2
+                    elif p.get("gamesPlayedDaysRest3") == 1:
+                        rest_val = 3
+                    elif p.get("gamesPlayedDaysRest4Plus") == 1:
+                        rest_val = 4 # Represents 4 or more days
+
+                    rec = {
+                        "gameid": p.get("gameId"),
+                        "nhlplayerid": p.get("playerId"),
+                        "daysrest": rest_val
+                    }
+                    all_data.append(rec)
+                idx += 100
+                time.sleep(0.1)
+        except Exception as e:
+            print(f"Error fetching days rest for {d}: {e}")
+
+    # 3. Update the Database
+    if all_data:
+        print(f"Updating {len(all_data)} records with Days Rest...")
+        df = pd.DataFrame(all_data)
+
+        # Ensure IDs are numeric
+        df['nhlplayerid'] = pd.to_numeric(df['nhlplayerid'], errors='coerce')
+
+        # Prepare data for bulk update
+        vals = df[['daysrest', 'gameid', 'nhlplayerid']].values.tolist()
+
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                # Update existing rows based on GameID and PlayerID
+                cursor.executemany("""
+                    UPDATE historical_goalie_stats
+                    SET daysrest = %s
+                    WHERE gameid = %s AND nhlplayerid = %s
+                """, vals)
+            conn.commit()
+            print("Days rest updated.")
+        return True
+
+    print("No days rest data found to update.")
+    return False
+
+
 # --- MERGING FUNCTIONS ---
 
 def join_special_teams_data():
@@ -991,6 +1857,389 @@ def create_combined_projections():
         df_to_postgres(df_final, 'combined_projections', conn, lowercase_columns=False, primary_key='player_name_normalized')
 
 
+def create_player_lines_table():
+    print("\n--- Creating 'player_lines' Table (Canonical Ranks + Alt Lines + PP Units) ---")
+
+    # 1. EXPLICITLY DROP THE TABLE FIRST
+    print("Clearing existing 'player_lines' table...")
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("DROP TABLE IF EXISTS player_lines")
+        conn.commit()
+
+    # 2. Fetch Data
+    with get_db_connection() as conn:
+        print("Fetching most recent games and checking active roster status...")
+
+        df_players = read_sql_postgres("""
+            WITH player_max_dates AS (
+                SELECT nhlplayerid, MAX(gamedate) as player_last_date
+                FROM historical_stats
+                GROUP BY nhlplayerid
+            ),
+            team_max_dates AS (
+                SELECT teamabbrev, MAX(gamedate) as team_last_date
+                FROM historical_stats
+                GROUP BY teamabbrev
+            )
+            SELECT
+                p.player_name_normalized,
+                p.team,
+                p.nhlplayerid,
+                p.positions,
+                h.gameid,
+                h.gamedate as player_game_date,
+                h.timeonice,
+                tm.team_last_date
+            FROM stats_to_date p
+            JOIN player_max_dates pmd ON p.nhlplayerid = pmd.nhlplayerid
+            JOIN historical_stats h ON h.nhlplayerid = pmd.nhlplayerid AND h.gamedate = pmd.player_last_date
+            JOIN team_max_dates tm ON h.teamabbrev = tm.teamabbrev
+        """, conn)
+
+        if df_players.empty:
+            print("No player data found.")
+            return
+
+        # Active = Player's last game is the same as the Team's last game
+        df_active = df_players[df_players['player_game_date'] == df_players['team_last_date']].copy()
+        df_inactive = df_players[df_players['player_game_date'] < df_players['team_last_date']].copy()
+
+        if df_active.empty:
+            print("No active players found for recent games.")
+            return
+
+        unique_game_ids = df_active['gameid'].unique().tolist()
+
+        print(f"Loading shift data for {len(unique_game_ids)} active games...")
+        game_id_str = ",".join(str(gid) for gid in unique_game_ids)
+
+        query_shifts = f"""
+            SELECT gameid, nhlplayerid, period, start_seconds, end_seconds
+            FROM game_shifts
+            WHERE gameid IN ({game_id_str})
+        """
+        df_shifts = read_sql_postgres(query_shifts, conn)
+
+        # --- NEW: Fetch PP Data ---
+        print("Loading PP Data...")
+        # Note: quoting the column name because it likely has mixed case in Postgres
+        df_pp = read_sql_postgres('SELECT nhlplayerid, "lg_ppTimeOnIce" FROM last_game_pp', conn)
+
+        if df_shifts.empty:
+            print("No shift data found. Run 'fetch_game_shifts' first.")
+            return
+
+    # 3. Process Logic: Calculate ALL Combinations for Active Players
+    print("Calculating line combinations...")
+
+    player_positions = {}
+    player_names = {}
+
+    for _, row in df_active.iterrows():
+        pid = row['nhlplayerid']
+        pos_str = str(row['positions']).upper()
+        player_names[pid] = row['player_name_normalized']
+
+        if 'D' in pos_str:
+            player_positions[pid] = 'D'
+        elif any(x in pos_str for x in ['C', 'L', 'R']):
+            player_positions[pid] = 'F'
+        else:
+            player_positions[pid] = 'G' if 'G' in pos_str else 'F'
+
+    def get_overlap(start1, end1, start2, end2):
+        return max(0, min(end1, end2) - max(start1, start2))
+
+    # Collection of every line instance
+    raw_line_instances = []
+
+    games = df_shifts.groupby('gameid')
+
+    for game_id, group in games:
+        p_shifts = group.groupby('nhlplayerid')
+        valid_players = [p for p in p_shifts.groups.keys() if p in player_positions]
+
+        for pid in valid_players:
+            my_pos = player_positions.get(pid)
+            if my_pos == 'G': continue
+
+            # Optimization: Pre-filter teammates to only same team
+            try:
+                my_team = df_players.loc[df_players['nhlplayerid'] == pid, 'team'].values[0]
+            except: continue
+
+            my_shift_list = group[group['nhlplayerid'] == pid].to_dict('records')
+            teammates = {}
+
+            for teammate_id in valid_players:
+                if pid == teammate_id: continue
+
+                # Check Team
+                try:
+                    t_team = df_players.loc[df_players['nhlplayerid'] == teammate_id, 'team'].values[0]
+                    if my_team != t_team: continue
+                except: continue
+
+                mate_shift_list = group[group['nhlplayerid'] == teammate_id].to_dict('records')
+                total_time = 0
+
+                for s1 in my_shift_list:
+                    for s2 in mate_shift_list:
+                        if s1['period'] == s2['period']:
+                            total_time += get_overlap(s1['start_seconds'], s1['end_seconds'],
+                                                      s2['start_seconds'], s2['end_seconds'])
+                if total_time > 0:
+                    teammates[teammate_id] = total_time
+
+            sorted_mates = sorted(teammates.items(), key=lambda item: item[1], reverse=True)
+
+            final_mates = []
+            if my_pos == 'F':
+                count = 0
+                for mate_id, time_tog in sorted_mates:
+                    if player_positions.get(mate_id) == 'F':
+                        final_mates.append(mate_id)
+                        count += 1
+                    if count >= 2: break
+            elif my_pos == 'D':
+                count = 0
+                for mate_id, time_tog in sorted_mates:
+                    if player_positions.get(mate_id) == 'D':
+                        final_mates.append(mate_id)
+                        count += 1
+                    if count >= 1: break
+
+            full_line_ids = final_mates + [pid]
+            full_line_names = sorted([player_names.get(x, str(x)) for x in full_line_ids])
+            line_id_str = ",".join(sorted([str(x) for x in full_line_ids]))
+            line_comb = " - ".join(full_line_names)
+            linemates_str = " | ".join([player_names.get(mid, str(mid)) for mid in final_mates])
+
+            raw_line_instances.append({
+                "nhlplayerid": pid,
+                "gameid": game_id,
+                "team": my_team,
+                "linemates": linemates_str,
+                "full_line": line_comb,
+                "line_ids": line_id_str,
+                "pos_type": my_pos,
+                "weight": sum(teammates.get(m, 0) for m in final_mates)
+            })
+
+    if not raw_line_instances:
+        print("No lines calculated.")
+        return
+
+    df_lines_raw = pd.DataFrame(raw_line_instances)
+
+    # 4. PASS 1: Identify "Canonical" Lines (The Ranked Ones)
+    print("Identifying Canonical Lines...")
+
+    line_summary = df_lines_raw.groupby(['gameid', 'team', 'pos_type', 'full_line', 'line_ids'])['weight'].mean().reset_index()
+    line_summary.rename(columns={'weight': 'avg_toi_proxy'}, inplace=True)
+    line_summary.sort_values(by=['gameid', 'team', 'pos_type', 'avg_toi_proxy'], ascending=[True, True, True, False], inplace=True)
+
+    canonical_assignments = {}
+
+    for keys, group in line_summary.groupby(['gameid', 'team', 'pos_type']):
+        _, _, pos_type = keys
+        lines = group.to_dict('records')
+
+        rank_counter = 1
+
+        for line in lines:
+            if not line['line_ids']: continue
+            p_ids = line['line_ids'].split(',')
+
+            # Check if any player is already taken by a higher ranked line
+            is_blocked = False
+            for p_id in p_ids:
+                if (line['gameid'], int(p_id)) in canonical_assignments:
+                    is_blocked = True
+                    break
+
+            if not is_blocked:
+                # Assign Rank!
+                label = 'Depth'
+                if pos_type == 'F' and rank_counter <= 4:
+                    label = str(rank_counter)
+                elif pos_type == 'D' and rank_counter <= 3:
+                    label = str(rank_counter)
+
+                # Register players
+                for p_id in p_ids:
+                    canonical_assignments[(line['gameid'], int(p_id))] = {
+                        'rank': label,
+                        'full_line': line['full_line']
+                    }
+
+                rank_counter += 1
+
+    # 5. PASS 2: Construct Final Player Rows (Canonical + Alt Lines)
+    print("Consolidating Player Data...")
+
+    final_rows = []
+
+    for _, player in df_active.iterrows():
+        pid = player['nhlplayerid']
+        gid = player['gameid']
+
+        p_lines = df_lines_raw[(df_lines_raw['nhlplayerid'] == pid) & (df_lines_raw['gameid'] == gid)].sort_values('weight', ascending=False)
+
+        if p_lines.empty:
+            continue
+
+        assignment = canonical_assignments.get((gid, pid))
+
+        if assignment:
+            final_rank = assignment['rank']
+            final_full_line = assignment['full_line']
+            match = p_lines[p_lines['full_line'] == final_full_line]
+            final_linemates = match.iloc[0]['linemates'] if not match.empty else ""
+        else:
+            top_line = p_lines.iloc[0]
+            final_rank = 'Depth'
+            final_full_line = top_line['full_line']
+            final_linemates = top_line['linemates']
+
+        # Determine Alt Lines
+        ALT_THRESHOLD = 45
+
+        alt_line_list = []
+        for _, row in p_lines.iterrows():
+            if row['full_line'] != final_full_line and row['weight'] > ALT_THRESHOLD:
+                alt_line_list.append(row['full_line'])
+
+        unique_alts = list(dict.fromkeys(alt_line_list))
+        alt_lines_str = ", ".join(unique_alts) if unique_alts else None
+
+        final_rows.append({
+            "nhlplayerid": pid,
+            "gameid": gid,
+            "team": player['team'],
+            "player_name_normalized": player['player_name_normalized'],
+            "positions": player['positions'],
+            "timeonice": player['timeonice'],
+            "linemates": final_linemates,
+            "full_line": final_full_line,
+            "line_number": final_rank,
+            "alt_lines": alt_lines_str,
+            "pos_type": p_lines.iloc[0]['pos_type']
+        })
+
+    df_final_active = pd.DataFrame(final_rows)
+
+    # --- NEW: CALCULATE PP UNITS ---
+    print("Calculating PP Units (PP1 vs PP2)...")
+    if not df_pp.empty:
+        # 1. Merge PP Stats
+        df_final_active = pd.merge(df_final_active, df_pp, on='nhlplayerid', how='left')
+        df_final_active['lg_ppTimeOnIce'] = df_final_active['lg_ppTimeOnIce'].fillna(0)
+
+        # 2. Rank within Team
+        # Rank descending (highest TOI = Rank 1)
+        df_final_active['pp_rank_int'] = df_final_active.groupby('team')['lg_ppTimeOnIce'].rank(method='first', ascending=False)
+
+        # 3. Assign Unit Label (PP1, PP2, or empty)
+        # Condition: Must have > 0 TOI to be ranked
+        def assign_pp_unit(row):
+            if row['lg_ppTimeOnIce'] <= 0: return None
+            if row['pp_rank_int'] <= 5: return "PP1"
+            if row['pp_rank_int'] <= 10: return "PP2"
+            return None
+
+        df_final_active['pp_unit'] = df_final_active.apply(assign_pp_unit, axis=1)
+
+        # 4. Construct 'pp_line' String (Combination of all names in that Unit/Team)
+        # Create a dictionary: { (Team, Unit) : "Name - Name - Name..." }
+        pp_combinations = {}
+
+        # Filter down to just people with a PP Unit
+        pp_players = df_final_active[df_final_active['pp_unit'].notna()]
+
+        # Group by Team + Unit
+        for keys, group in pp_players.groupby(['team', 'pp_unit']):
+            team_key, unit_key = keys
+            # Sort names for consistency
+            names = sorted(group['player_name_normalized'].astype(str).tolist())
+            pp_line_str = " - ".join(names)
+            pp_combinations[(team_key, unit_key)] = pp_line_str
+
+        # 5. Map the string back to the main dataframe
+        def assign_pp_line(row):
+            if not row['pp_unit']: return None
+            return pp_combinations.get((row['team'], row['pp_unit']))
+
+        df_final_active['pp_line'] = df_final_active.apply(assign_pp_line, axis=1)
+
+        # Cleanup helper columns
+        df_final_active.drop(columns=['lg_ppTimeOnIce', 'pp_rank_int'], inplace=True, errors='ignore')
+
+    else:
+        df_final_active['pp_unit'] = None
+        df_final_active['pp_line'] = None
+
+    # 6. Handle INACTIVE Players
+    if not df_inactive.empty:
+        df_inactive_out = df_inactive.copy()
+        df_inactive_out['linemates'] = 'Scratched/Injured'
+        df_inactive_out['full_line'] = ''
+        df_inactive_out['line_number'] = 'Depth'
+        df_inactive_out['alt_lines'] = None
+        df_inactive_out['pos_type'] = ''
+        df_inactive_out['pp_unit'] = None
+        df_inactive_out['pp_line'] = None
+
+        # Select matching columns
+        cols = ['nhlplayerid', 'gameid', 'team', 'player_name_normalized', 'positions',
+                'timeonice', 'linemates', 'full_line', 'line_number', 'alt_lines', 'pos_type', 'pp_unit', 'pp_line']
+
+        # Ensure Active DF has all cols
+        for c in cols:
+            if c not in df_final_active.columns: df_final_active[c] = None
+
+        df_total = pd.concat([df_final_active[cols], df_inactive_out[cols]], ignore_index=True)
+    else:
+        df_total = df_final_active
+
+    # 7. Write to Postgres
+    with get_db_connection() as conn:
+        df_to_postgres(df_total, 'player_lines', conn, if_exists='replace', primary_key='nhlplayerid')
+
+    print("Done. 'player_lines' table created.")
+
+
+def verify_shift_coverage():
+    print("\n--- Verifying Shift Data Integrity (Last 7 Days) ---")
+
+    with get_db_connection() as conn:
+        # 1. Get list of missing games
+        df_missing = read_sql_postgres("""
+            SELECT DISTINCT h.gameid, h.gamedate
+            FROM historical_stats h
+            WHERE h.gamedate >= CURRENT_DATE - INTERVAL '7 days'
+            AND NOT EXISTS (
+                SELECT 1
+                FROM game_shifts s
+                WHERE s.gameid = h.gameid
+            )
+            ORDER BY h.gamedate
+        """, conn)
+
+        # 2. Report Results
+        if df_missing.empty:
+            print("SUCCESS: All recent games in 'historical_stats' have corresponding shift data.")
+        else:
+            print(f"WARNING: Found {len(df_missing)} games with MISSING shift data:")
+            print(df_missing)
+
+            # Optional: Return the list of missing IDs if you want to auto-fix them
+            return df_missing['gameid'].tolist()
+
+    return []
+
+
 def update_toi_stats():
     """ Orchestrator Function """
     create_global_tables()
@@ -1004,12 +2253,22 @@ def update_toi_stats():
     fetch_and_update_faceoff_stats() # New Function
     fetch_and_update_goalie_stats()
 
+    fetch_daily_historical_stats()
+    fetch_daily_summary_stats()
+    fetch_daily_realtime_stats()
+    fetch_game_shifts()
+    fetch_daily_historical_goalie_stats()
+    fetch_daily_goalie_advanced_stats()
+    fetch_daily_goalie_days_rest_stats()
+
     fetch_daily_pp_stats()
 
     create_last_game_pp_table()
     create_last_week_pp_table()
 
     join_special_teams_data()
+    create_player_lines_table()
+    verify_shift_coverage()
 
     create_stats_to_date_table()
     calculate_and_save_to_date_ranks()

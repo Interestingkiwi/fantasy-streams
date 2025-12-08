@@ -3,6 +3,78 @@ document.addEventListener('DOMContentLoaded', () => {
     const timestampText = document.getElementById('timestamp-text');
     const dropdownContainer = document.getElementById('dropdown-container');
 
+    // --- [START] INJECT LINE INFO MODAL ---
+    if (!document.getElementById('line-info-modal')) {
+        const lineModalHTML = `
+        <div id="line-info-modal" class="fixed inset-0 bg-gray-900 bg-opacity-75 flex items-center justify-center z-50 hidden" style="backdrop-filter: blur(2px);">
+            <div class="bg-gray-800 rounded-lg shadow-xl border border-gray-700 w-full max-w-lg p-6 relative">
+                <button id="line-info-close" class="absolute top-3 right-3 text-gray-400 hover:text-white text-2xl leading-none">&times;</button>
+                <h3 id="line-info-title" class="text-xl font-bold text-white mb-4"></h3>
+                <div class="space-y-4 text-sm text-gray-300">
+                    <div class="bg-gray-700/50 p-3 rounded border border-gray-600">
+                        <span class="block text-[10px] text-gray-400 uppercase font-bold tracking-wider mb-1">Time On Ice</span>
+                        <span id="line-info-toi" class="text-white font-mono text-lg font-semibold"></span>
+                    </div>
+                    <div class="bg-gray-700/50 p-3 rounded border border-gray-600">
+                        <span class="block text-[10px] text-gray-400 uppercase font-bold tracking-wider mb-1">Primary Line</span>
+                        <span id="line-info-primary" class="text-white block leading-relaxed"></span>
+                    </div>
+                    <div class="bg-gray-700/50 p-3 rounded border border-gray-600">
+                        <span class="block text-[10px] text-gray-400 uppercase font-bold tracking-wider mb-1">Alternate Linemates</span>
+                        <span id="line-info-alt" class="text-white block leading-relaxed italic"></span>
+                    </div>
+                    <div class="bg-gray-700/50 p-3 rounded border border-gray-600">
+                        <span class="block text-[10px] text-gray-400 uppercase font-bold tracking-wider mb-1">Power Play Unit</span>
+                        <span id="line-info-pp" class="text-white block leading-relaxed"></span>
+                    </div>
+                </div>
+            </div>
+        </div>`;
+        document.body.insertAdjacentHTML('beforeend', lineModalHTML);
+
+        // Close Logic
+        document.body.addEventListener('click', (e) => {
+            const modal = document.getElementById('line-info-modal');
+            if (e.target.closest('#line-info-close') || e.target === modal) {
+                modal.classList.add('hidden');
+            }
+        });
+    }
+    // --- [END] INJECT LINE INFO MODAL ---
+
+    // --- Global Function to Open Line Info Modal ---
+    window.openLineInfoModal = function(player) {
+        const modal = document.getElementById('line-info-modal');
+        if (!modal) return;
+
+        // Helper to format TOI
+        const formatTOI = (seconds) => {
+            if (seconds == null || seconds === undefined) return 'N/A';
+            const s = parseInt(seconds, 10);
+            if (isNaN(s)) return 'N/A';
+            const m = Math.floor(s / 60);
+            const rs = s % 60;
+            return `${m}:${rs < 10 ? '0' : ''}${rs}`;
+        };
+
+        // Populate Data
+        document.getElementById('line-info-title').textContent = `${player.player_name}: Last Game Lines`;
+        document.getElementById('line-info-toi').textContent = formatTOI(player.timeonice);
+        document.getElementById('line-info-primary').textContent = player.full_line || "N/A";
+        document.getElementById('line-info-alt').textContent = player.alt_lines || "None";
+
+        const ppElem = document.getElementById('line-info-pp');
+        if (player.pp_line) {
+            ppElem.textContent = player.pp_line;
+            ppElem.classList.remove('text-gray-500', 'italic');
+        } else {
+            ppElem.textContent = `${player.player_name} did not record any PP Time in previous game`;
+            ppElem.classList.add('text-gray-500', 'italic');
+        }
+
+        modal.classList.remove('hidden');
+    };
+
     // --- [START] AUTOMATED UPDATE LOGIC ---
     if (window.autoUpdateInfo) {
         const info = window.autoUpdateInfo;
