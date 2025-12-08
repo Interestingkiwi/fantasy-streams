@@ -79,13 +79,10 @@
                 return;
             }
             const gPill = e.target.closest('.goalie-info-pill');
-            if (gPill && window.openGoalieInfoModal && (rosterData.players || allWaiverPlayers)) {
+            if (gPill && window.openGoalieInfoModal && currentRosterData) {
                 const pid = String(gPill.dataset.playerId);
-                // Search available lists
-                let player;
-                if (typeof rosterData !== 'undefined') player = rosterData.players.find(p => String(p.player_id) === pid);
-                if (!player && typeof allWaiverPlayers !== 'undefined') player = [...allWaiverPlayers, ...allFreeAgents].find(p => String(p.player_id) === pid);
-
+                // Only search currentRosterData.players in Lineups
+                const player = currentRosterData.players.find(p => String(p.player_id) === pid);
                 if (player) window.openGoalieInfoModal(player);
                 return;
             }
@@ -337,7 +334,7 @@
                     pillHtml = `
                         <span class="ml-2 px-2 py-0.5 rounded text-[10px] font-bold bg-blue-900 text-blue-200 border border-blue-700 cursor-pointer hover:bg-blue-800 goalie-info-pill"
                               data-player-id="${player.player_id}">
-                            ${pct} | Rest: ${safeVal(gd.days_rest)} | ${safeVal(gd.next_loc)}
+                            'L10 GS%:${pct}' | Rest: ${safeVal(gd.days_rest)} | ${safeVal(gd.next_loc)}
                         </span>`;
                 } else {
                     let lineVal = player.line_number;

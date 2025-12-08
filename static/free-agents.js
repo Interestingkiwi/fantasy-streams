@@ -824,13 +824,10 @@
                 return;
             }
             const gPill = e.target.closest('.goalie-info-pill');
-            if (gPill && window.openGoalieInfoModal && (rosterData.players || allWaiverPlayers)) {
+            if (gPill && window.openGoalieInfoModal) {
                 const pid = String(gPill.dataset.playerId);
-                // Search available lists
-                let player;
-                if (typeof rosterData !== 'undefined') player = rosterData.players.find(p => String(p.player_id) === pid);
-                if (!player && typeof allWaiverPlayers !== 'undefined') player = [...allWaiverPlayers, ...allFreeAgents].find(p => String(p.player_id) === pid);
-
+                // Search both waiver and FA lists
+                const player = [...allWaiverPlayers, ...allFreeAgents].find(p => String(p.player_id) === pid);
                 if (player) window.openGoalieInfoModal(player);
                 return;
             }

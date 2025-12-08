@@ -722,117 +722,154 @@ def _enrich_goalie_data(cursor, players_list):
     Calculates L10 Starts, Days Rest, and Splits for goalies in the list.
     Modifies the dictionaries in players_list in-place.
     """
-    try:
-        # Filter for goalies
-        goalies = [p for p in players_list if 'G' in (p.get('eligible_positions') or p.get('positions') or '')]
+    # Filter for goalies
+    goalies = [p for p in players_list if 'G' in (p.get('eligible_positions') or p.get('positions') or '')]
 
-        logging.info(f"DEBUG: Found {len(goalies)} goalies to enrich out of {len(players_list)} players.")
+    if not goalies:
+        return
 
-        if not goalies:
-            return
+    today = date.today()
+    today_str = today.strftime('%Y-%m-%d')
 
-        today = date.today()
-        today_str = today.strftime('%Y-%m-%d')
+    for p in goalies:
+        team = p.get('team') or p.get('player_team')
 
-        for p in goalies:
-            # 1. Get Basic Info
-            team = p.get('team') or p.get('player_team')
-            pid = p.get('player_id') or p.get('nhlplayerid')
-            p_name = p.get('player_name')
+        # [FIX] Prioritize NHL ID. Fallback to lookup if missing.
+        pid = p.get('nhlplayerid')
 
-            if not team or not pid:
-                logging.warning(f"DEBUG: Skipping goalie {p_name} (ID: {pid}) - Missing Team or ID.")
-                continue
-
-            # 2. L10 Team Games & Starts Calculation
-            cursor.execute("""
-                SELECT game_date
-                FROM schedule
-                WHERE (home_team = %s OR away_team = %s)
-                  AND game_date < %s
-                ORDER BY game_date DESC
-                LIMIT 10
-            """, (team, team, today_str))
-            last_10_dates = [row['game_date'] for row in cursor.fetchall()]
-
-            l10_start_pct = 0
-            if last_10_dates:
-                placeholders = ','.join(['%s'] * len(last_10_dates))
-                query = f"""
-                    SELECT COUNT(*) as starts
-                    FROM historical_goalie_stats
-                    WHERE nhlplayerid = %s
-                      AND gamedate IN ({placeholders})
-                      AND gamesstarted = 1
-                """
-                cursor.execute(query, [pid] + last_10_dates)
+        if not pid and p.get('player_name_normalized'):
+            # Fallback: Try to find NHL ID from stats_to_date using name
+            try:
+                cursor.execute("SELECT nhlplayerid FROM stats_to_date WHERE player_name_normalized = %s", (p['player_name_normalized'],))
                 row = cursor.fetchone()
-                starts = row['starts'] if row else 0
-                l10_start_pct = round((starts / 10.0) * 100)
+                if row:
+                    pid = row['nhlplayerid']
+                    p['nhlplayerid'] = pid # Save for future use
+            except:
+                pass
 
-            # 3. Last Game & Days Rest
-            cursor.execute("""
-                SELECT MAX(gamedate) as last_played
+        # If we still don't have an NHL ID, we can't query the NHL history table
+        if not team or not pid:
+            p['goalie_data'] = {
+                'l10_start_pct': 'N/A', 'days_rest': 'N/A', 'next_loc': 'N/A',
+                'season_start_pct': 'N/A',
+                'rest_split': {'w_pct': 'N/A', 'sv_pct': 'N/A'},
+                'loc_split': {'w_pct': 'N/A', 'sv_pct': 'N/A'}
+            }
+            continue
+
+        # 2. L10 Team Games & Starts Calculation
+        cursor.execute("""
+            SELECT game_date
+            FROM schedule
+            WHERE (home_team = %s OR away_team = %s)
+              AND game_date < %s
+            ORDER BY game_date DESC
+            LIMIT 10
+        """, (team, team, today_str))
+        last_10_dates = [row['game_date'] for row in cursor.fetchall()]
+
+        l10_start_pct = 0
+        if last_10_dates:
+            placeholders = ','.join(['%s'] * len(last_10_dates))
+            query = f"""
+                SELECT COUNT(*) as starts
                 FROM historical_goalie_stats
                 WHERE nhlplayerid = %s
-            """, (pid,))
-            last_played_row = cursor.fetchone()
-            last_played_date = last_played_row['last_played'] if last_played_row else None
+                  AND gamedate IN ({placeholders})
+                  AND gamesstarted = 1
+            """
+            cursor.execute(query, [pid] + last_10_dates)
+            row = cursor.fetchone()
+            starts = row['starts'] if row else 0
+            l10_start_pct = round((starts / 10.0) * 100)
 
-            # 4. Next Game & Location
+        # 3. Last Game & Days Rest
+        cursor.execute("""
+            SELECT MAX(gamedate) as last_played
+            FROM historical_goalie_stats
+            WHERE nhlplayerid = %s
+        """, (pid,))
+        last_played_row = cursor.fetchone()
+        last_played_date = last_played_row['last_played'] if last_played_row else None
+
+        # 4. Next Game & Location
+        cursor.execute("""
+            SELECT game_date, home_team, away_team
+            FROM schedule
+            WHERE (home_team = %s OR away_team = %s)
+              AND game_date >= %s
+            ORDER BY game_date ASC
+            LIMIT 1
+        """, (team, team, today_str))
+        next_game = cursor.fetchone()
+
+        days_rest = "N/A"
+        next_loc = "N/A"
+
+        # Calculate Rest
+        if last_played_date and next_game:
+            if isinstance(next_game['game_date'], str):
+                next_date_obj = datetime.strptime(next_game['game_date'], '%Y-%m-%d').date()
+            else:
+                next_date_obj = next_game['game_date']
+
+            diff = (next_date_obj - last_played_date).days
+            days_rest = max(0, diff - 1)
+
+        # Calculate Location
+        if next_game:
+            next_loc = 'H' if next_game['home_team'] == team else 'A'
+
+        # 5. Fetch Split Stats
+        rest_w_pct = "N/A"
+        rest_sv_pct = "N/A"
+
+        if isinstance(days_rest, int):
+            db_rest_val = min(4, days_rest)
             cursor.execute("""
-                SELECT game_date, home_team, away_team
-                FROM schedule
-                WHERE (home_team = %s OR away_team = %s)
-                  AND game_date >= %s
-                ORDER BY game_date ASC
-                LIMIT 1
-            """, (team, team, today_str))
-            next_game = cursor.fetchone()
+                SELECT SUM(wins) as w, COUNT(*) as gp, SUM(saves) as sv, SUM(shotsagainst) as sa
+                FROM historical_goalie_stats
+                WHERE nhlplayerid = %s AND daysrest = %s
+            """, (pid, db_rest_val))
+            r_stats = cursor.fetchone()
+            if r_stats and r_stats['gp'] and r_stats['gp'] > 0:
+                rest_w_pct = round((r_stats['w'] / r_stats['gp']) * 100, 1)
+            if r_stats and r_stats['sa'] and r_stats['sa'] > 0:
+                rest_sv_pct = round((r_stats['sv'] / r_stats['sa']), 3)
 
-            days_rest = "N/A"
-            next_loc = "N/A"
+        loc_w_pct = "N/A"
+        loc_sv_pct = "N/A"
 
-            # Calculate Rest
-            if last_played_date and next_game:
-                # Ensure we are working with date objects
-                if isinstance(next_game['game_date'], str):
-                    next_date_obj = datetime.strptime(next_game['game_date'], '%Y-%m-%d').date()
-                else:
-                    next_date_obj = next_game['game_date']
+        if next_loc in ['H', 'A']:
+            db_loc_val = 'H' if next_loc == 'H' else 'R'
+            cursor.execute("""
+                SELECT SUM(wins) as w, COUNT(*) as gp, SUM(saves) as sv, SUM(shotsagainst) as sa
+                FROM historical_goalie_stats
+                WHERE nhlplayerid = %s AND homeroad = %s
+            """, (pid, db_loc_val))
+            l_stats = cursor.fetchone()
+            if l_stats and l_stats['gp'] and l_stats['gp'] > 0:
+                loc_w_pct = round((l_stats['w'] / l_stats['gp']) * 100, 1)
+            if l_stats and l_stats['sa'] and l_stats['sa'] > 0:
+                loc_sv_pct = round((l_stats['sv'] / l_stats['sa']), 3)
 
-                diff = (next_date_obj - last_played_date).days
-                days_rest = max(0, diff - 1)
+        # 6. Fetch Season Start %
+        cursor.execute("SELECT startpct FROM goalie_to_date WHERE nhlplayerid = %s", (pid,))
+        ss_row = cursor.fetchone()
+        season_start_pct = "N/A"
+        if ss_row and ss_row['startpct'] is not None:
+            season_start_pct = round(ss_row['startpct'] * 100, 1)
 
-            # Calculate Location
-            if next_game:
-                next_loc = 'H' if next_game['home_team'] == team else 'A'
-
-            # 5. Fetch Split Stats
-            rest_w_pct = "N/A"
-            rest_sv_pct = "N/A"
-            loc_w_pct = "N/A"
-            loc_sv_pct = "N/A"
-
-            # (Stats fetching logic omitted for brevity, assuming standard fetch is fine)
-            # ... [Stats fetching logic kept identical to previous version] ...
-
-            # 6. Fetch Season Start %
-            cursor.execute("SELECT startpct FROM goalie_to_date WHERE nhlplayerid = %s", (pid,))
-            ss_row = cursor.fetchone()
-            season_start_pct = "N/A"
-            if ss_row and ss_row['startpct'] is not None:
-                season_start_pct = round(ss_row['startpct'] * 100, 1)
-
-            # Attach Data
-            p['goalie_data'] = {
-                'l10_start_pct': l10_start_pct,
-                'days_rest': days_rest,
-                'next_loc': next_loc,
-                'season_start_pct': season_start_pct,
-                'rest_split': {'w_pct': rest_w_pct, 'sv_pct': rest_sv_pct},
-                'loc_split': {'w_pct': loc_w_pct, 'sv_pct': loc_sv_pct}
-            }
+        # Attach Data
+        p['goalie_data'] = {
+            'l10_start_pct': l10_start_pct,
+            'days_rest': days_rest,
+            'next_loc': next_loc,
+            'season_start_pct': season_start_pct,
+            'rest_split': {'w_pct': rest_w_pct, 'sv_pct': rest_sv_pct},
+            'loc_split': {'w_pct': loc_w_pct, 'sv_pct': loc_sv_pct}
+        }
 
             # DEBUG LOG
             logging.info(f"DEBUG: Enriched {p_name} -> {p['goalie_data']}")
@@ -927,7 +964,7 @@ def _get_ranked_players(cursor, player_ids, cat_rank_columns, raw_stat_columns, 
         END as availability_status
     """
 
-    columns_to_select = base_columns + [status_col] + stat_cols_select + line_info_columns
+    columns_to_select = base_columns + [status_col] + stat_cols_select + line_info_columns + ['proj.nhlplayerid']
 
     query = f"""
         SELECT {', '.join(columns_to_select)}
@@ -3095,7 +3132,7 @@ def get_trade_helper_league_roster_data():
                 valid_normalized_names = [p.get('player_name_normalized') for p in all_players if p.get('player_name_normalized')]
 
                 if valid_normalized_names:
-                    cols_to_select = list(set(cat_rank_columns + pp_cols + raw_stats_to_fetch))
+                    cols_to_select = list(set(cat_rank_columns + pp_cols + raw_stats_to_fetch + ['nhlplayerid']))
                     quoted_cols = [f'"{col}"' for col in cols_to_select]
 
                     placeholders = ','.join(['%s'] * len(valid_normalized_names))
@@ -3661,7 +3698,7 @@ def get_roster_data():
                 cat_rank_columns = [f"{cat.replace('+/-', 'plus_minus')}_cat_rank" for cat in all_scoring_categories]
                 raw_stat_columns = [cat.replace('+/-', 'plus_minus') for cat in all_scoring_categories]
 
-                all_cols = list(set(cat_rank_columns + raw_stat_columns))
+                all_cols = list(set(cat_rank_columns + raw_stat_columns + ['nhlplayerid']))
                 pp_stat_columns = [
                     'avg_ppTimeOnIcePctPerGame', 'lg_ppTimeOnIce', 'lg_ppTimeOnIcePctPerGame',
                     'lg_ppAssists', 'lg_ppGoals', 'avg_ppTimeOnIce', 'total_ppAssists',
