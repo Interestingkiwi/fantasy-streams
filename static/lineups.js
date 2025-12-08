@@ -342,20 +342,20 @@
                              ${pct} | Rest: ${gd.days_rest} | ${gd.next_loc}
                          </span>`;
                 } else {
-                    // [FIX] Use 'player' instead of 'p'
-                    let lineVal = player.line_number;
-                    if (!lineVal || lineVal === 'Depth') lineVal = 'N/A';
-                    else lineVal = `L${lineVal}`;
+                // [FIX] Ensure this uses 'player', NOT 'p'
+                let lineVal = player.line_number;
+                if (!lineVal || lineVal === 'Depth') lineVal = 'N/A';
+                else lineVal = `L${lineVal}`;
 
-                    let ppVal = player.pp_unit;
-                    if (!ppVal || ppVal === 'Depth') ppVal = 'N/A';
+                let ppVal = player.pp_unit;
+                if (!ppVal || ppVal === 'Depth') ppVal = 'N/A';
 
-                    pillHtml = `
-                        <span class="ml-2 px-2 py-0.5 rounded text-[10px] font-bold bg-red-900 text-red-200 border border-red-700 cursor-pointer hover:bg-red-800 line-info-pill"
-                              data-player-id="${player.player_id}">
-                            ${lineVal} | ${ppVal}
-                        </span>`;
-        }
+                pillHtml = `
+                    <span class="ml-2 px-2 py-0.5 rounded text-[10px] font-bold bg-red-900 text-red-200 border border-red-700 cursor-pointer hover:bg-red-800 line-info-pill"
+                          data-player-id="${player.player_id}">
+                        ${lineVal} | ${ppVal}
+                    </span>`;
+            }
             // ----------------------
 
             const opponentsList = (player.opponents_list || []).join(', ');

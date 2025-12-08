@@ -556,91 +556,75 @@
     }
 
     function renderRosterTable(container, players, categories, showTeamColumn) {
-        if (!players || players.length === 0) { container.innerHTML = `<p class="text-gray-400 p-4">No players found matching criteria.</p>`; return; }
-
-        // --- Check Show Raw ---
-        const showRaw = localStorage.getItem('showRawData') === 'true';
-
-        let html = `<div class="overflow-x-auto"><table class="min-w-full divide-y divide-gray-700 text-sm"><thead class="bg-gray-700/50"><tr>`;
-        html += `<th class="px-2 py-1 text-center w-8">Select</th>`;
-        html += `<th class="px-2 py-1 text-left font-bold text-gray-300">Player</th>`;
-        if (showTeamColumn) html += `<th class="px-2 py-1 text-left font-bold text-gray-300">Team</th>`;
-        html += `<th class="px-2 py-1 text-left font-bold text-gray-300">NHL Team</th><th class="px-2 py-1 text-left font-bold text-gray-300">Pos</th>`;
-        html += `<th class="px-2 py-1 text-center font-bold text-gray-300" title="Sum of Category Ranks">Cat Rank</th>`;
-        html += `<th class="px-2 py-1 text-center font-bold text-gray-300" title="Power Play Utilization">PP Util</th>`;
-        categories.forEach(cat => html += `<th class="px-2 py-1 text-center font-bold text-gray-300" title="${cat}">${cat}</th>`);
+        // ... (lines 623-644 remain the same) ...
         html += `</tr></thead><tbody class="bg-gray-800 divide-y divide-gray-700">`;
 
-        players.forEach(p => {
-            const isChecked = selectedPlayerIds.has(String(p.player_id)) ? 'checked' : '';
-            const teamClass = p.fantasy_team_name === userTeamName ? 'border-l-4 border-blue-500' : '';
+        // [FIX] Change 'p' to 'player' here to match the logic inside
+        players.forEach(player => {
+            const isChecked = selectedPlayerIds.has(String(player.player_id)) ? 'checked' : '';
+            const teamClass = player.fantasy_team_name === userTeamName ? 'border-l-4 border-blue-500' : '';
 
             // --- PILL GENERATION ---
             let pillHtml = '';
 
-                // [FIX] Use 'player' instead of 'p'
-                const isGoalie = (player.positions || player.eligible_positions || '').includes('G');
+            // Now 'player' is defined!
+            const isGoalie = (player.positions || player.eligible_positions || '').includes('G');
 
-                // ... (Goalie Logic) ...
-                if (isGoalie) {
-                     // [FIX] Use 'player' instead of 'p'
-                     const gd = player.goalie_data || { l10_start_pct: 'N/A', days_rest: 'N/A', next_loc: 'N/A' };
-                     const pct = gd.l10_start_pct !== 'N/A' ? `${gd.l10_start_pct}%` : 'N/A';
+            if (isGoalie) {
+                 const gd = player.goalie_data || { l10_start_pct: 'N/A', days_rest: 'N/A', next_loc: 'N/A' };
+                 const pct = gd.l10_start_pct !== 'N/A' ? `${gd.l10_start_pct}%` : 'N/A';
 
-                     pillHtml = `
-                         <span class="ml-2 px-2 py-0.5 rounded text-[10px] font-bold bg-blue-900 text-blue-200 border border-blue-700 cursor-pointer hover:bg-blue-800 goalie-info-pill"
-                               data-player-id="${player.player_id}">
-                             ${pct} | Rest: ${gd.days_rest} | ${gd.next_loc}
-                         </span>`;
-                } else {
-                    // [FIX] Use 'player' instead of 'p'
-                    let lineVal = player.line_number;
-                    if (!lineVal || lineVal === 'Depth') lineVal = 'N/A';
-                    else lineVal = `L${lineVal}`;
+                 pillHtml = `
+                     <span class="ml-2 px-2 py-0.5 rounded text-[10px] font-bold bg-blue-900 text-blue-200 border border-blue-700 cursor-pointer hover:bg-blue-800 goalie-info-pill"
+                           data-player-id="${player.player_id}">
+                         ${pct} | Rest: ${gd.days_rest} | ${gd.next_loc}
+                     </span>`;
+            } else {
+                let lineVal = player.line_number;
+                if (!lineVal || lineVal === 'Depth') lineVal = 'N/A';
+                else lineVal = `L${lineVal}`;
 
-                    let ppVal = player.pp_unit;
-                    if (!ppVal || ppVal === 'Depth') ppVal = 'N/A';
+                let ppVal = player.pp_unit;
+                if (!ppVal || ppVal === 'Depth') ppVal = 'N/A';
 
-                    pillHtml = `
-                        <span class="ml-2 px-2 py-0.5 rounded text-[10px] font-bold bg-red-900 text-red-200 border border-red-700 cursor-pointer hover:bg-red-800 line-info-pill"
-                              data-player-id="${player.player_id}">
-                            ${lineVal} | ${ppVal}
-                        </span>`;
-        }
-            // -----------------------
+                pillHtml = `
+                    <span class="ml-2 px-2 py-0.5 rounded text-[10px] font-bold bg-red-900 text-red-200 border border-red-700 cursor-pointer hover:bg-red-800 line-info-pill"
+                          data-player-id="${player.player_id}">
+                        ${lineVal} | ${ppVal}
+                    </span>`;
+            }
 
             html += `<tr class="hover:bg-gray-700/50 ${teamClass}">`;
-            html += `<td class="px-2 py-1 text-center"><input type="checkbox" value="${p.player_id}" class="trade-player-checkbox form-checkbox h-4 w-4 text-blue-600 rounded bg-gray-700 border-gray-600" ${isChecked}></td>`;
+            // [FIX] Update all references from 'p' to 'player' below
+            html += `<td class="px-2 py-1 text-center"><input type="checkbox" value="${player.player_id}" class="trade-player-checkbox form-checkbox h-4 w-4 text-blue-600 rounded bg-gray-700 border-gray-600" ${isChecked}></td>`;
 
-            // --- FIX IS HERE: Added flex, items-center, and ${pillHtml} ---
             html += `<td class="px-2 py-1 whitespace-nowrap font-medium text-gray-300 flex items-center">
-                        ${p.player_name}
+                        ${player.player_name}
                         ${pillHtml}
                      </td>`;
 
-            if (showTeamColumn) html += `<td class="px-2 py-1 whitespace-nowrap text-yellow-300">${p.fantasy_team_name}</td>`;
-            html += `<td class="px-2 py-1 whitespace-nowrap text-gray-300">${p.team}</td><td class="px-2 py-1 whitespace-nowrap text-gray-300">${p.eligible_positions}</td>`;
+            if (showTeamColumn) html += `<td class="px-2 py-1 whitespace-nowrap text-yellow-300">${player.fantasy_team_name}</td>`;
+            html += `<td class="px-2 py-1 whitespace-nowrap text-gray-300">${player.team}</td><td class="px-2 py-1 whitespace-nowrap text-gray-300">${player.eligible_positions}</td>`;
 
             // Cat Rank
             let catSum = 0, validRanks = 0;
-            categories.forEach(cat => { const r = p[cat + '_cat_rank']; if (r != null) { catSum += r; validRanks++; } });
+            categories.forEach(cat => { const r = player[cat + '_cat_rank']; if (r != null) { catSum += r; validRanks++; } });
 
-            // --- Clickable Cat Rank ---
-            html += `<td class="px-2 py-1 text-center font-bold text-white cursor-pointer hover:text-blue-400 cat-rank-cell" data-player-id="${p.player_id}">${validRanks > 0 ? Math.round(catSum) : '-'}</td>`;
+            html += `<td class="px-2 py-1 text-center font-bold text-white cursor-pointer hover:text-blue-400 cat-rank-cell" data-player-id="${player.player_id}">${validRanks > 0 ? Math.round(catSum) : '-'}</td>`;
 
             // PP Util
-            if (p.avg_ppTimeOnIcePctPerGame !== undefined) {
-                html += `<td class="px-2 py-1 whitespace-nowrap text-sm text-gray-300 cursor-pointer hover:bg-gray-700 pp-util-cell" data-player-name="${p.player_name}" data-lg-pp-toi="${p.lg_ppTimeOnIce}" data-lg-pp-pct="${p.lg_ppTimeOnIcePctPerGame}" data-lg-ppa="${p.lg_ppAssists}" data-lg-ppg="${p.lg_ppGoals}" data-lw-pp-toi="${p.avg_ppTimeOnIce}" data-lw-pp-pct="${p.avg_ppTimeOnIcePctPerGame}" data-lw-ppa="${p.total_ppAssists}" data-lw-ppg="${p.total_ppGoals}" data-lw-gp="${p.team_games_played}">${formatPercentage(p.avg_ppTimeOnIcePctPerGame)}</td>`;
+            if (player.avg_ppTimeOnIcePctPerGame !== undefined) {
+                html += `<td class="px-2 py-1 whitespace-nowrap text-sm text-gray-300 cursor-pointer hover:bg-gray-700 pp-util-cell" data-player-name="${player.player_name}" data-lg-pp-toi="${player.lg_ppTimeOnIce}" data-lg-pp-pct="${player.lg_ppTimeOnIcePctPerGame}" data-lg-ppa="${player.lg_ppAssists}" data-lg-ppg="${player.lg_ppGoals}" data-lw-pp-toi="${player.avg_ppTimeOnIce}" data-lw-pp-pct="${player.avg_ppTimeOnIcePctPerGame}" data-lw-ppa="${player.total_ppAssists}" data-lw-ppg="${player.total_ppGoals}" data-lw-gp="${player.team_games_played}">${formatPercentage(player.avg_ppTimeOnIcePctPerGame)}</td>`;
             } else { html += `<td class="px-2 py-1 text-center text-gray-500">-</td>`; }
 
-            // --- Categories ---
+            // Categories
             categories.forEach(cat => {
-                const rank = p[cat + '_cat_rank'];
+                const rank = player[cat + '_cat_rank'];
                 const heatColor = getHeatmapColor(rank);
                 let displayValue = '-';
 
                 if (showRaw) {
-                    const val = p[cat];
+                    const val = player[cat];
                     displayValue = (val != null && !isNaN(val)) ? parseFloat(val).toFixed(2).replace(/[.,]00$/, "") : (val || '-');
                 } else {
                     displayValue = (rank != null) ? Math.round(rank) : '-';

@@ -492,20 +492,6 @@
                               data-player-id="${player.player_id}">
                             ${lineVal} | ${ppVal}
                         </span>`;
-            } else {
-                // SKATER PILL (Existing Logic)
-                let lineVal = p.line_number;
-                if (!lineVal || lineVal === 'Depth') lineVal = 'N/A';
-                else lineVal = `L${lineVal}`;
-
-                let ppVal = p.pp_unit;
-                if (!ppVal || ppVal === 'Depth') ppVal = 'N/A';
-
-                pillHtml = `
-                    <span class="ml-2 px-2 py-0.5 rounded text-[10px] font-bold bg-red-900 text-red-200 border border-red-700 cursor-pointer hover:bg-red-800 line-info-pill"
-                          data-player-id="${p.player_id}">
-                        ${lineVal} | ${ppVal}
-                    </span>`;
             }
                 // ----------------------------
 
