@@ -48,13 +48,24 @@
             </div>`;
             document.body.insertAdjacentHTML('beforeend', modalsHTML);
         }
-
+        if (!document.getElementById('trending-stats-modal')) {
+             const trendingModalHTML = `
+            <div id="trending-stats-modal" class="fixed inset-0 bg-gray-900 bg-opacity-75 flex items-center justify-center z-50 hidden" style="backdrop-filter: blur(2px);">
+                <div class="bg-gray-800 rounded-lg shadow-xl p-6 w-full max-w-sm relative border border-gray-700">
+                    <button id="trending-modal-close" class="absolute top-3 right-3 text-gray-400 hover:text-white text-2xl leading-none">&times;</button>
+                    <h3 id="trending-modal-title" class="text-xl font-bold text-white mb-4">Player Trending</h3>
+                    <div id="trending-modal-content" class="text-gray-300"></div>
+                </div>
+            </div>`;
+            document.body.insertAdjacentHTML('beforeend', trendingModalHTML);
+        }
         // --- 2. Global Modal Click Listener (Delegation) ---
         // Attaching to Body ensures we catch clicks even after table re-renders
         document.body.addEventListener('click', (e) => {
             // Close Buttons
             if (e.target.closest('#pp-modal-close') || e.target.id === 'pp-stats-modal') document.getElementById('pp-stats-modal').classList.add('hidden');
             if (e.target.closest('#opponent-modal-close') || e.target.id === 'opponent-stats-modal') document.getElementById('opponent-stats-modal').classList.add('hidden');
+            if (e.target.closest('#trending-modal-close') || e.target.id === 'trending-stats-modal') document.getElementById('trending-stats-modal').classList.add('hidden');
 
             // 1. PP Util Cell
             const ppCell = e.target.closest('.pp-util-cell');
@@ -149,6 +160,16 @@
                     window.openCatRankModal(player, cats);
                 }
                 return;
+            }
+            const trendIcon = e.target.closest('.trending-icon');
+            if (trendIcon && currentRosterData) {
+                const pid = String(trendIcon.dataset.playerId);
+                const player = currentRosterData.players.find(p => String(p.player_id) === pid);
+                if (player) {
+                    document.getElementById('trending-modal-title').textContent = `${player.player_name} - Trend`;
+                    document.getElementById('trending-modal-content').innerHTML = `<pre class="text-xs">${JSON.stringify(player.trend_details, null, 2)}</pre>`;
+                    document.getElementById('trending-stats-modal').classList.remove('hidden');
+                }
             }
         });
 
@@ -305,6 +326,7 @@
                                 <th class="px-2 py-1 text-left text-xs font-bold text-gray-300 uppercase">Starts</th>
                                 <th class="px-2 py-1 text-left text-xs font-bold text-gray-300 uppercase">Next Wk</th>
                                 <th class="px-2 py-1 text-left text-xs font-bold text-gray-300 uppercase">PP Util</th>
+                                <th class="px-2 py-1 text-center text-xs font-bold text-gray-300 uppercase">Trending</th>
                                 <th class="px-2 py-1 text-center text-xs font-bold text-gray-300 uppercase">Total Rank</th>
         `;
         (categories || []).forEach(cat => {
@@ -350,6 +372,14 @@
                             ${lineVal} | ${ppVal}
                         </span>`;
                 }
+                let trendIcon = '';
+                if (player.trend_status === 'up') {
+                    trendIcon = `<span class="text-green-500 text-lg cursor-pointer trending-icon" data-player-id="${player.player_id}">&#9650;</span>`;
+                } else if (player.trend_status === 'down') {
+                    trendIcon = `<span class="text-red-500 text-lg cursor-pointer trending-icon" data-player-id="${player.player_id}">&#9660;</span>`;
+                } else {
+                    trendIcon = `<span class="text-yellow-500 text-lg cursor-pointer trending-icon" data-player-id="${player.player_id}">&#8722;</span>`;
+                }
                 // ----------------------
 
                 const opponentsList = (player.opponents_list || []).join(', ');
@@ -392,7 +422,7 @@
                             data-lw-gp="${player.team_games_played}">
                             ${formatPercentage(player.avg_ppTimeOnIcePctPerGame)}
                         </td>
-
+                        <td class="px-2 py-1 text-center whitespace-nowrap">${trendIcon}</td>
                         <td class="px-2 py-1 text-center font-bold text-blue-400 cursor-pointer hover:text-blue-300 cat-rank-cell" data-player-id="${player.player_id}">
                             ${validRanks > 0 ? Math.round(catRankSum) : '-'}
                         </td>

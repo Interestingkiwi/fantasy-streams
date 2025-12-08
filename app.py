@@ -885,6 +885,20 @@ def _enrich_goalie_data(cursor, players_list):
         # Do not re-raise, allow the endpoint to return partial data rather than 500
 
 
+def _enrich_player_trends(cursor, players_list):
+    """
+    Determines the trend status for a list of players.
+    Populates 'trend_status' ('up', 'down', 'flat') and 'trend_details' (dict).
+    """
+    for p in players_list:
+        # Placeholder Logic: Randomly assign for now to visualize the UI
+        # In the future, this will query DB for L10 games, etc.
+        p['trend_status'] = random.choice(['up', 'down', 'flat'])
+        p['trend_details'] = {
+            'last_3_games': 'Data to be implemented',
+            'season_diff': 'Data to be implemented'
+        }
+
 def _get_ranked_players(cursor, player_ids, cat_rank_columns, raw_stat_columns, week_num, team_stats_map, league_id, sourcing='projected'):
     """
     Internal helper to fetch player details, ranks, and schedules for a list of player IDs.
@@ -1049,6 +1063,7 @@ def _get_ranked_players(cursor, player_ids, cat_rank_columns, raw_stat_columns, 
             player['games_next_week'].append(game_date.strftime('%a'))
 
     _enrich_goalie_data(cursor, players)
+    _enrich_player_trends(cursor, players)
 
     return players
 
@@ -3189,6 +3204,7 @@ def get_trade_helper_league_roster_data():
                             player['pp_line'] = l_data.get('pp_line')
                             player['timeonice'] = l_data.get('timeonice')
                 _enrich_goalie_data(cursor, all_players)
+                _enrich_player_trends(cursor, all_players)
                 return jsonify({
                     'players': all_players,
                     'skater_categories': skater_categories,
@@ -3841,6 +3857,7 @@ def get_roster_data():
 
                 unused_roster_spots = _calculate_unused_spots(days_in_week, base_roster_players, lineup_settings, simulated_moves)
                 _enrich_goalie_data(cursor, all_players)
+                _enrich_player_trends(cursor, all_players)
                 return jsonify({
                     'players': all_players,
                     'daily_optimal_lineups': daily_optimal_lineups,
@@ -3945,6 +3962,11 @@ def get_free_agent_data():
                                 else:
                                     total_rank += rank_value
                         player['total_cat_rank'] = round(total_rank, 2)
+                        # --- NEW CALLS ---
+                _enrich_player_trends(cursor, waiver_players)
+                _enrich_player_trends(cursor, free_agents)
+                if 'team_ranked_roster' in locals() and team_ranked_roster:
+                     _enrich_player_trends(cursor, team_ranked_roster)
 
                 # 6. Calculate Unused Spots (If Team Selected)
                 unused_roster_spots = None

@@ -444,6 +444,7 @@
                                 <th class="px-2 py-2 text-left text-xs font-bold text-gray-300 uppercase tracking-wider">Opponents</th>
                                 <th class="px-2 py-2 text-left text-xs font-bold text-gray-300 uppercase tracking-wider">Next Week</th>
                                 <th class="px-2 py-2 text-left text-xs font-bold text-gray-300 uppercase tracking-wider">PP Utilization<span class="text-xs text-gray-400 font-light block">(Click)</span></th>
+                                <th class="px-2 py-2 text-center text-xs font-bold text-gray-300 uppercase tracking-wider">Trending</th>
                                 <th class="px-2 py-2 text-left text-xs font-bold text-gray-300 uppercase tracking-wider sortable" data-sort-key="total_cat_rank" data-table-type="${tableType}">Total Cat Rank</th>
         `;
         categories.forEach(cat => {
@@ -489,6 +490,14 @@
                                 ${lineVal} | ${ppVal}
                             </span>`;
                     }
+                    let trendIcon = '';
+                    if (player.trend_status === 'up') {
+                        trendIcon = `<span class="text-green-500 text-lg cursor-pointer trending-icon" data-player-id="${player.player_id}">&#9650;</span>`; // Up Triangle
+                    } else if (player.trend_status === 'down') {
+                        trendIcon = `<span class="text-red-500 text-lg cursor-pointer trending-icon" data-player-id="${player.player_id}">&#9660;</span>`; // Down Triangle
+                    } else {
+                        trendIcon = `<span class="text-yellow-500 text-lg cursor-pointer trending-icon" data-player-id="${player.player_id}">&#8722;</span>`; // Hyphen
+                    }
                     // ----------------------------
 
                     const playerPositions = player.positions ? player.positions.split(',') : [];
@@ -517,7 +526,7 @@
                             <td class="px-2 py-2 whitespace-nowrap text-sm text-gray-300 cursor-pointer hover:bg-gray-700 opponent-stats-cell" data-player-name="${player.player_name}" data-is-goalie="${isGoalie}" data-opponent-stats='${opponentStatsJson}'>${opponentsList}</td>
                             <td class="px-2 py-2 whitespace-nowrap text-sm text-gray-300">${(player.games_next_week || []).join(', ')}</td>
                             <td class="px-2 py-2 whitespace-nowrap text-sm text-gray-300 cursor-pointer hover:bg-gray-700 pp-util-cell" data-player-name="${player.player_name}" data-avg-pp-pct="${player.avg_ppTimeOnIcePctPerGame}" data-lg-pp-toi="${player.lg_ppTimeOnIce}" data-lg-pp-pct="${player.lg_ppTimeOnIcePctPerGame}" data-lg-ppa="${player.lg_ppAssists}" data-lg-ppg="${player.lg_ppGoals}" data-lw-pp-toi="${player.avg_ppTimeOnIce}" data-lw-pp-pct="${player.avg_ppTimeOnIcePctPerGame}" data-lw-ppa="${player.total_ppAssists}" data-lw-ppg="${player.total_ppGoals}" data-lw-gp="${player.team_games_played}">${formatPercentage(player.avg_ppTimeOnIcePctPerGame)}</td>
-
+                            <td class="px-2 py-2 whitespace-nowrap text-center">${trendIcon}</td>
                             <td class="px-2 py-2 whitespace-nowrap text-sm font-bold text-blue-400 cursor-pointer hover:text-blue-300 cat-rank-cell" data-player-id="${player.player_id}">${player.total_cat_rank}</td>
                     `;
 
@@ -868,12 +877,25 @@
             </div>`;
             document.body.insertAdjacentHTML('beforeend', modalsHTML);
         }
-
+        if (!document.getElementById('trending-stats-modal')) {
+             const trendingModalHTML = `
+            <div id="trending-stats-modal" class="fixed inset-0 bg-gray-900 bg-opacity-75 flex items-center justify-center z-50 hidden" style="backdrop-filter: blur(2px);">
+                <div class="bg-gray-800 rounded-lg shadow-xl p-6 w-full max-w-sm relative border border-gray-700">
+                    <button id="trending-modal-close" class="absolute top-3 right-3 text-gray-400 hover:text-white text-2xl leading-none">&times;</button>
+                    <h3 id="trending-modal-title" class="text-xl font-bold text-white mb-4">Player Trending</h3>
+                    <div id="trending-modal-content" class="text-gray-300">
+                        <p>Detailed trend analysis coming soon...</p>
+                    </div>
+                </div>
+            </div>`;
+            document.body.insertAdjacentHTML('beforeend', trendingModalHTML);
+        }
         // --- 2. Global Click Handler (Delegation for all tables) ---
         document.body.addEventListener('click', (e) => {
             // Close Buttons
             if (e.target.closest('#pp-modal-close') || e.target.id === 'pp-stats-modal') document.getElementById('pp-stats-modal').classList.add('hidden');
             if (e.target.closest('#opponent-modal-close') || e.target.id === 'opponent-stats-modal') document.getElementById('opponent-stats-modal').classList.add('hidden');
+            if (e.target.closest('#trending-modal-close') || e.target.id === 'trending-stats-modal') document.getElementById('trending-stats-modal').classList.add('hidden');
 
             // A. PP Util Cell
             const ppCell = e.target.closest('.pp-util-cell');
@@ -951,6 +973,17 @@
                     const isGoalie = (player.positions || '').includes('G');
                     const cats = isGoalie ? goalieCategories : skaterCategories;
                     window.openCatRankModal(player, cats);
+                }
+            }
+            const trendIcon = e.target.closest('.trending-icon');
+            if (trendIcon) {
+                const pid = String(trendIcon.dataset.playerId);
+                const player = [...allWaiverPlayers, ...allFreeAgents].find(p => String(p.player_id) === pid);
+                if (player) {
+                    document.getElementById('trending-modal-title').textContent = `${player.player_name} - Trend`;
+                    // Dump the placeholder details for now
+                    document.getElementById('trending-modal-content').innerHTML = `<pre class="text-xs">${JSON.stringify(player.trend_details, null, 2)}</pre>`;
+                    document.getElementById('trending-stats-modal').classList.remove('hidden');
                 }
             }
         });

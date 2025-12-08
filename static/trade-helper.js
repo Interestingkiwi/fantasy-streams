@@ -62,13 +62,23 @@
             </div>`;
             document.body.insertAdjacentHTML('beforeend', ppModalHTML);
         }
-
+        if (!document.getElementById('trending-stats-modal')) {
+             const trendingModalHTML = `
+            <div id="trending-stats-modal" class="fixed inset-0 bg-gray-900 bg-opacity-75 flex items-center justify-center z-50 hidden" style="backdrop-filter: blur(2px);">
+                <div class="bg-gray-800 rounded-lg shadow-xl p-6 w-full max-w-sm relative border border-gray-700">
+                    <button id="trending-modal-close" class="absolute top-3 right-3 text-gray-400 hover:text-white text-2xl leading-none">&times;</button>
+                    <h3 id="trending-modal-title" class="text-xl font-bold text-white mb-4">Player Trending</h3>
+                    <div id="trending-modal-content" class="text-gray-300"></div>
+                </div>
+            </div>`;
+            document.body.insertAdjacentHTML('beforeend', trendingModalHTML);
+        }
         // --- 2. Global Event Listeners ---
         document.body.addEventListener('click', (e) => {
             if (e.target.closest('#pp-modal-close') || e.target.id === 'pp-stats-modal') {
                 document.getElementById('pp-stats-modal').classList.add('hidden');
             }
-
+            if (e.target.closest('#trending-modal-close') || e.target.id === 'trending-stats-modal') document.getElementById('trending-stats-modal').classList.add('hidden');
             // A. PP Util Cell
             const ppCell = e.target.closest('.pp-util-cell');
             if (ppCell) {
@@ -127,7 +137,16 @@
                     window.openCatRankModal(player, cats);
                 }
             }
-
+            const trendIcon = e.target.closest('.trending-icon');
+            if (trendIcon && rosterData.players) {
+                const pid = String(trendIcon.dataset.playerId);
+                const player = rosterData.players.find(p => String(p.player_id) === pid);
+                if (player) {
+                    document.getElementById('trending-modal-title').textContent = `${player.player_name} - Trend`;
+                    document.getElementById('trending-modal-content').innerHTML = `<pre class="text-xs">${JSON.stringify(player.trend_details, null, 2)}</pre>`;
+                    document.getElementById('trending-stats-modal').classList.remove('hidden');
+                }
+            }
 
             // C. Simulate Button
             const simBtn = e.target.closest('#simulate-trade-btn');
@@ -564,6 +583,7 @@
         html += `<th class="px-2 py-1 text-left font-bold text-gray-300">NHL Team</th><th class="px-2 py-1 text-left font-bold text-gray-300">Pos</th>`;
         html += `<th class="px-2 py-1 text-center font-bold text-gray-300" title="Sum of Category Ranks">Cat Rank</th>`;
         html += `<th class="px-2 py-1 text-center font-bold text-gray-300" title="Power Play Utilization">PP Util</th>`;
+        html += `<th class="px-2 py-1 text-center font-bold text-gray-300">Trending</th>`;
         categories.forEach(cat => html += `<th class="px-2 py-1 text-center font-bold text-gray-300" title="${cat}">${cat}</th>`);
         html += `</tr></thead><tbody class="bg-gray-800 divide-y divide-gray-700">`;
 
@@ -602,6 +622,14 @@
                             ${lineVal} | ${ppVal}
                         </span>`;
                 }
+                let trendIcon = '';
+                if (p.trend_status === 'up') {
+                    trendIcon = `<span class="text-green-500 text-lg cursor-pointer trending-icon" data-player-id="${p.player_id}">&#9650;</span>`;
+                } else if (p.trend_status === 'down') {
+                    trendIcon = `<span class="text-red-500 text-lg cursor-pointer trending-icon" data-player-id="${p.player_id}">&#9660;</span>`;
+                } else {
+                    trendIcon = `<span class="text-yellow-500 text-lg cursor-pointer trending-icon" data-player-id="${p.player_id}">&#8722;</span>`;
+                }
                 // -----------------------
 
                 html += `<tr class="hover:bg-gray-700/50 ${teamClass}">`;
@@ -623,7 +651,7 @@
                 if (p.avg_ppTimeOnIcePctPerGame !== undefined) {
                     html += `<td class="px-2 py-1 whitespace-nowrap text-sm text-gray-300 cursor-pointer hover:bg-gray-700 pp-util-cell" data-player-name="${p.player_name}" data-lg-pp-toi="${p.lg_ppTimeOnIce}" data-lg-pp-pct="${p.lg_ppTimeOnIcePctPerGame}" data-lg-ppa="${p.lg_ppAssists}" data-lg-ppg="${p.lg_ppGoals}" data-lw-pp-toi="${p.avg_ppTimeOnIce}" data-lw-pp-pct="${p.avg_ppTimeOnIcePctPerGame}" data-lw-ppa="${p.total_ppAssists}" data-lw-ppg="${p.total_ppGoals}" data-lw-gp="${p.team_games_played}">${formatPercentage(p.avg_ppTimeOnIcePctPerGame)}</td>`;
                 } else { html += `<td class="px-2 py-1 text-center text-gray-500">-</td>`; }
-
+                html += `<td class="px-2 py-1 text-center whitespace-nowrap">${trendIcon}</td>`;
                 categories.forEach(cat => {
                     const rank = p[cat + '_cat_rank'];
                     const heatColor = getHeatmapColor(rank);
