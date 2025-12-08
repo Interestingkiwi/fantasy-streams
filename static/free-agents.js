@@ -456,101 +456,99 @@
             tableHtml += `<tr><td colspan="${totalColumns}" class="text-center py-4 text-gray-400">No players match the current filter.</td></tr>`;
         } else {
             playersToDisplay.forEach(player => {
-                const isAlreadyAdded = simulatedMoves.some(m => m.added_player && m.added_player.player_id === player.player_id);
-                const checkboxDisabled = isAlreadyAdded ? 'disabled' : '';
-                const statusHtml = player.status ? ` <a href="https://sports.yahoo.com/nhl/players/${player.player_id}/news/" target="_blank" rel="noopener noreferrer" class="text-red-400 ml-1 hover:text-red-300 hover:underline">(${player.status})</a>` : '';
+                try {
+                    const isAlreadyAdded = simulatedMoves.some(m => m.added_player && m.added_player.player_id === player.player_id);
+                    const checkboxDisabled = isAlreadyAdded ? 'disabled' : '';
+                    const statusHtml = player.status ? ` <a href="https://sports.yahoo.com/nhl/players/${player.player_id}/news/" target="_blank" rel="noopener noreferrer" class="text-red-400 ml-1 hover:text-red-300 hover:underline">(${player.status})</a>` : '';
 
-                // --- LINE INFO PILL LOGIC ---
-                // Shows "L# | PP#" (e.g. "L1 | PP1" or "L2 | N/A")
-                let pillHtml = '';
+                    // --- LINE INFO PILL LOGIC (Updated & Safe) ---
+                    let pillHtml = '';
+                    const isGoalie = (player.positions || player.eligible_positions || '').includes('G');
 
-                // [FIX] Use 'player' instead of 'p'
-                const isGoalie = (player.positions || player.eligible_positions || '').includes('G');
+                    if (isGoalie) {
+                         const gd = player.goalie_data || { l10_start_pct: 'N/A', days_rest: 'N/A', next_loc: 'N/A' };
+                         const safeVal = (v) => (v === undefined || v === null) ? 'N/A' : v;
+                         const pct = safeVal(gd.l10_start_pct) !== 'N/A' ? `${gd.l10_start_pct}%` : 'N/A';
 
-                // ... (Goalie Logic) ...
-                if (isGoalie) {
-                     // [FIX] Use 'player' instead of 'p'
-                     const gd = player.goalie_data || { l10_start_pct: 'N/A', days_rest: 'N/A', next_loc: 'N/A' };
-                     const pct = gd.l10_start_pct !== 'N/A' ? `${gd.l10_start_pct}%` : 'N/A';
-
-                     pillHtml = `
-                         <span class="ml-2 px-2 py-0.5 rounded text-[10px] font-bold bg-blue-900 text-blue-200 border border-blue-700 cursor-pointer hover:bg-blue-800 goalie-info-pill"
-                               data-player-id="${player.player_id}">
-                             ${pct} | Rest: ${gd.days_rest} | ${gd.next_loc}
-                         </span>`;
-                } else {
-                    // [FIX] Use 'player' instead of 'p'
-                    let lineVal = player.line_number;
-                    if (!lineVal || lineVal === 'Depth') lineVal = 'N/A';
-                    else lineVal = `L${lineVal}`;
-
-                    let ppVal = player.pp_unit;
-                    if (!ppVal || ppVal === 'Depth') ppVal = 'N/A';
-
-                    pillHtml = `
-                        <span class="ml-2 px-2 py-0.5 rounded text-[10px] font-bold bg-red-900 text-red-200 border border-red-700 cursor-pointer hover:bg-red-800 line-info-pill"
-                              data-player-id="${player.player_id}">
-                            ${lineVal} | ${ppVal}
-                        </span>`;
-            }
-                // ----------------------------
-
-                const playerPositions = player.positions ? player.positions.split(',') : [];
-                const gamesThisWeek = player.games_this_week || [];
-                let gamesThisWeekHtml = gamesThisWeek.map(day => {
-                    if (!currentUnusedSpots || !currentUnusedSpots[day]) return day;
-                    for (const pos of playerPositions) {
-                        if (String(currentUnusedSpots[day][pos.trim()] || 0) !== '0') return `<strong class="text-yellow-300">${day}</strong>`;
-                    }
-                    return day;
-                }).join(', ');
-
-                const opponentsList = (player.opponents_list || []).join(', ');
-                const opponentStatsJson = JSON.stringify(player.opponent_stats_this_week || []);
-                const isGoalie = (player.positions || '').includes('G');
-
-                tableHtml += `
-                    <tr class="hover:bg-gray-700/50">
-                        <td class="px-2 py-2 whitespace-nowrap text-sm text-center"><input type="checkbox" name="player-to-add" class="h-4 w-4 bg-gray-700 border-gray-600 text-indigo-600 focus:ring-indigo-500 rounded" value="${player.player_id}" data-table="${tableType}" ${checkboxDisabled}></td>
-                        <td class="px-2 py-2 whitespace-nowrap text-sm font-medium text-gray-300 flex items-center">
-                            ${player.player_name}${statusHtml}
-                            ${pillHtml}
-                        </td>
-                        <td class="px-2 py-2 whitespace-nowrap text-sm text-gray-300">${player.player_team}</td>
-                        <td class="px-2 py-2 whitespace-nowrap text-sm text-gray-300">${player.positions}</td>
-                        <td class="px-2 py-2 whitespace-nowrap text-sm text-gray-300">${gamesThisWeekHtml}</td>
-                        <td class="px-2 py-2 whitespace-nowrap text-sm text-gray-300 cursor-pointer hover:bg-gray-700 opponent-stats-cell" data-player-name="${player.player_name}" data-is-goalie="${isGoalie}" data-opponent-stats='${opponentStatsJson}'>${opponentsList}</td>
-                        <td class="px-2 py-2 whitespace-nowrap text-sm text-gray-300">${(player.games_next_week || []).join(', ')}</td>
-                        <td class="px-2 py-2 whitespace-nowrap text-sm text-gray-300 cursor-pointer hover:bg-gray-700 pp-util-cell" data-player-name="${player.player_name}" data-avg-pp-pct="${player.avg_ppTimeOnIcePctPerGame}" data-lg-pp-toi="${player.lg_ppTimeOnIce}" data-lg-pp-pct="${player.lg_ppTimeOnIcePctPerGame}" data-lg-ppa="${player.lg_ppAssists}" data-lg-ppg="${player.lg_ppGoals}" data-lw-pp-toi="${player.avg_ppTimeOnIce}" data-lw-pp-pct="${player.avg_ppTimeOnIcePctPerGame}" data-lw-ppa="${player.total_ppAssists}" data-lw-ppg="${player.total_ppGoals}" data-lw-gp="${player.team_games_played}">${formatPercentage(player.avg_ppTimeOnIcePctPerGame)}</td>
-
-                        <td class="px-2 py-2 whitespace-nowrap text-sm font-bold text-blue-400 cursor-pointer hover:text-blue-300 cat-rank-cell" data-player-id="${player.player_id}">${player.total_cat_rank}</td>
-                `;
-
-                (categories || []).forEach(cat => {
-                    const rank = player[`${cat}_cat_rank`];
-                    const heatColor = getHeatmapColor(rank);
-                    let displayValue = '-';
-
-                    if (showRaw) {
-                        const val = player[cat];
-                        displayValue = (val != null && !isNaN(val)) ? parseFloat(val).toFixed(2).replace(/[.,]00$/, "") : (val || '-');
+                         pillHtml = `
+                             <span class="ml-2 px-2 py-0.5 rounded text-[10px] font-bold bg-blue-900 text-blue-200 border border-blue-700 cursor-pointer hover:bg-blue-800 goalie-info-pill"
+                                   data-player-id="${player.player_id}">
+                                 ${pct} | Rest: ${safeVal(gd.days_rest)} | ${safeVal(gd.next_loc)}
+                             </span>`;
                     } else {
-                        displayValue = (rank != null) ? rank.toFixed(2) : '-';
+                        let lineVal = player.line_number;
+                        if (!lineVal || lineVal === 'Depth') lineVal = 'N/A';
+                        else lineVal = `L${lineVal}`;
+
+                        let ppVal = player.pp_unit;
+                        if (!ppVal || ppVal === 'Depth') ppVal = 'N/A';
+
+                        pillHtml = `
+                            <span class="ml-2 px-2 py-0.5 rounded text-[10px] font-bold bg-red-900 text-red-200 border border-red-700 cursor-pointer hover:bg-red-800 line-info-pill"
+                                  data-player-id="${player.player_id}">
+                                ${lineVal} | ${ppVal}
+                            </span>`;
                     }
+                    // ----------------------------
 
-                    let cellStyle = '';
-                    let cellClass = 'px-2 py-1 whitespace-nowrap text-sm text-center font-semibold';
+                    const playerPositions = player.positions ? player.positions.split(',') : [];
+                    const gamesThisWeek = player.games_this_week || [];
+                    let gamesThisWeekHtml = gamesThisWeek.map(day => {
+                        if (!currentUnusedSpots || !currentUnusedSpots[day]) return day;
+                        for (const pos of playerPositions) {
+                            if (String(currentUnusedSpots[day][pos.trim()] || 0) !== '0') return `<strong class="text-yellow-300">${day}</strong>`;
+                        }
+                        return day;
+                    }).join(', ');
 
-                    if (heatColor) {
-                        cellStyle = `background-color: ${heatColor}; color: #1f2937; font-weight: 600;`;
-                    } else {
-                        cellClass += ' text-gray-400';
-                    }
+                    const opponentsList = (player.opponents_list || []).join(', ');
+                    const opponentStatsJson = JSON.stringify(player.opponent_stats_this_week || []);
 
-                    tableHtml += `<td class="${cellClass}" style="${cellStyle}">${displayValue}</td>`;
-                });
+                    tableHtml += `
+                        <tr class="hover:bg-gray-700/50">
+                            <td class="px-2 py-2 whitespace-nowrap text-sm text-center"><input type="checkbox" name="player-to-add" class="h-4 w-4 bg-gray-700 border-gray-600 text-indigo-600 focus:ring-indigo-500 rounded" value="${player.player_id}" data-table="${tableType}" ${checkboxDisabled}></td>
+                            <td class="px-2 py-2 whitespace-nowrap text-sm font-medium text-gray-300 flex items-center">
+                                ${player.player_name}${statusHtml}
+                                ${pillHtml}
+                            </td>
+                            <td class="px-2 py-2 whitespace-nowrap text-sm text-gray-300">${player.player_team}</td>
+                            <td class="px-2 py-2 whitespace-nowrap text-sm text-gray-300">${player.positions}</td>
+                            <td class="px-2 py-2 whitespace-nowrap text-sm text-gray-300">${gamesThisWeekHtml}</td>
+                            <td class="px-2 py-2 whitespace-nowrap text-sm text-gray-300 cursor-pointer hover:bg-gray-700 opponent-stats-cell" data-player-name="${player.player_name}" data-is-goalie="${isGoalie}" data-opponent-stats='${opponentStatsJson}'>${opponentsList}</td>
+                            <td class="px-2 py-2 whitespace-nowrap text-sm text-gray-300">${(player.games_next_week || []).join(', ')}</td>
+                            <td class="px-2 py-2 whitespace-nowrap text-sm text-gray-300 cursor-pointer hover:bg-gray-700 pp-util-cell" data-player-name="${player.player_name}" data-avg-pp-pct="${player.avg_ppTimeOnIcePctPerGame}" data-lg-pp-toi="${player.lg_ppTimeOnIce}" data-lg-pp-pct="${player.lg_ppTimeOnIcePctPerGame}" data-lg-ppa="${player.lg_ppAssists}" data-lg-ppg="${player.lg_ppGoals}" data-lw-pp-toi="${player.avg_ppTimeOnIce}" data-lw-pp-pct="${player.avg_ppTimeOnIcePctPerGame}" data-lw-ppa="${player.total_ppAssists}" data-lw-ppg="${player.total_ppGoals}" data-lw-gp="${player.team_games_played}">${formatPercentage(player.avg_ppTimeOnIcePctPerGame)}</td>
 
-                tableHtml += `</tr>`;
+                            <td class="px-2 py-2 whitespace-nowrap text-sm font-bold text-blue-400 cursor-pointer hover:text-blue-300 cat-rank-cell" data-player-id="${player.player_id}">${player.total_cat_rank}</td>
+                    `;
+
+                    (categories || []).forEach(cat => {
+                        const rank = player[`${cat}_cat_rank`];
+                        const heatColor = getHeatmapColor(rank);
+                        let displayValue = '-';
+
+                        if (showRaw) {
+                            const val = player[cat];
+                            displayValue = (val != null && !isNaN(val)) ? parseFloat(val).toFixed(2).replace(/[.,]00$/, "") : (val || '-');
+                        } else {
+                            displayValue = (rank != null) ? rank.toFixed(2) : '-';
+                        }
+
+                        let cellStyle = '';
+                        let cellClass = 'px-2 py-1 whitespace-nowrap text-sm text-center font-semibold';
+
+                        if (heatColor) {
+                            cellStyle = `background-color: ${heatColor}; color: #1f2937; font-weight: 600;`;
+                        } else {
+                            cellClass += ' text-gray-400';
+                        }
+
+                        tableHtml += `<td class="${cellClass}" style="${cellStyle}">${displayValue}</td>`;
+                    });
+
+                    tableHtml += `</tr>`;
+                } catch (err) {
+                    console.error("Error rendering player row:", player?.player_name, err);
+                }
             });
         }
         tableHtml += `</tbody></table></div></div>`;

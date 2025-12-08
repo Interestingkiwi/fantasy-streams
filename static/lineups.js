@@ -321,119 +321,114 @@
         }
 
         players.forEach(player => {
-            const gamesThisWeekHtml = (player.games_this_week || []).map(day => (playerStartsByDay[player.player_name]?.has(day) ? `<strong class="text-yellow-300">${day}</strong>` : day)).join(', ');
-            const statusHtml = (player.status && player.status !== 'FA') ? `<span class="text-red-400 ml-1">(${player.status})</span>` : '';
+            try {
+                const gamesThisWeekHtml = (player.games_this_week || []).map(day => (playerStartsByDay[player.player_name]?.has(day) ? `<strong class="text-yellow-300">${day}</strong>` : day)).join(', ');
+                const statusHtml = (player.status && player.status !== 'FA') ? `<span class="text-red-400 ml-1">(${player.status})</span>` : '';
 
-            // --- LINE INFO PILL ---
-            let pillHtml = '';
-
-                // [FIX] Use 'player' instead of 'p'
+                // --- LINE INFO PILL (Updated & Safe) ---
+                let pillHtml = '';
                 const isGoalie = (player.positions || player.eligible_positions || '').includes('G');
 
-                // ... (Goalie Logic) ...
                 if (isGoalie) {
-                     // [FIX] Use 'player' instead of 'p'
-                     const gd = player.goalie_data || { l10_start_pct: 'N/A', days_rest: 'N/A', next_loc: 'N/A' };
-                     const pct = gd.l10_start_pct !== 'N/A' ? `${gd.l10_start_pct}%` : 'N/A';
+                    const gd = player.goalie_data || { l10_start_pct: 'N/A', days_rest: 'N/A', next_loc: 'N/A' };
+                    const safeVal = (v) => (v === undefined || v === null) ? 'N/A' : v;
+                    const pct = safeVal(gd.l10_start_pct) !== 'N/A' ? `${gd.l10_start_pct}%` : 'N/A';
 
-                     pillHtml = `
-                         <span class="ml-2 px-2 py-0.5 rounded text-[10px] font-bold bg-blue-900 text-blue-200 border border-blue-700 cursor-pointer hover:bg-blue-800 goalie-info-pill"
-                               data-player-id="${player.player_id}">
-                             ${pct} | Rest: ${gd.days_rest} | ${gd.next_loc}
-                         </span>`;
+                    pillHtml = `
+                        <span class="ml-2 px-2 py-0.5 rounded text-[10px] font-bold bg-blue-900 text-blue-200 border border-blue-700 cursor-pointer hover:bg-blue-800 goalie-info-pill"
+                              data-player-id="${player.player_id}">
+                            ${pct} | Rest: ${safeVal(gd.days_rest)} | ${safeVal(gd.next_loc)}
+                        </span>`;
                 } else {
-                // [FIX] Ensure this uses 'player', NOT 'p'
-                let lineVal = player.line_number;
-                if (!lineVal || lineVal === 'Depth') lineVal = 'N/A';
-                else lineVal = `L${lineVal}`;
+                    let lineVal = player.line_number;
+                    if (!lineVal || lineVal === 'Depth') lineVal = 'N/A';
+                    else lineVal = `L${lineVal}`;
 
-                let ppVal = player.pp_unit;
-                if (!ppVal || ppVal === 'Depth') ppVal = 'N/A';
+                    let ppVal = player.pp_unit;
+                    if (!ppVal || ppVal === 'Depth') ppVal = 'N/A';
 
-                pillHtml = `
-                    <span class="ml-2 px-2 py-0.5 rounded text-[10px] font-bold bg-red-900 text-red-200 border border-red-700 cursor-pointer hover:bg-red-800 line-info-pill"
-                          data-player-id="${player.player_id}">
-                        ${lineVal} | ${ppVal}
-                    </span>`;
+                    pillHtml = `
+                        <span class="ml-2 px-2 py-0.5 rounded text-[10px] font-bold bg-red-900 text-red-200 border border-red-700 cursor-pointer hover:bg-red-800 line-info-pill"
+                              data-player-id="${player.player_id}">
+                            ${lineVal} | ${ppVal}
+                        </span>`;
+                }
+                // ----------------------
+
+                const opponentsList = (player.opponents_list || []).join(', ');
+                const opponentStatsJson = JSON.stringify(player.opponent_stats_this_week || []);
+
+                let catRankSum = 0, validRanks = 0;
+                (categories || []).forEach(cat => {
+                    const r = player[cat + '_cat_rank'];
+                    if (r != null) { catRankSum += r; validRanks++; }
+                });
+
+                tableHtml += `
+                    <tr class="hover:bg-gray-700/50">
+                        <td class="px-2 py-1 text-sm font-medium text-gray-300 flex items-center">
+                            ${player.player_name}${statusHtml}
+                            ${pillHtml}
+                        </td>
+                        <td class="px-2 py-1 text-sm text-gray-300">${player.team || player.player_team}</td>
+                        <td class="px-2 py-1 text-sm text-gray-300">${player.eligible_positions}</td>
+                        <td class="px-2 py-1 text-sm text-gray-300">${gamesThisWeekHtml}</td>
+                        <td class="px-2 py-1 text-sm text-gray-300 cursor-pointer hover:bg-gray-700 opponent-stats-cell"
+                            data-player-name="${player.player_name}"
+                            data-is-goalie="${isGoalie}"
+                            data-opponent-stats='${opponentStatsJson}'>${opponentsList}</td>
+                        <td class="px-2 py-1 text-sm text-gray-300">${(player.games_this_week || []).length}</td>
+                        <td class="px-2 py-1 text-sm text-gray-300">${player.starts_this_week}</td>
+                        <td class="px-2 py-1 text-sm text-gray-300">${(player.games_next_week || []).join(', ')}</td>
+
+                        <td class="px-2 py-1 text-sm text-gray-300 cursor-pointer hover:bg-gray-700 pp-util-cell"
+                            data-player-name="${player.player_name}"
+                            data-avg-pp-pct="${player.avg_ppTimeOnIcePctPerGame}"
+                            data-lg-pp-toi="${player.lg_ppTimeOnIce}"
+                            data-lg-pp-pct="${player.lg_ppTimeOnIcePctPerGame}"
+                            data-lg-ppa="${player.lg_ppAssists}"
+                            data-lg-ppg="${player.lg_ppGoals}"
+                            data-lw-pp-toi="${player.avg_ppTimeOnIce}"
+                            data-lw-pp-pct="${player.avg_ppTimeOnIcePctPerGame}"
+                            data-lw-ppa="${player.total_ppAssists}"
+                            data-lw-ppg="${player.total_ppGoals}"
+                            data-lw-gp="${player.team_games_played}">
+                            ${formatPercentage(player.avg_ppTimeOnIcePctPerGame)}
+                        </td>
+
+                        <td class="px-2 py-1 text-center font-bold text-blue-400 cursor-pointer hover:text-blue-300 cat-rank-cell" data-player-id="${player.player_id}">
+                            ${validRanks > 0 ? Math.round(catRankSum) : '-'}
+                        </td>
+                `;
+
+                (categories || []).forEach(cat => {
+                    const rank = player[cat + '_cat_rank'];
+                    const heatColor = getHeatmapColor(rank);
+                    let displayValue = '-';
+
+                    if (showRaw) {
+                        const val = player[cat];
+                        displayValue = (val != null && !isNaN(val)) ? parseFloat(val).toFixed(2).replace(/[.,]00$/, "") : (val || '-');
+                    } else {
+                        displayValue = (rank != null) ? Math.round(rank) : '-';
+                    }
+
+                    let cellStyle = '';
+                    let cellClass = 'px-2 py-1 text-center text-sm';
+
+                    if (heatColor) {
+                        cellStyle = `background-color: ${heatColor}; color: #1f2937; font-weight: 600;`;
+                    } else {
+                        cellClass += ' text-gray-400';
+                    }
+
+                    tableHtml += `<td class="${cellClass}" style="${cellStyle}">${displayValue}</td>`;
+                });
+
+                tableHtml += `</tr>`;
+            } catch (err) {
+                console.error("Error rendering row:", player?.player_name, err);
             }
-            // ----------------------
-
-            const opponentsList = (player.opponents_list || []).join(', ');
-            const opponentStatsJson = JSON.stringify(player.opponent_stats_this_week || []);
-            const isGoalie = (player.eligible_positions || player.positions || '').includes('G');
-
-            let catRankSum = 0, validRanks = 0;
-            (categories || []).forEach(cat => {
-                const r = player[cat + '_cat_rank'];
-                if (r != null) { catRankSum += r; validRanks++; }
-            });
-
-            tableHtml += `
-                <tr class="hover:bg-gray-700/50">
-                    <td class="px-2 py-1 text-sm font-medium text-gray-300 flex items-center">
-                        ${player.player_name}${statusHtml}
-                        ${pillHtml}
-                    </td>
-                    <td class="px-2 py-1 text-sm text-gray-300">${player.team || player.player_team}</td>
-                    <td class="px-2 py-1 text-sm text-gray-300">${player.eligible_positions}</td>
-                    <td class="px-2 py-1 text-sm text-gray-300">${gamesThisWeekHtml}</td>
-                    <td class="px-2 py-1 text-sm text-gray-300 cursor-pointer hover:bg-gray-700 opponent-stats-cell"
-                        data-player-name="${player.player_name}"
-                        data-is-goalie="${isGoalie}"
-                        data-opponent-stats='${opponentStatsJson}'>${opponentsList}</td>
-                    <td class="px-2 py-1 text-sm text-gray-300">${(player.games_this_week || []).length}</td>
-                    <td class="px-2 py-1 text-sm text-gray-300">${player.starts_this_week}</td>
-                    <td class="px-2 py-1 text-sm text-gray-300">${(player.games_next_week || []).join(', ')}</td>
-
-                    <td class="px-2 py-1 text-sm text-gray-300 cursor-pointer hover:bg-gray-700 pp-util-cell"
-                        data-player-name="${player.player_name}"
-                        data-avg-pp-pct="${player.avg_ppTimeOnIcePctPerGame}"
-                        data-lg-pp-toi="${player.lg_ppTimeOnIce}"
-                        data-lg-pp-pct="${player.lg_ppTimeOnIcePctPerGame}"
-                        data-lg-ppa="${player.lg_ppAssists}"
-                        data-lg-ppg="${player.lg_ppGoals}"
-                        data-lw-pp-toi="${player.avg_ppTimeOnIce}"
-                        data-lw-pp-pct="${player.avg_ppTimeOnIcePctPerGame}"
-                        data-lw-ppa="${player.total_ppAssists}"
-                        data-lw-ppg="${player.total_ppGoals}"
-                        data-lw-gp="${player.team_games_played}">
-                        ${formatPercentage(player.avg_ppTimeOnIcePctPerGame)}
-                    </td>
-
-                    <td class="px-2 py-1 text-center font-bold text-blue-400 cursor-pointer hover:text-blue-300 cat-rank-cell" data-player-id="${player.player_id}">
-                        ${validRanks > 0 ? Math.round(catRankSum) : '-'}
-                    </td>
-            `;
-
-            // --- MODIFIED: Use rank color in both Raw and Rank views ---
-            (categories || []).forEach(cat => {
-                const rank = player[cat + '_cat_rank'];
-                const heatColor = getHeatmapColor(rank);
-                let displayValue = '-';
-
-                if (showRaw) {
-                    const val = player[cat];
-                    displayValue = (val != null && !isNaN(val)) ? parseFloat(val).toFixed(2).replace(/[.,]00$/, "") : (val || '-');
-                } else {
-                    displayValue = (rank != null) ? Math.round(rank) : '-';
-                }
-
-                let cellStyle = '';
-                let cellClass = 'px-2 py-1 text-center text-sm';
-
-                if (heatColor) {
-                    // Apply heat color with dark text for contrast
-                    cellStyle = `background-color: ${heatColor}; color: #1f2937; font-weight: 600;`;
-                } else {
-                    // Default gray text if no rank available
-                    cellClass += ' text-gray-400';
-                }
-
-                tableHtml += `<td class="${cellClass}" style="${cellStyle}">${displayValue}</td>`;
-            });
-            // --- END MODIFICATION ---
-
-            tableHtml += `</tr>`;
         });
 
         tableHtml += `</tbody></table></div></div>`;
