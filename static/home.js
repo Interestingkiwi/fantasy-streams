@@ -3,7 +3,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const timestampText = document.getElementById('timestamp-text');
     const dropdownContainer = document.getElementById('dropdown-container');
 
-    // --- [START] INJECT LINE INFO MODAL ---
+    // --- [START] INJECT LINE INFO MODAL (SKATERS) ---
     if (!document.getElementById('line-info-modal')) {
         const lineModalHTML = `
         <div id="line-info-modal" class="fixed inset-0 bg-gray-900 bg-opacity-75 flex items-center justify-center z-50 hidden" style="backdrop-filter: blur(2px);">
@@ -42,7 +42,59 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     // --- [END] INJECT LINE INFO MODAL ---
 
-    // --- Global Function to Open Line Info Modal ---
+    // --- [START] INJECT GOALIE INFO MODAL ---
+    if (!document.getElementById('goalie-info-modal')) {
+        const goalieModalHTML = `
+        <div id="goalie-info-modal" class="fixed inset-0 bg-gray-900 bg-opacity-75 flex items-center justify-center z-50 hidden" style="backdrop-filter: blur(2px);">
+            <div class="bg-gray-800 rounded-lg shadow-xl border border-gray-700 w-full max-w-lg p-6 relative">
+                <button id="goalie-info-close" class="absolute top-3 right-3 text-gray-400 hover:text-white text-2xl leading-none">&times;</button>
+                <h3 id="goalie-info-title" class="text-xl font-bold text-white mb-4"></h3>
+                <div class="space-y-4 text-sm text-gray-300">
+                    <div class="grid grid-cols-2 gap-4">
+                        <div class="bg-gray-700/50 p-3 rounded border border-gray-600">
+                            <span class="block text-[10px] text-gray-400 uppercase font-bold tracking-wider mb-1">Last 10 Start %</span>
+                            <span id="goalie-l10-pct" class="text-white font-mono text-lg font-semibold"></span>
+                        </div>
+                        <div class="bg-gray-700/50 p-3 rounded border border-gray-600">
+                            <span class="block text-[10px] text-gray-400 uppercase font-bold tracking-wider mb-1">All Season Start %</span>
+                            <span id="goalie-season-pct" class="text-white font-mono text-lg font-semibold"></span>
+                        </div>
+                    </div>
+                    <div class="bg-gray-700/50 p-3 rounded border border-gray-600">
+                        <span id="goalie-rest-label" class="block text-[10px] text-gray-400 uppercase font-bold tracking-wider mb-1">Days Rest Splits</span>
+                        <div class="flex justify-between items-center">
+                            <span class="text-gray-400 text-xs">Win %</span>
+                            <span id="goalie-rest-w" class="text-white font-mono font-bold"></span>
+                            <span class="text-gray-600">|</span>
+                            <span class="text-gray-400 text-xs">SV %</span>
+                            <span id="goalie-rest-sv" class="text-white font-mono font-bold"></span>
+                        </div>
+                    </div>
+                    <div class="bg-gray-700/50 p-3 rounded border border-gray-600">
+                        <span id="goalie-loc-label" class="block text-[10px] text-gray-400 uppercase font-bold tracking-wider mb-1">Location Splits</span>
+                        <div class="flex justify-between items-center">
+                            <span class="text-gray-400 text-xs">Win %</span>
+                            <span id="goalie-loc-w" class="text-white font-mono font-bold"></span>
+                            <span class="text-gray-600">|</span>
+                            <span class="text-gray-400 text-xs">SV %</span>
+                            <span id="goalie-loc-sv" class="text-white font-mono font-bold"></span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>`;
+        document.body.insertAdjacentHTML('beforeend', goalieModalHTML);
+
+        document.body.addEventListener('click', (e) => {
+            const modal = document.getElementById('goalie-info-modal');
+            if (e.target.closest('#goalie-info-close') || e.target === modal) {
+                modal.classList.add('hidden');
+            }
+        });
+    }
+    // --- [END] INJECT GOALIE INFO MODAL ---
+
+    // --- Global Function to Open Line Info Modal (Skaters) ---
     window.openLineInfoModal = function(player) {
         const modal = document.getElementById('line-info-modal');
         if (!modal) return;
@@ -75,6 +127,29 @@ document.addEventListener('DOMContentLoaded', () => {
         modal.classList.remove('hidden');
     };
 
+    // --- Global Function to Open Goalie Info Modal ---
+    window.openGoalieInfoModal = function(player) {
+        const modal = document.getElementById('goalie-info-modal');
+        if (!modal || !player.goalie_data) return;
+
+        const gd = player.goalie_data;
+
+        document.getElementById('goalie-info-title').textContent = `${player.player_name} Starts`;
+        document.getElementById('goalie-l10-pct').textContent = gd.l10_start_pct !== 'N/A' ? `${gd.l10_start_pct}%` : 'N/A';
+        document.getElementById('goalie-season-pct').textContent = gd.season_start_pct !== 'N/A' ? `${gd.season_start_pct}%` : 'N/A';
+
+        document.getElementById('goalie-rest-label').textContent = `${gd.days_rest} Days Rest Splits`;
+        document.getElementById('goalie-rest-w').textContent = gd.rest_split.w_pct !== 'N/A' ? `${gd.rest_split.w_pct}%` : 'N/A';
+        document.getElementById('goalie-rest-sv').textContent = gd.rest_split.sv_pct;
+
+        const locText = gd.next_loc === 'H' ? 'Home' : (gd.next_loc === 'A' ? 'Away' : 'Unknown');
+        document.getElementById('goalie-loc-label').textContent = `${locText} Splits`;
+        document.getElementById('goalie-loc-w').textContent = gd.loc_split.w_pct !== 'N/A' ? `${gd.loc_split.w_pct}%` : 'N/A';
+        document.getElementById('goalie-loc-sv').textContent = gd.loc_split.sv_pct;
+
+        modal.classList.remove('hidden');
+    };
+
     // --- [START] AUTOMATED UPDATE LOGIC ---
     if (window.autoUpdateInfo) {
         const info = window.autoUpdateInfo;
@@ -90,15 +165,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 leagueDbBtn.click();
 
                 // 3. Wait for the 'log-container' box to appear in the DOM
-                // (We check every 100ms because the page load is async)
                 const waitForLogBox = setInterval(() => {
-                    // [FIX 1] Changed ID from 'db-log-output' to 'log-container'
                     const staticLogBox = document.getElementById('log-container');
 
                     if (staticLogBox) {
                         clearInterval(waitForLogBox); // Stop checking
-
-                        // [FIX 2] Force the box to be visible (it is usually hidden by default)
                         staticLogBox.classList.remove('hidden');
 
                         // 4. Insert Initial Message
@@ -208,7 +279,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 return;
             }
 
-            // --- FIX: REORGANIZED LAYOUT (Stacked) ---
             dropdownContainer.innerHTML = `
                 <div class="flex flex-col gap-2">
                     <div class="flex items-center gap-2 justify-end">
@@ -242,7 +312,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     </div>
                 </div>
             `;
-            dropdownContainer.className = 'flex items-start gap-6'; // Ensure flex and spacing
+            dropdownContainer.className = 'flex items-start gap-6';
 
             pageData = data;
             populateDropdowns();
@@ -316,7 +386,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
 // [START] LOG STREAMING FUNCTION (Required for automated updates)
 function startLogStream(buildId) {
-    // [FIX 3] Ensure this function looks for 'log-container' too
     const logOutput = document.getElementById('log-container');
 
     if (!logOutput) {

@@ -107,6 +107,17 @@
                 }
                 return;
             }
+            const gPill = e.target.closest('.goalie-info-pill');
+            if (gPill && window.openGoalieInfoModal && (rosterData.players || allWaiverPlayers)) {
+                const pid = String(gPill.dataset.playerId);
+                // Search available lists
+                let player;
+                if (typeof rosterData !== 'undefined') player = rosterData.players.find(p => String(p.player_id) === pid);
+                if (!player && typeof allWaiverPlayers !== 'undefined') player = [...allWaiverPlayers, ...allFreeAgents].find(p => String(p.player_id) === pid);
+
+                if (player) window.openGoalieInfoModal(player);
+                return;
+            }
             // B. Cat Rank Cell (Global Modal)
             const rankCell = e.target.closest('.cat-rank-cell');
             if (rankCell && rosterData.players && window.openCatRankModal) {
@@ -119,6 +130,7 @@
                     window.openCatRankModal(player, cats);
                 }
             }
+
 
             // C. Simulate Button
             const simBtn = e.target.closest('#simulate-trade-btn');
@@ -559,24 +571,52 @@
         categories.forEach(cat => html += `<th class="px-2 py-1 text-center font-bold text-gray-300" title="${cat}">${cat}</th>`);
         html += `</tr></thead><tbody class="bg-gray-800 divide-y divide-gray-700">`;
 
-        // --- Debugging: Log first player data ---
-        if (players.length > 0) {
-            // console.log("DEBUG Roster Player:", players[0]);
-        }
-
         players.forEach(p => {
             const isChecked = selectedPlayerIds.has(String(p.player_id)) ? 'checked' : '';
             const teamClass = p.fantasy_team_name === userTeamName ? 'border-l-4 border-blue-500' : '';
-            const lineVal = p.line_number ? `L${p.line_number}` : 'N/A';
-            const ppVal = p.pp_unit ? `${p.pp_unit}` : 'N/A';
-            const pillHtml = `
+
+            // --- PILL GENERATION ---
+            let pillHtml = '';
+            const isGoalie = (p.positions || p.eligible_positions || '').includes('G');
+            const lineVal = player.line_number ? `L${player.line_number}` : 'N/A';
+            const ppVal = player.pp_unit ? `${player.pp_unit}` : 'N/A';
+            if (isGoalie) {
+            // GOALIE PILL
+            // Expecting player.goalie_data from backend
+            const gd = p.goalie_data || { l10_start_pct: 'N/A', days_rest: 'N/A', next_loc: 'N/A' };
+            const pct = gd.l10_start_pct !== 'N/A' ? `${gd.l10_start_pct}%` : 'N/A';
+
+            pillHtml = `
+                <span class="ml-2 px-2 py-0.5 rounded text-[10px] font-bold bg-blue-900 text-blue-200 border border-blue-700 cursor-pointer hover:bg-blue-800 goalie-info-pill"
+                      data-player-id="${p.player_id}">
+                    ${pct} | Rest: ${gd.days_rest} | ${gd.next_loc}
+                </span>`;
+        } else {
+            // SKATER PILL (Existing Logic)
+            let lineVal = p.line_number;
+            if (!lineVal || lineVal === 'Depth') lineVal = 'N/A';
+            else lineVal = `L${lineVal}`;
+
+            let ppVal = p.pp_unit;
+            if (!ppVal || ppVal === 'Depth') ppVal = 'N/A';
+
+            pillHtml = `
                 <span class="ml-2 px-2 py-0.5 rounded text-[10px] font-bold bg-red-900 text-red-200 border border-red-700 cursor-pointer hover:bg-red-800 line-info-pill"
                       data-player-id="${p.player_id}">
                     ${lineVal} | ${ppVal}
                 </span>`;
+        }
+            // -----------------------
+
             html += `<tr class="hover:bg-gray-700/50 ${teamClass}">`;
             html += `<td class="px-2 py-1 text-center"><input type="checkbox" value="${p.player_id}" class="trade-player-checkbox form-checkbox h-4 w-4 text-blue-600 rounded bg-gray-700 border-gray-600" ${isChecked}></td>`;
-            html += `<td class="px-2 py-1 whitespace-nowrap font-medium text-gray-300">${p.player_name}</td>`;
+
+            // --- FIX IS HERE: Added flex, items-center, and ${pillHtml} ---
+            html += `<td class="px-2 py-1 whitespace-nowrap font-medium text-gray-300 flex items-center">
+                        ${p.player_name}
+                        ${pillHtml}
+                     </td>`;
+
             if (showTeamColumn) html += `<td class="px-2 py-1 whitespace-nowrap text-yellow-300">${p.fantasy_team_name}</td>`;
             html += `<td class="px-2 py-1 whitespace-nowrap text-gray-300">${p.team}</td><td class="px-2 py-1 whitespace-nowrap text-gray-300">${p.eligible_positions}</td>`;
 
@@ -592,7 +632,7 @@
                 html += `<td class="px-2 py-1 whitespace-nowrap text-sm text-gray-300 cursor-pointer hover:bg-gray-700 pp-util-cell" data-player-name="${p.player_name}" data-lg-pp-toi="${p.lg_ppTimeOnIce}" data-lg-pp-pct="${p.lg_ppTimeOnIcePctPerGame}" data-lg-ppa="${p.lg_ppAssists}" data-lg-ppg="${p.lg_ppGoals}" data-lw-pp-toi="${p.avg_ppTimeOnIce}" data-lw-pp-pct="${p.avg_ppTimeOnIcePctPerGame}" data-lw-ppa="${p.total_ppAssists}" data-lw-ppg="${p.total_ppGoals}" data-lw-gp="${p.team_games_played}">${formatPercentage(p.avg_ppTimeOnIcePctPerGame)}</td>`;
             } else { html += `<td class="px-2 py-1 text-center text-gray-500">-</td>`; }
 
-            // --- MODIFIED: Use rank color in both Raw and Rank views ---
+            // --- Categories ---
             categories.forEach(cat => {
                 const rank = p[cat + '_cat_rank'];
                 const heatColor = getHeatmapColor(rank);
@@ -609,16 +649,13 @@
                 let cellClass = 'px-2 py-1 text-center font-semibold';
 
                 if (heatColor) {
-                    // Apply heat color with dark text for contrast
                     cellStyle = `background-color: ${heatColor}; color: #1f2937; font-weight: 600;`;
                 } else {
-                    // Default gray text if no rank available
                     cellClass += ' text-gray-400';
                 }
 
                 html += `<td class="${cellClass}" style="${cellStyle}">${displayValue}</td>`;
             });
-            // --- END MODIFICATION ---
 
             html += `</tr>`;
         });

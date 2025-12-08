@@ -462,13 +462,36 @@
 
                 // --- LINE INFO PILL LOGIC ---
                 // Shows "L# | PP#" (e.g. "L1 | PP1" or "L2 | N/A")
+                let pillHtml = '';
+                const isGoalie = (p.positions || p.eligible_positions || '').includes('G');
                 const lineVal = player.line_number ? `L${player.line_number}` : 'N/A';
                 const ppVal = player.pp_unit ? `${player.pp_unit}` : 'N/A';
-                const pillHtml = `
+                if (isGoalie) {
+                // GOALIE PILL
+                // Expecting player.goalie_data from backend
+                const gd = p.goalie_data || { l10_start_pct: 'N/A', days_rest: 'N/A', next_loc: 'N/A' };
+                const pct = gd.l10_start_pct !== 'N/A' ? `${gd.l10_start_pct}%` : 'N/A';
+
+                pillHtml = `
+                    <span class="ml-2 px-2 py-0.5 rounded text-[10px] font-bold bg-blue-900 text-blue-200 border border-blue-700 cursor-pointer hover:bg-blue-800 goalie-info-pill"
+                          data-player-id="${p.player_id}">
+                        ${pct} | Rest: ${gd.days_rest} | ${gd.next_loc}
+                    </span>`;
+            } else {
+                // SKATER PILL (Existing Logic)
+                let lineVal = p.line_number;
+                if (!lineVal || lineVal === 'Depth') lineVal = 'N/A';
+                else lineVal = `L${lineVal}`;
+
+                let ppVal = p.pp_unit;
+                if (!ppVal || ppVal === 'Depth') ppVal = 'N/A';
+
+                pillHtml = `
                     <span class="ml-2 px-2 py-0.5 rounded text-[10px] font-bold bg-red-900 text-red-200 border border-red-700 cursor-pointer hover:bg-red-800 line-info-pill"
-                          data-player-id="${player.player_id}">
+                          data-player-id="${p.player_id}">
                         ${lineVal} | ${ppVal}
                     </span>`;
+            }
                 // ----------------------------
 
                 const playerPositions = player.positions ? player.positions.split(',') : [];
@@ -799,6 +822,17 @@
                 if (player) {
                     window.openLineInfoModal(player);
                 }
+                return;
+            }
+            const gPill = e.target.closest('.goalie-info-pill');
+            if (gPill && window.openGoalieInfoModal && (rosterData.players || allWaiverPlayers)) {
+                const pid = String(gPill.dataset.playerId);
+                // Search available lists
+                let player;
+                if (typeof rosterData !== 'undefined') player = rosterData.players.find(p => String(p.player_id) === pid);
+                if (!player && typeof allWaiverPlayers !== 'undefined') player = [...allWaiverPlayers, ...allFreeAgents].find(p => String(p.player_id) === pid);
+
+                if (player) window.openGoalieInfoModal(player);
                 return;
             }
             // --- [NEW] Cat Rank Logic ---

@@ -1223,6 +1223,7 @@ def fetch_daily_historical_goalie_stats():
                     teamabbrev TEXT,
                     opponentteamabbrev TEXT,
                     homeroad TEXT,
+                    gamesstarted INTEGER,
                     wins INTEGER,
                     losses INTEGER,
                     overtimelosses INTEGER,
@@ -1283,6 +1284,7 @@ def fetch_daily_historical_goalie_stats():
                         "homeroad": p.get("homeRoad"),
 
                         # Stats you requested
+                        "gamesstarted": p.get("gamesStarted"),
                         "wins": p.get("wins"),
                         "losses": p.get("losses"),
                         "overtimelosses": p.get("otLosses"), # API usually calls this otLosses
@@ -1321,7 +1323,7 @@ def fetch_daily_historical_goalie_stats():
 
             cols_to_insert = [
                 'gameid', 'gamedate', 'nhlplayerid', 'goaliefullname', 'player_name_normalized',
-                'teamabbrev', 'opponentteamabbrev', 'homeroad',
+                'teamabbrev', 'opponentteamabbrev', 'homeroad', 'gamesstarted',
                 'wins', 'losses', 'overtimelosses', 'shotsagainst', 'saves',
                 'goalsagainst', 'timeonice', 'goals', 'assists', 'points',
                 'penaltyminutes', 'shutouts'
@@ -1333,14 +1335,15 @@ def fetch_daily_historical_goalie_stats():
                 cursor.executemany("""
                     INSERT INTO historical_goalie_stats (
                         gameid, gamedate, nhlplayerid, goaliefullname, player_name_normalized,
-                        teamabbrev, opponentteamabbrev, homeroad,
+                        teamabbrev, opponentteamabbrev, homeroad, gamesstarted,
                         wins, losses, overtimelosses, shotsagainst, saves,
                         goalsagainst, timeonice, goals, assists, points,
                         penaltyminutes, shutouts
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (gamedate, nhlplayerid) DO UPDATE SET
                         gameid = EXCLUDED.gameid,
+                        gamesstarted = EXCLUDED.gamesstarted,
                         wins = EXCLUDED.wins,
                         losses = EXCLUDED.losses,
                         overtimelosses = EXCLUDED.overtimelosses,
@@ -1890,6 +1893,7 @@ def create_player_lines_table():
                 h.gameid,
                 h.gamedate as player_game_date,
                 h.timeonice,
+                h.skaterfullname, -- [NEW] Fetch the pretty name
                 tm.team_last_date
             FROM stats_to_date p
             JOIN player_max_dates pmd ON p.nhlplayerid = pmd.nhlplayerid
@@ -1923,7 +1927,6 @@ def create_player_lines_table():
 
         # --- NEW: Fetch PP Data ---
         print("Loading PP Data...")
-        # Note: quoting the column name because it likely has mixed case in Postgres
         df_pp = read_sql_postgres('SELECT nhlplayerid, "lg_ppTimeOnIce" FROM last_game_pp', conn)
 
         if df_shifts.empty:
@@ -1939,7 +1942,13 @@ def create_player_lines_table():
     for _, row in df_active.iterrows():
         pid = row['nhlplayerid']
         pos_str = str(row['positions']).upper()
-        player_names[pid] = row['player_name_normalized']
+
+        # [FIX] Use the pretty name (skaterfullname) if available, fallback to normalized
+        pretty_name = row['skaterfullname']
+        if not pretty_name:
+            pretty_name = row['player_name_normalized']
+
+        player_names[pid] = pretty_name
 
         if 'D' in pos_str:
             player_positions[pid] = 'D'
@@ -2011,6 +2020,7 @@ def create_player_lines_table():
                     if count >= 1: break
 
             full_line_ids = final_mates + [pid]
+            # Names are now "Cale Makar", "Devon Toews", etc.
             full_line_names = sorted([player_names.get(x, str(x)) for x in full_line_ids])
             line_id_str = ",".join(sorted([str(x) for x in full_line_ids]))
             line_comb = " - ".join(full_line_names)
@@ -2133,16 +2143,11 @@ def create_player_lines_table():
     # --- NEW: CALCULATE PP UNITS ---
     print("Calculating PP Units (PP1 vs PP2)...")
     if not df_pp.empty:
-        # 1. Merge PP Stats
         df_final_active = pd.merge(df_final_active, df_pp, on='nhlplayerid', how='left')
         df_final_active['lg_ppTimeOnIce'] = df_final_active['lg_ppTimeOnIce'].fillna(0)
 
-        # 2. Rank within Team
-        # Rank descending (highest TOI = Rank 1)
         df_final_active['pp_rank_int'] = df_final_active.groupby('team')['lg_ppTimeOnIce'].rank(method='first', ascending=False)
 
-        # 3. Assign Unit Label (PP1, PP2, or empty)
-        # Condition: Must have > 0 TOI to be ranked
         def assign_pp_unit(row):
             if row['lg_ppTimeOnIce'] <= 0: return None
             if row['pp_rank_int'] <= 5: return "PP1"
@@ -2151,29 +2156,33 @@ def create_player_lines_table():
 
         df_final_active['pp_unit'] = df_final_active.apply(assign_pp_unit, axis=1)
 
-        # 4. Construct 'pp_line' String (Combination of all names in that Unit/Team)
-        # Create a dictionary: { (Team, Unit) : "Name - Name - Name..." }
         pp_combinations = {}
-
-        # Filter down to just people with a PP Unit
         pp_players = df_final_active[df_final_active['pp_unit'].notna()]
 
-        # Group by Team + Unit
         for keys, group in pp_players.groupby(['team', 'pp_unit']):
             team_key, unit_key = keys
-            # Sort names for consistency
-            names = sorted(group['player_name_normalized'].astype(str).tolist())
+            # [FIX] Use the player map to get pretty names for PP lines too
+            # We can't use player_names dict directly here because df_final_active iterrows is cleaner
+            # But we can just grab the ID and look it up!
+
+            # Helper to get name from ID in the dataframe
+            # Note: df_final_active doesn't have the 'skaterfullname' column directly,
+            # but we can look up the ID in our existing player_names dict
+
+            member_names = []
+            for pid in group['nhlplayerid']:
+                name = player_names.get(pid, str(pid))
+                member_names.append(name)
+
+            names = sorted(member_names)
             pp_line_str = " - ".join(names)
             pp_combinations[(team_key, unit_key)] = pp_line_str
 
-        # 5. Map the string back to the main dataframe
         def assign_pp_line(row):
             if not row['pp_unit']: return None
             return pp_combinations.get((row['team'], row['pp_unit']))
 
         df_final_active['pp_line'] = df_final_active.apply(assign_pp_line, axis=1)
-
-        # Cleanup helper columns
         df_final_active.drop(columns=['lg_ppTimeOnIce', 'pp_rank_int'], inplace=True, errors='ignore')
 
     else:
@@ -2183,6 +2192,10 @@ def create_player_lines_table():
     # 6. Handle INACTIVE Players
     if not df_inactive.empty:
         df_inactive_out = df_inactive.copy()
+
+        # Zero out TOI for scratched players so modal doesn't show old data
+        df_inactive_out['timeonice'] = 0
+
         df_inactive_out['linemates'] = 'Scratched/Injured'
         df_inactive_out['full_line'] = ''
         df_inactive_out['line_number'] = 'Depth'
@@ -2191,11 +2204,9 @@ def create_player_lines_table():
         df_inactive_out['pp_unit'] = None
         df_inactive_out['pp_line'] = None
 
-        # Select matching columns
         cols = ['nhlplayerid', 'gameid', 'team', 'player_name_normalized', 'positions',
                 'timeonice', 'linemates', 'full_line', 'line_number', 'alt_lines', 'pos_type', 'pp_unit', 'pp_line']
 
-        # Ensure Active DF has all cols
         for c in cols:
             if c not in df_final_active.columns: df_final_active[c] = None
 
