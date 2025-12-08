@@ -463,20 +463,35 @@
                 // --- LINE INFO PILL LOGIC ---
                 // Shows "L# | PP#" (e.g. "L1 | PP1" or "L2 | N/A")
                 let pillHtml = '';
-                const isGoalie = (p.positions || p.eligible_positions || '').includes('G');
-                const lineVal = player.line_number ? `L${player.line_number}` : 'N/A';
-                const ppVal = player.pp_unit ? `${player.pp_unit}` : 'N/A';
-                if (isGoalie) {
-                // GOALIE PILL
-                // Expecting player.goalie_data from backend
-                const gd = p.goalie_data || { l10_start_pct: 'N/A', days_rest: 'N/A', next_loc: 'N/A' };
-                const pct = gd.l10_start_pct !== 'N/A' ? `${gd.l10_start_pct}%` : 'N/A';
 
-                pillHtml = `
-                    <span class="ml-2 px-2 py-0.5 rounded text-[10px] font-bold bg-blue-900 text-blue-200 border border-blue-700 cursor-pointer hover:bg-blue-800 goalie-info-pill"
-                          data-player-id="${p.player_id}">
-                        ${pct} | Rest: ${gd.days_rest} | ${gd.next_loc}
-                    </span>`;
+                // [FIX] Use 'player' instead of 'p'
+                const isGoalie = (player.positions || player.eligible_positions || '').includes('G');
+
+                // ... (Goalie Logic) ...
+                if (isGoalie) {
+                     // [FIX] Use 'player' instead of 'p'
+                     const gd = player.goalie_data || { l10_start_pct: 'N/A', days_rest: 'N/A', next_loc: 'N/A' };
+                     const pct = gd.l10_start_pct !== 'N/A' ? `${gd.l10_start_pct}%` : 'N/A';
+
+                     pillHtml = `
+                         <span class="ml-2 px-2 py-0.5 rounded text-[10px] font-bold bg-blue-900 text-blue-200 border border-blue-700 cursor-pointer hover:bg-blue-800 goalie-info-pill"
+                               data-player-id="${player.player_id}">
+                             ${pct} | Rest: ${gd.days_rest} | ${gd.next_loc}
+                         </span>`;
+                } else {
+                    // [FIX] Use 'player' instead of 'p'
+                    let lineVal = player.line_number;
+                    if (!lineVal || lineVal === 'Depth') lineVal = 'N/A';
+                    else lineVal = `L${lineVal}`;
+
+                    let ppVal = player.pp_unit;
+                    if (!ppVal || ppVal === 'Depth') ppVal = 'N/A';
+
+                    pillHtml = `
+                        <span class="ml-2 px-2 py-0.5 rounded text-[10px] font-bold bg-red-900 text-red-200 border border-red-700 cursor-pointer hover:bg-red-800 line-info-pill"
+                              data-player-id="${player.player_id}">
+                            ${lineVal} | ${ppVal}
+                        </span>`;
             } else {
                 // SKATER PILL (Existing Logic)
                 let lineVal = p.line_number;
