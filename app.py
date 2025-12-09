@@ -890,143 +890,206 @@ def _enrich_goalie_data(cursor, players_list):
 
 def _enrich_player_trends(cursor, players_list):
     """
-    Enriches players with L20/L10/L5 trends and Next Game H/A status.
-    Populates 'trend_summary' (list of display tokens) and 'trend_details' (raw data).
+    Enriches players with Trend Summary (icons) and Trend Details (raw stats for modal).
     """
     if not players_list:
         return
 
-    # 1. Gather Identifiers (Unique list to minimize DB hits)
+    # 1. Gather Identifiers
     norm_names = list(set([p.get('player_name_normalized') for p in players_list if p.get('player_name_normalized')]))
     teams = list(set([p.get('team') or p.get('player_team') for p in players_list if (p.get('team') or p.get('player_team'))]))
 
     if not norm_names:
         return
 
-    # 2. Fetch Trend Data from DB
+    # 2. Fetch Trend Data AND Blocks
+    # We need blocks 1-82 to calculate L10/L20 raw stats
+    block_cols = [f"block_{i+1}_{i+5}" for i in range(0, 75, 5)] + ["block_76_82"]
+    cols_sql = ", ".join(block_cols)
+
     placeholders = ','.join(['%s'] * len(norm_names))
     query = f"""
-        SELECT player_name_normalized, l20_trend, l10_trend, l5_trend, home_trend, away_trend
+        SELECT player_name_normalized,
+               l20_trend, l10_trend, l5_trend,
+               home_trend, away_trend,
+               season_avg, home_stats, away_stats,
+               {cols_sql}
         FROM player_trends
         WHERE player_name_normalized IN ({placeholders})
     """
     cursor.execute(query, tuple(norm_names))
     trends_map = {row['player_name_normalized']: row for row in cursor.fetchall()}
 
-    # 3. Fetch Next Game Location for each Team
+    # 3. Fetch Next Game Location (Same as before)
     next_game_map = {}
     if teams:
         today_str = date.today().strftime('%Y-%m-%d')
         team_placeholders = ','.join(['%s'] * len(teams))
-
-        # Query schedule for future games involving these teams
         sched_query = f"""
-            SELECT home_team, away_team
-            FROM schedule
-            WHERE game_date >= %s
-              AND (home_team IN ({team_placeholders}) OR away_team IN ({team_placeholders}))
+            SELECT home_team, away_team FROM schedule
+            WHERE game_date >= %s AND (home_team IN ({team_placeholders}) OR away_team IN ({team_placeholders}))
             ORDER BY game_date ASC
         """
-        # Duplicate teams list for OR clause
         params = [today_str] + teams + teams
         cursor.execute(sched_query, tuple(params))
-        rows = cursor.fetchall()
-
-        # Find first game for each team (Schedule is ordered by date)
-        for row in rows:
+        for row in cursor.fetchall():
             h, a = row['home_team'], row['away_team']
-            if h in teams and h not in next_game_map:
-                next_game_map[h] = 'H'
-            if a in teams and a not in next_game_map:
-                next_game_map[a] = 'A'
-            if len(next_game_map) == len(teams):
-                break
+            if h in teams and h not in next_game_map: next_game_map[h] = 'H'
+            if a in teams and a not in next_game_map: next_game_map[a] = 'A'
+            if len(next_game_map) == len(teams): break
 
-    # 4. Calculate Logic for each Player
+    # 4. Processing Loop
     for p in players_list:
         name = p.get('player_name_normalized')
         team = p.get('team') or p.get('player_team')
 
-        # Init Default: [L20, L10, L5, H/A]
+        # Init Defaults
         p['trend_summary'] = ['N/A', 'N/A', 'N/A', 'N/A']
-        p['trend_details'] = {}
+        p['trend_details'] = None # Will populate with rich object
 
         if not name or name not in trends_map:
             continue
 
         t_data = trends_map[name]
-        # Store raw data for the modal
-        p['trend_details'] = {
-            'l20': t_data.get('l20_trend'),
-            'l10': t_data.get('l10_trend'),
-            'l5': t_data.get('l5_trend'),
-            'home': t_data.get('home_trend'),
-            'away': t_data.get('away_trend')
-        }
 
-        # Determine Thresholds
-        is_goalie = 'G' in (p.get('eligible_positions') or p.get('positions') or '').split(',')
-        # Format: [L20 Threshold, L10 Threshold, L5 Threshold]
-        thresholds = [0.10, 0.15, 0.20] if is_goalie else [0.20, 0.35, 0.50]
+        # --- A. Calculate Trend Summary (Icons) ---
+        # (Logic unchanged from previous step, omitted for brevity but assumed present)
+        # Re-using the logic you already implemented or referencing previous artifact
+        # ... [Insert the Summary/Icon logic here if rewriting full file] ...
+        # For this snippet, I will focus on the NEW Modal Data generation.
 
         summary = []
-
-        # --- Process Slots 1-3 (L20, L10, L5) ---
+        # ... (Your existing icon calculation logic goes here) ...
+        # Placeholder to ensure code runs if you copy-paste:
+        is_goalie = 'G' in (p.get('eligible_positions') or p.get('positions') or '').split(',')
+        thresholds = [0.10, 0.15, 0.20] if is_goalie else [0.20, 0.35, 0.50]
         keys = ['l20_trend', 'l10_trend', 'l5_trend']
         for i, key in enumerate(keys):
             val_data = t_data.get(key)
             status = 'N/A'
-
             if val_data:
-                # Handle stringified JSON if necessary
                 if isinstance(val_data, str):
                     try: val_data = json.loads(val_data)
                     except: val_data = {}
-
-                # Sum scores (exclude anomalies list)
                 score = sum(float(v) for k,v in val_data.items() if k != 'anomalies' and isinstance(v, (int, float)))
-
-                # Check if we have non-zero data
                 has_data = any(float(v) != 0 for k,v in val_data.items() if k != 'anomalies' and isinstance(v, (int, float)))
-
                 if has_data:
-                    th = thresholds[i]
-                    if score >= th:
-                        status = 'UP'
-                    elif score <= -th:
-                        status = 'DOWN'
-                    else:
-                        status = 'FLAT'
-
+                    if score >= thresholds[i]: status = 'UP'
+                    elif score <= -thresholds[i]: status = 'DOWN'
+                    else: status = 'FLAT'
             summary.append(status)
 
-        # --- Process Slot 4 (H/A) ---
+        # H/A Icon
         loc = next_game_map.get(team)
         ha_status = 'N/A'
-
         if loc:
             trend_key = 'home_trend' if loc == 'H' else 'away_trend'
             val_data = t_data.get(trend_key)
-
             if val_data:
                 if isinstance(val_data, str):
                     try: val_data = json.loads(val_data)
                     except: val_data = {}
-
                 score = sum(float(v) for k,v in val_data.items() if k != 'anomalies' and isinstance(v, (int, float)))
-
-                if score > 0:
-                    ha_status = f"{loc}_GREEN"
-                elif score < 0:
-                    ha_status = f"{loc}_RED"
-                else:
-                    ha_status = f"{loc}_GRAY"
-            else:
-                ha_status = loc # Fallback if no trend data exists
-
+                if score > 0: ha_status = f"{loc}_GREEN"
+                elif score < 0: ha_status = f"{loc}_RED"
+                else: ha_status = f"{loc}_GRAY"
+            else: ha_status = loc
         summary.append(ha_status)
-
         p['trend_summary'] = summary
+
+        # --- B. Calculate Trend Details (Modal Data) ---
+
+        # 1. Collect Valid Blocks
+        valid_blocks = []
+        for k in block_cols:
+            if t_data.get(k): valid_blocks.append(t_data[k])
+
+        # 2. Define Timeframes
+        # We normalize everything to "Per 5 Games" for comparison
+        views = {
+            'Season Avg': {'data': t_data.get('season_avg'), 'scale': 1.0}, # Already Per 5
+            'Last 20': {'data': valid_blocks[-4:], 'is_list': True, 'scale': 5.0/20.0}, # 4 blocks = 20 games
+            'Last 10': {'data': valid_blocks[-2:], 'is_list': True, 'scale': 5.0/10.0}, # 2 blocks = 10 games
+            'Last 5':  {'data': valid_blocks[-1:], 'is_list': True, 'scale': 1.0},        # 1 block = 5 games
+            'Home':    {'data': t_data.get('home_stats'), 'scale': 5.0}, # Per 1 -> Per 5
+            'Away':    {'data': t_data.get('away_stats'), 'scale': 5.0}  # Per 1 -> Per 5
+        }
+
+        compiled_stats = {}
+
+        # 3. Aggregate & Calculate
+        stats_to_sum = [
+            'missedshots', 'shotattemptsblocked', 'takeaways', 'giveaways',
+            'hits', 'blockedshots', 'penaltyminutes', 'shots', 'goals',
+            'evgoals', 'ppgoals', 'shgoals', 'points', 'evpoints', 'pppoints', 'shpoints',
+            'timeonice', 'evtimeonice', 'ottimeonice', 'shtimeonice', 'pptimeonice', 'shifts',
+            'wins', 'losses', 'overtimelosses', 'saves', 'shotsagainst', 'goalsagainst', 'shutouts', 'gamesstarted', 'goalsfor'
+        ]
+
+        for label, config in views.items():
+            raw_data = config['data']
+            scale = config['scale']
+
+            # Aggregate if list of blocks
+            agg = {k: 0 for k in stats_to_sum}
+
+            if config.get('is_list'):
+                if not raw_data:
+                    compiled_stats[label] = None
+                    continue
+                for b in raw_data:
+                    for k in stats_to_sum:
+                        agg[k] += (b.get(k, 0) or 0)
+            else:
+                if not raw_data:
+                    compiled_stats[label] = None
+                    continue
+                agg = {k: (raw_data.get(k, 0) or 0) for k in stats_to_sum}
+
+            # Apply Scale (Normalize to Per 5 Games)
+            final_vals = {}
+            for k, v in agg.items():
+                final_vals[k] = v * scale
+
+            # Derived Stats (Rates)
+            # Shooting % (Total Goals / Total Shots * 100)
+            s_shots = final_vals.get('shots', 0)
+            final_vals['shootingpct'] = (final_vals['goals'] / s_shots * 100) if s_shots > 0 else 0.0
+
+            # Save % (Total Saves / Total SA)
+            s_sa = final_vals.get('shotsagainst', 0)
+            final_vals['savepct'] = (final_vals.get('saves', 0) / s_sa) if s_sa > 0 else 0.0
+
+            # GAA ((GA * 3600) / TOI) * 60 minutes
+            # Note: TOI is scaled to 5 games. GA is scaled to 5 games. Ratio is preserved.
+            # But GAA is a "Per 60 min" stat, not "Per 5 Games".
+            # We want the AVERAGE GAA.
+            # (Scaled GA / Scaled TOI) * 3600
+            s_toi = final_vals.get('timeonice', 0)
+            final_vals['gaa'] = (final_vals.get('goalsagainst', 0) * 3600 / s_toi) if s_toi > 0 else 0.0
+
+            # Assists (Points - Goals)
+            final_vals['evassists'] = final_vals.get('evpoints', 0) - final_vals.get('evgoals', 0)
+            final_vals['ppassists'] = final_vals.get('pppoints', 0) - final_vals.get('ppgoals', 0)
+            final_vals['shassists'] = final_vals.get('shpoints', 0) - final_vals.get('shgoals', 0)
+
+            compiled_stats[label] = final_vals
+
+        # 4. Get Anomalies (for highlighting)
+        # We rely on the stored 'anomalies' list in l5_trend for the "Last 5" column
+        anomalies_list = []
+        try:
+            l5_json = t_data.get('l5_trend')
+            if l5_json:
+                if isinstance(l5_json, str): l5_json = json.loads(l5_json)
+                anomalies_list = l5_json.get('anomalies', [])
+        except: pass
+
+        p['trend_details'] = {
+            'is_goalie': is_goalie,
+            'stats': compiled_stats,
+            'anomalies': anomalies_list
+        }
 
 def _get_ranked_players(cursor, player_ids, cat_rank_columns, raw_stat_columns, week_num, team_stats_map, league_id, sourcing='projected'):
     """

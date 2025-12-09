@@ -94,6 +94,27 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     // --- [END] INJECT GOALIE INFO MODAL ---
 
+    // --- [START] INJECT TRENDING INFO MODAL ---
+    if (!document.getElementById('trending-stats-modal')) {
+        const trendingModalHTML = `
+        <div id="trending-stats-modal" class="fixed inset-0 bg-gray-900 bg-opacity-75 flex items-center justify-center z-50 hidden" style="backdrop-filter: blur(2px);">
+            <div class="bg-gray-800 rounded-lg shadow-xl border border-gray-700 w-full max-w-4xl p-6 relative max-h-[90vh] overflow-y-auto">
+                <button id="trending-modal-close" class="absolute top-3 right-3 text-gray-400 hover:text-white text-2xl leading-none">&times;</button>
+                <h3 id="trending-modal-title" class="text-xl font-bold text-white mb-4">Player Trend Analysis</h3>
+                <div id="trending-modal-content" class="text-gray-300"></div>
+            </div>
+        </div>`;
+        document.body.insertAdjacentHTML('beforeend', trendingModalHTML);
+
+        document.body.addEventListener('click', (e) => {
+            const modal = document.getElementById('trending-stats-modal');
+            if (e.target.closest('#trending-modal-close') || e.target === modal) {
+                modal.classList.add('hidden');
+            }
+        });
+    }
+    // --- [END] INJECT TRENDING INFO MODAL ---
+
     // --- Global Function to Open Line Info Modal (Skaters) ---
     window.openLineInfoModal = function(player) {
         const modal = document.getElementById('line-info-modal');
@@ -147,6 +168,152 @@ document.addEventListener('DOMContentLoaded', () => {
         document.getElementById('goalie-loc-w').textContent = gd.loc_split.w_pct !== 'N/A' ? `${gd.loc_split.w_pct}%` : 'N/A';
         document.getElementById('goalie-loc-sv').textContent = gd.loc_split.sv_pct;
 
+        modal.classList.remove('hidden');
+    };
+
+    // --- Global Function to Open Trending Modal ---
+    window.renderTrendingModal = function(player, trendDetails) {
+        const modal = document.getElementById('trending-stats-modal');
+        const contentDiv = document.getElementById('trending-modal-content');
+        if (!modal || !contentDiv) return;
+
+        const stats = trendDetails.stats;
+        const isGoalie = trendDetails.is_goalie;
+        const anomalies = trendDetails.anomalies || [];
+
+        // Helper to format numbers
+        const fmt = (val, type) => {
+            if (val === null || val === undefined) return '-';
+            if (type === 'toi') {
+                const totalSec = Math.round(val);
+                const m = Math.floor(totalSec / 60);
+                const s = totalSec % 60;
+                return `${m}:${s < 10 ? '0' : ''}${s}`;
+            }
+            if (type === 'pct') return val.toFixed(1) + '%';
+            if (type === 'float') return val.toFixed(2);
+            return Math.round(val * 10) / 10; // 1 decimal for others
+        };
+
+        // Define Rows
+        let groups = [];
+        if (isGoalie) {
+            groups = [
+                {
+                    name: "Goalie",
+                    rows: [
+                        { label: "Games Started", key: "gamesstarted" },
+                        { label: "Wins", key: "wins" },
+                        { label: "Shutouts", key: "shutouts" },
+                        { label: "Losses", key: "losses" },
+                        { label: "OT Losses", key: "overtimelosses" },
+                        { label: "SV%", key: "savepct", type: 'float' },
+                        { label: "GAA", key: "gaa", type: 'float' }
+                    ]
+                },
+                {
+                    name: "Team",
+                    rows: [
+                        { label: "Shots Against", key: "shotsagainst" },
+                        { label: "Goals For", key: "goalsfor" }
+                    ]
+                }
+            ];
+        } else {
+            groups = [
+                {
+                    name: "Luck Factor",
+                    rows: [
+                        { label: "Missed Shots", key: "missedshots" },
+                        { label: "Blocked Attempts", key: "shotattemptsblocked" },
+                        { label: "Takeaways", key: "takeaways" },
+                        { label: "Shooting %", key: "shootingpct", type: 'pct' }
+                    ]
+                },
+                {
+                    name: "Bangers",
+                    rows: [
+                        { label: "Hits", key: "hits" },
+                        { label: "Blocks", key: "blockedshots" },
+                        { label: "PIM", key: "penaltyminutes" }
+                    ]
+                },
+                {
+                    name: "Scoring",
+                    rows: [
+                        { label: "Shots", key: "shots" },
+                        { label: "EV Goals", key: "evgoals" },
+                        { label: "EV Assists", key: "evassists" },
+                        { label: "PP Goals", key: "ppgoals" },
+                        { label: "PP Assists", key: "ppassists" },
+                        { label: "SH Goals", key: "shgoals" },
+                        { label: "SH Assists", key: "shassists" }
+                    ]
+                },
+                {
+                    name: "Deployments",
+                    rows: [
+                        { label: "Time On Ice", key: "timeonice", type: 'toi' },
+                        { label: "EV TOI", key: "evtimeonice", type: 'toi' },
+                        { label: "OT TOI", key: "ottimeonice", type: 'toi' },
+                        { label: "SH TOI", key: "shtimeonice", type: 'toi' },
+                        { label: "PP TOI", key: "pptimeonice", type: 'toi' }
+                    ]
+                }
+            ];
+        }
+
+        const columns = ["Season Avg", "Last 20", "Last 10", "Last 5", "Home", "Away"];
+
+        // Build HTML
+        let html = `
+            <div class="overflow-x-auto">
+                <table class="min-w-full divide-y divide-gray-700 text-xs">
+                    <thead>
+                        <tr class="bg-gray-700">
+                            <th class="px-2 py-2 text-left font-bold text-gray-200 sticky left-0 bg-gray-700 z-10">Stat</th>
+                            ${columns.map(c => `<th class="px-2 py-2 text-center font-bold text-gray-200">${c}</th>`).join('')}
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-gray-700 bg-gray-800">
+        `;
+
+        groups.forEach(group => {
+            html += `<tr class="bg-gray-750"><td colspan="${columns.length + 1}" class="px-2 py-1 font-bold text-blue-300 uppercase tracking-wider text-[10px] sticky left-0 bg-gray-750">${group.name}</td></tr>`;
+
+            group.rows.forEach(row => {
+                html += `<tr class="hover:bg-gray-700/50">`;
+                html += `<td class="px-2 py-1 text-gray-300 font-medium sticky left-0 bg-gray-800 hover:bg-gray-700/50 z-10 border-r border-gray-700">${row.label}</td>`;
+
+                columns.forEach(col => {
+                    const colData = stats[col];
+                    let valStr = '-';
+                    let cellClass = "";
+
+                    if (colData) {
+                        valStr = fmt(colData[row.key], row.type);
+
+                        // Anomaly Highlighting
+                        if (col === "Last 5") {
+                            const isHigh = anomalies.some(a => a.includes(row.label) && (a.includes("High") || a.includes("Spike")));
+                            const isLow = anomalies.some(a => a.includes(row.label) && a.includes("Low"));
+
+                            if (isHigh) cellClass = "bg-green-900/50 text-green-200 font-bold border border-green-700";
+                            if (isLow) cellClass = "bg-red-900/50 text-red-200 font-bold border border-red-700";
+                        }
+                    }
+
+                    html += `<td class="px-2 py-1 text-center text-gray-400 ${cellClass}">${valStr}</td>`;
+                });
+                html += `</tr>`;
+            });
+        });
+
+        html += `</tbody></table></div>`;
+        html += `<div class="mt-2 text-[10px] text-gray-500 italic text-right">* All values normalized to Per 5 Games avg</div>`;
+
+        document.getElementById('trending-modal-title').textContent = `${player.player_name} - Trend Analysis`;
+        contentDiv.innerHTML = html;
         modal.classList.remove('hidden');
     };
 

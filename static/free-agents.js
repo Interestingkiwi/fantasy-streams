@@ -894,10 +894,8 @@
             if (trendIcon) {
                 const pid = String(trendIcon.dataset.playerId);
                 const player = [...allWaiverPlayers, ...allFreeAgents].find(p => String(p.player_id) === pid);
-                if (player) {
-                    document.getElementById('trending-modal-title').textContent = `${player.player_name} - Trend`;
-                    document.getElementById('trending-modal-content').innerHTML = `<pre class="text-xs">${JSON.stringify(player.trend_details, null, 2)}</pre>`;
-                    document.getElementById('trending-stats-modal').classList.remove('hidden');
+                if (player && player.trend_details) {
+                    renderTrendingModal(player, player.trend_details);
                 }
             }
         });
