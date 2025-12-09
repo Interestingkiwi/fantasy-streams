@@ -120,12 +120,10 @@
             const gPill = e.target.closest('.goalie-info-pill');
             if (gPill && window.openGoalieInfoModal) {
                 const pid = String(gPill.dataset.playerId);
-                // Only search rosterData.players in Trade Helper
                 const player = rosterData.players.find(p => String(p.player_id) === pid);
                 if (player) window.openGoalieInfoModal(player);
                 return;
             }
-            // B. Cat Rank Cell (Global Modal)
             const rankCell = e.target.closest('.cat-rank-cell');
             if (rankCell && rosterData.players && window.openCatRankModal) {
                 const pid = String(rankCell.dataset.playerId);
@@ -148,12 +146,10 @@
                 }
             }
 
-            // C. Simulate Button
             const simBtn = e.target.closest('#simulate-trade-btn');
             if (simBtn && !simBtn.disabled) loadSubPage('trade-results');
         });
 
-        // D. Checkbox Logic
         document.body.addEventListener('change', (e) => {
             if (e.target.classList.contains('trade-player-checkbox')) {
                 const pid = String(e.target.value);
@@ -163,12 +159,10 @@
             }
         });
 
-        // --- 3. Listen for Raw Data Toggle ---
         window.addEventListener('rawDataToggled', (e) => {
             if (currentSubPage === 'trade-compare') renderComparePage();
         });
 
-        // --- 4. Init Logic ---
         yourTeamSelect.addEventListener('change', () => {
             userTeamName = yourTeamSelect.value;
             filterPartner = "";
@@ -245,7 +239,6 @@
         else if (currentSubPage === 'trade-results') renderResultsPage();
     }
 
-    // --- Trade Partners (Unchanged) ---
     function renderPartnersPage() {
         const skaterContainer = document.getElementById('skater-table-container');
         const goalieContainer = document.getElementById('goalie-table-container');
@@ -361,7 +354,6 @@
         container.innerHTML = html;
     }
 
-    // --- Trade Compare Logic ---
     function renderComparePage() {
         const userSkaterContainer = document.getElementById('roster-skater-table-container');
         const userGoalieContainer = document.getElementById('roster-goalie-table-container');
@@ -382,7 +374,6 @@
         }
         if(rosterLoader) rosterLoader.textContent = "";
 
-        // Filter
         const userPlayers = rosterData.players.filter(p => p.fantasy_team_name === userTeamName);
         const oppPlayers = rosterData.players.filter(p => {
             if (p.fantasy_team_name === userTeamName || p.fantasy_team_name === 'Free Agent') return false;
@@ -403,7 +394,6 @@
         const oppSkaters = oppPlayers.filter(p => !(p.eligible_positions || '').includes('G'));
         const oppGoalies = oppPlayers.filter(p => (p.eligible_positions || '').includes('G'));
 
-        // Sort
         const multiSortFn = (keys) => (a, b) => {
             if (!keys || keys.length === 0) return 0;
             for (let key of keys) {
@@ -421,13 +411,11 @@
         oppSkaters.sort(multiSortFn(activeToCats));
         oppGoalies.sort(multiSortFn(activeToCats));
 
-        // Render
         renderRosterTable(userSkaterContainer, userSkaters, rosterData.skaterCategories, false);
         renderRosterTable(userGoalieContainer, userGoalies, rosterData.goalieCategories, false);
         renderRosterTable(oppSkaterContainer, oppSkaters, rosterData.skaterCategories, true);
         renderRosterTable(oppGoalieContainer, oppGoalies, rosterData.goalieCategories, true);
 
-        // Swap
         const primaryToCat = activeToCats[0];
         const isGoalieStat = primaryToCat && rosterData.goalieCategories.includes(primaryToCat);
         if (oppSkaterSection && oppGoalieSection) {
@@ -525,7 +513,6 @@
 
         if (!partnerSelect || !nhlSelect || !posSelect || !searchInput) return;
 
-        // Clear Button Logic
         if (clearBtn) {
             const newBtn = clearBtn.cloneNode(true);
             clearBtn.parentNode.replaceChild(newBtn, clearBtn);
@@ -583,23 +570,20 @@
         html += `<th class="px-2 py-1 text-left font-bold text-gray-300">NHL Team</th><th class="px-2 py-1 text-left font-bold text-gray-300">Pos</th>`;
         html += `<th class="px-2 py-1 text-center font-bold text-gray-300" title="Sum of Category Ranks">Cat Rank</th>`;
         html += `<th class="px-2 py-1 text-center font-bold text-gray-300" title="Power Play Utilization">PP Util</th>`;
-        html += `<th class="px-2 py-1 text-center font-bold text-gray-300">Trending</th>`;
+        html += `<th class="px-2 py-1 text-center font-bold text-gray-300"><div class="text-[10px] leading-tight">L20 | L10 | L5 | H/A</div></th>`;
         categories.forEach(cat => html += `<th class="px-2 py-1 text-center font-bold text-gray-300" title="${cat}">${cat}</th>`);
         html += `</tr></thead><tbody class="bg-gray-800 divide-y divide-gray-700">`;
 
-        players.forEach(p => { // Loop uses 'p'
+        players.forEach(p => {
             try {
                 const isChecked = selectedPlayerIds.has(String(p.player_id)) ? 'checked' : '';
                 const teamClass = p.fantasy_team_name === userTeamName ? 'border-l-4 border-blue-500' : '';
 
-                // --- PILL GENERATION (DEBUG WRAPPED) ---
                 let pillHtml = '';
                 const isGoalie = (p.positions || p.eligible_positions || '').includes('G');
 
                 if (isGoalie) {
                      const gd = p.goalie_data || { l10_start_pct: 'N/A', days_rest: 'N/A', next_loc: 'N/A' };
-
-                     // Helper to safe stringify
                      const safeVal = (v) => (v === undefined || v === null) ? 'N/A' : v;
                      const pct = safeVal(gd.l10_start_pct) !== 'N/A' ? `${gd.l10_start_pct}%` : 'N/A';
 
@@ -622,15 +606,38 @@
                             ${lineVal} | ${ppVal}
                         </span>`;
                 }
-                let trendIcon = '';
-                if (p.trend_status === 'up') {
-                    trendIcon = `<span class="text-green-500 text-lg cursor-pointer trending-icon" data-player-id="${p.player_id}">&#9650;</span>`;
-                } else if (p.trend_status === 'down') {
-                    trendIcon = `<span class="text-red-500 text-lg cursor-pointer trending-icon" data-player-id="${p.player_id}">&#9660;</span>`;
+
+                // --- TRENDING COLUMN LOGIC ---
+                const tSum = p.trend_summary || ['N/A', 'N/A', 'N/A', 'N/A'];
+                const icons = {
+                    'UP': `<span class="text-green-500 text-lg cursor-pointer trending-icon" data-player-id="${p.player_id}">&#9650;</span>`,
+                    'DOWN': `<span class="text-red-500 text-lg cursor-pointer trending-icon" data-player-id="${p.player_id}">&#9660;</span>`,
+                    'FLAT': `<span class="text-yellow-500 text-lg cursor-pointer trending-icon" data-player-id="${p.player_id}">&#8722;</span>`,
+                    'N/A': `<span class="text-gray-600 text-[10px] cursor-pointer trending-icon" data-player-id="${p.player_id}">-</span>`
+                };
+
+                let haHtml = '';
+                if (tSum[3].includes('_')) {
+                    const [loc, color] = tSum[3].split('_');
+                    const colorClass = color === 'GREEN' ? 'text-green-500' : (color === 'RED' ? 'text-red-500' : 'text-gray-400');
+                    haHtml = `<span class="${colorClass} font-bold text-sm cursor-pointer trending-icon" data-player-id="${p.player_id}">${loc}</span>`;
+                } else if (tSum[3] !== 'N/A') {
+                    haHtml = `<span class="text-gray-400 font-bold text-sm cursor-pointer trending-icon" data-player-id="${p.player_id}">${tSum[3]}</span>`;
                 } else {
-                    trendIcon = `<span class="text-yellow-500 text-lg cursor-pointer trending-icon" data-player-id="${p.player_id}">&#8722;</span>`;
+                    haHtml = `<span class="text-gray-600 text-[10px] cursor-pointer trending-icon" data-player-id="${p.player_id}">-</span>`;
                 }
-                // -----------------------
+
+                const trendHtml = `
+                    <div class="flex items-center justify-center space-x-1">
+                        ${icons[tSum[0]] || icons['N/A']}
+                        <span class="text-gray-700 text-[10px]">|</span>
+                        ${icons[tSum[1]] || icons['N/A']}
+                        <span class="text-gray-700 text-[10px]">|</span>
+                        ${icons[tSum[2]] || icons['N/A']}
+                        <span class="text-gray-700 text-[10px]">|</span>
+                        ${haHtml}
+                    </div>
+                `;
 
                 html += `<tr class="hover:bg-gray-700/50 ${teamClass}">`;
                 html += `<td class="px-2 py-1 text-center"><input type="checkbox" value="${p.player_id}" class="trade-player-checkbox form-checkbox h-4 w-4 text-blue-600 rounded bg-gray-700 border-gray-600" ${isChecked}></td>`;
@@ -651,7 +658,9 @@
                 if (p.avg_ppTimeOnIcePctPerGame !== undefined) {
                     html += `<td class="px-2 py-1 whitespace-nowrap text-sm text-gray-300 cursor-pointer hover:bg-gray-700 pp-util-cell" data-player-name="${p.player_name}" data-lg-pp-toi="${p.lg_ppTimeOnIce}" data-lg-pp-pct="${p.lg_ppTimeOnIcePctPerGame}" data-lg-ppa="${p.lg_ppAssists}" data-lg-ppg="${p.lg_ppGoals}" data-lw-pp-toi="${p.avg_ppTimeOnIce}" data-lw-pp-pct="${p.avg_ppTimeOnIcePctPerGame}" data-lw-ppa="${p.total_ppAssists}" data-lw-ppg="${p.total_ppGoals}" data-lw-gp="${p.team_games_played}">${formatPercentage(p.avg_ppTimeOnIcePctPerGame)}</td>`;
                 } else { html += `<td class="px-2 py-1 text-center text-gray-500">-</td>`; }
-                html += `<td class="px-2 py-1 text-center whitespace-nowrap">${trendIcon}</td>`;
+
+                html += `<td class="px-2 py-1 text-center whitespace-nowrap">${trendHtml}</td>`;
+
                 categories.forEach(cat => {
                     const rank = p[cat + '_cat_rank'];
                     const heatColor = getHeatmapColor(rank);
@@ -679,14 +688,12 @@
                 html += `</tr>`;
             } catch (err) {
                 console.error("Error rendering player row:", p.player_name, err);
-                // Continue to next player
             }
         });
         html += `</tbody></table></div>`;
         container.innerHTML = html;
     }
 
-    // ... (Keep renderResultsPage, calculateTradeImpact, renderImpactTable) ...
     function renderResultsPage() {
         const userContainer = document.getElementById('results-user-container');
         const oppContainer = document.getElementById('results-opponent-container');

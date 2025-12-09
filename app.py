@@ -890,17 +890,143 @@ def _enrich_goalie_data(cursor, players_list):
 
 def _enrich_player_trends(cursor, players_list):
     """
-    Determines the trend status for a list of players.
-    Populates 'trend_status' ('up', 'down', 'flat') and 'trend_details' (dict).
+    Enriches players with L20/L10/L5 trends and Next Game H/A status.
+    Populates 'trend_summary' (list of display tokens) and 'trend_details' (raw data).
     """
+    if not players_list:
+        return
+
+    # 1. Gather Identifiers (Unique list to minimize DB hits)
+    norm_names = list(set([p.get('player_name_normalized') for p in players_list if p.get('player_name_normalized')]))
+    teams = list(set([p.get('team') or p.get('player_team') for p in players_list if (p.get('team') or p.get('player_team'))]))
+
+    if not norm_names:
+        return
+
+    # 2. Fetch Trend Data from DB
+    placeholders = ','.join(['%s'] * len(norm_names))
+    query = f"""
+        SELECT player_name_normalized, l20_trend, l10_trend, l5_trend, home_trend, away_trend
+        FROM player_trends
+        WHERE player_name_normalized IN ({placeholders})
+    """
+    cursor.execute(query, tuple(norm_names))
+    trends_map = {row['player_name_normalized']: row for row in cursor.fetchall()}
+
+    # 3. Fetch Next Game Location for each Team
+    next_game_map = {}
+    if teams:
+        today_str = date.today().strftime('%Y-%m-%d')
+        team_placeholders = ','.join(['%s'] * len(teams))
+
+        # Query schedule for future games involving these teams
+        sched_query = f"""
+            SELECT home_team, away_team
+            FROM schedule
+            WHERE game_date >= %s
+              AND (home_team IN ({team_placeholders}) OR away_team IN ({team_placeholders}))
+            ORDER BY game_date ASC
+        """
+        # Duplicate teams list for OR clause
+        params = [today_str] + teams + teams
+        cursor.execute(sched_query, tuple(params))
+        rows = cursor.fetchall()
+
+        # Find first game for each team (Schedule is ordered by date)
+        for row in rows:
+            h, a = row['home_team'], row['away_team']
+            if h in teams and h not in next_game_map:
+                next_game_map[h] = 'H'
+            if a in teams and a not in next_game_map:
+                next_game_map[a] = 'A'
+            if len(next_game_map) == len(teams):
+                break
+
+    # 4. Calculate Logic for each Player
     for p in players_list:
-        # Placeholder Logic: Randomly assign for now to visualize the UI
-        # In the future, this will query DB for L10 games, etc.
-        p['trend_status'] = random.choice(['up', 'down', 'flat'])
+        name = p.get('player_name_normalized')
+        team = p.get('team') or p.get('player_team')
+
+        # Init Default: [L20, L10, L5, H/A]
+        p['trend_summary'] = ['N/A', 'N/A', 'N/A', 'N/A']
+        p['trend_details'] = {}
+
+        if not name or name not in trends_map:
+            continue
+
+        t_data = trends_map[name]
+        # Store raw data for the modal
         p['trend_details'] = {
-            'last_3_games': 'Data to be implemented',
-            'season_diff': 'Data to be implemented'
+            'l20': t_data.get('l20_trend'),
+            'l10': t_data.get('l10_trend'),
+            'l5': t_data.get('l5_trend'),
+            'home': t_data.get('home_trend'),
+            'away': t_data.get('away_trend')
         }
+
+        # Determine Thresholds
+        is_goalie = 'G' in (p.get('eligible_positions') or p.get('positions') or '').split(',')
+        # Format: [L20 Threshold, L10 Threshold, L5 Threshold]
+        thresholds = [0.10, 0.15, 0.20] if is_goalie else [0.20, 0.35, 0.50]
+
+        summary = []
+
+        # --- Process Slots 1-3 (L20, L10, L5) ---
+        keys = ['l20_trend', 'l10_trend', 'l5_trend']
+        for i, key in enumerate(keys):
+            val_data = t_data.get(key)
+            status = 'N/A'
+
+            if val_data:
+                # Handle stringified JSON if necessary
+                if isinstance(val_data, str):
+                    try: val_data = json.loads(val_data)
+                    except: val_data = {}
+
+                # Sum scores (exclude anomalies list)
+                score = sum(float(v) for k,v in val_data.items() if k != 'anomalies' and isinstance(v, (int, float)))
+
+                # Check if we have non-zero data
+                has_data = any(float(v) != 0 for k,v in val_data.items() if k != 'anomalies' and isinstance(v, (int, float)))
+
+                if has_data:
+                    th = thresholds[i]
+                    if score >= th:
+                        status = 'UP'
+                    elif score <= -th:
+                        status = 'DOWN'
+                    else:
+                        status = 'FLAT'
+
+            summary.append(status)
+
+        # --- Process Slot 4 (H/A) ---
+        loc = next_game_map.get(team)
+        ha_status = 'N/A'
+
+        if loc:
+            trend_key = 'home_trend' if loc == 'H' else 'away_trend'
+            val_data = t_data.get(trend_key)
+
+            if val_data:
+                if isinstance(val_data, str):
+                    try: val_data = json.loads(val_data)
+                    except: val_data = {}
+
+                score = sum(float(v) for k,v in val_data.items() if k != 'anomalies' and isinstance(v, (int, float)))
+
+                if score > 0:
+                    ha_status = f"{loc}_GREEN"
+                elif score < 0:
+                    ha_status = f"{loc}_RED"
+                else:
+                    ha_status = f"{loc}_GRAY"
+            else:
+                ha_status = loc # Fallback if no trend data exists
+
+        summary.append(ha_status)
+
+        p['trend_summary'] = summary
 
 def _get_ranked_players(cursor, player_ids, cat_rank_columns, raw_stat_columns, week_num, team_stats_map, league_id, sourcing='projected'):
     """

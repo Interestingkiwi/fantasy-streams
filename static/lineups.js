@@ -60,14 +60,11 @@
             document.body.insertAdjacentHTML('beforeend', trendingModalHTML);
         }
         // --- 2. Global Modal Click Listener (Delegation) ---
-        // Attaching to Body ensures we catch clicks even after table re-renders
         document.body.addEventListener('click', (e) => {
-            // Close Buttons
             if (e.target.closest('#pp-modal-close') || e.target.id === 'pp-stats-modal') document.getElementById('pp-stats-modal').classList.add('hidden');
             if (e.target.closest('#opponent-modal-close') || e.target.id === 'opponent-stats-modal') document.getElementById('opponent-stats-modal').classList.add('hidden');
             if (e.target.closest('#trending-modal-close') || e.target.id === 'trending-stats-modal') document.getElementById('trending-stats-modal').classList.add('hidden');
 
-            // 1. PP Util Cell
             const ppCell = e.target.closest('.pp-util-cell');
             if (ppCell) {
                 const data = ppCell.dataset;
@@ -92,12 +89,10 @@
             const gPill = e.target.closest('.goalie-info-pill');
             if (gPill && window.openGoalieInfoModal && currentRosterData) {
                 const pid = String(gPill.dataset.playerId);
-                // Only search currentRosterData.players in Lineups
                 const player = currentRosterData.players.find(p => String(p.player_id) === pid);
                 if (player) window.openGoalieInfoModal(player);
                 return;
             }
-            // 2. Opponent Stats Cell
             const oppCell = e.target.closest('.opponent-stats-cell');
             if (oppCell) {
                 const data = oppCell.dataset;
@@ -148,10 +143,9 @@
                 document.getElementById('opponent-stats-modal').classList.remove('hidden');
             }
 
-            // 3. Handle Cat Rank Cell (Calls Global Modal)
             const rankCell = e.target.closest('.cat-rank-cell');
             if (rankCell && currentRosterData) {
-                const pid = String(rankCell.dataset.playerId); // String for safety
+                const pid = String(rankCell.dataset.playerId);
                 const player = currentRosterData.players.find(p => String(p.player_id) === pid);
 
                 if (player && window.openCatRankModal) {
@@ -326,7 +320,9 @@
                                 <th class="px-2 py-1 text-left text-xs font-bold text-gray-300 uppercase">Starts</th>
                                 <th class="px-2 py-1 text-left text-xs font-bold text-gray-300 uppercase">Next Wk</th>
                                 <th class="px-2 py-1 text-left text-xs font-bold text-gray-300 uppercase">PP Util</th>
-                                <th class="px-2 py-1 text-center text-xs font-bold text-gray-300 uppercase">Trending</th>
+                                <th class="px-2 py-1 text-center text-xs font-bold text-gray-300 uppercase">
+                                    <div class="text-[10px] leading-tight">L20 | L10 | L5 | H/A</div>
+                                </th>
                                 <th class="px-2 py-1 text-center text-xs font-bold text-gray-300 uppercase">Total Rank</th>
         `;
         (categories || []).forEach(cat => {
@@ -335,7 +331,7 @@
         tableHtml += `</tr></thead><tbody class="bg-gray-800 divide-y divide-gray-700">`;
 
         if (players.length === 0) {
-            const colspan = 10 + (categories || []).length;
+            const colspan = 11 + (categories || []).length;
             tableHtml += `<tr><td colspan="${colspan}" class="text-center py-4 text-gray-400">No ${title.toLowerCase()} found on roster.</td></tr>`;
         }
 
@@ -344,7 +340,6 @@
                 const gamesThisWeekHtml = (player.games_this_week || []).map(day => (playerStartsByDay[player.player_name]?.has(day) ? `<strong class="text-yellow-300">${day}</strong>` : day)).join(', ');
                 const statusHtml = (player.status && player.status !== 'FA') ? `<span class="text-red-400 ml-1">(${player.status})</span>` : '';
 
-                // --- LINE INFO PILL (Updated & Safe) ---
                 let pillHtml = '';
                 const isGoalie = (player.positions || player.eligible_positions || '').includes('G');
 
@@ -356,7 +351,7 @@
                     pillHtml = `
                         <span class="ml-2 px-2 py-0.5 rounded text-[10px] font-bold bg-blue-900 text-blue-200 border border-blue-700 cursor-pointer hover:bg-blue-800 goalie-info-pill"
                               data-player-id="${player.player_id}">
-                            'L10 GS%:${pct}' | Rest: ${safeVal(gd.days_rest)} | ${safeVal(gd.next_loc)}
+                            ${pct} | Rest: ${safeVal(gd.days_rest)} | ${safeVal(gd.next_loc)}
                         </span>`;
                 } else {
                     let lineVal = player.line_number;
@@ -372,15 +367,38 @@
                             ${lineVal} | ${ppVal}
                         </span>`;
                 }
-                let trendIcon = '';
-                if (player.trend_status === 'up') {
-                    trendIcon = `<span class="text-green-500 text-lg cursor-pointer trending-icon" data-player-id="${player.player_id}">&#9650;</span>`;
-                } else if (player.trend_status === 'down') {
-                    trendIcon = `<span class="text-red-500 text-lg cursor-pointer trending-icon" data-player-id="${player.player_id}">&#9660;</span>`;
+
+                // --- TRENDING COLUMN LOGIC ---
+                const tSum = player.trend_summary || ['N/A', 'N/A', 'N/A', 'N/A'];
+                const icons = {
+                    'UP': `<span class="text-green-500 text-lg cursor-pointer trending-icon" data-player-id="${player.player_id}">&#9650;</span>`,
+                    'DOWN': `<span class="text-red-500 text-lg cursor-pointer trending-icon" data-player-id="${player.player_id}">&#9660;</span>`,
+                    'FLAT': `<span class="text-yellow-500 text-lg cursor-pointer trending-icon" data-player-id="${player.player_id}">&#8722;</span>`,
+                    'N/A': `<span class="text-gray-600 text-[10px] cursor-pointer trending-icon" data-player-id="${player.player_id}">-</span>`
+                };
+
+                let haHtml = '';
+                if (tSum[3].includes('_')) {
+                    const [loc, color] = tSum[3].split('_');
+                    const colorClass = color === 'GREEN' ? 'text-green-500' : (color === 'RED' ? 'text-red-500' : 'text-gray-400');
+                    haHtml = `<span class="${colorClass} font-bold text-sm cursor-pointer trending-icon" data-player-id="${player.player_id}">${loc}</span>`;
+                } else if (tSum[3] !== 'N/A') {
+                    haHtml = `<span class="text-gray-400 font-bold text-sm cursor-pointer trending-icon" data-player-id="${player.player_id}">${tSum[3]}</span>`;
                 } else {
-                    trendIcon = `<span class="text-yellow-500 text-lg cursor-pointer trending-icon" data-player-id="${player.player_id}">&#8722;</span>`;
+                    haHtml = `<span class="text-gray-600 text-[10px] cursor-pointer trending-icon" data-player-id="${player.player_id}">-</span>`;
                 }
-                // ----------------------
+
+                const trendHtml = `
+                    <div class="flex items-center justify-center space-x-1">
+                        ${icons[tSum[0]] || icons['N/A']}
+                        <span class="text-gray-700 text-[10px]">|</span>
+                        ${icons[tSum[1]] || icons['N/A']}
+                        <span class="text-gray-700 text-[10px]">|</span>
+                        ${icons[tSum[2]] || icons['N/A']}
+                        <span class="text-gray-700 text-[10px]">|</span>
+                        ${haHtml}
+                    </div>
+                `;
 
                 const opponentsList = (player.opponents_list || []).join(', ');
                 const opponentStatsJson = JSON.stringify(player.opponent_stats_this_week || []);
@@ -422,7 +440,7 @@
                             data-lw-gp="${player.team_games_played}">
                             ${formatPercentage(player.avg_ppTimeOnIcePctPerGame)}
                         </td>
-                        <td class="px-2 py-1 text-center whitespace-nowrap">${trendIcon}</td>
+                        <td class="px-2 py-1 text-center whitespace-nowrap">${trendHtml}</td>
                         <td class="px-2 py-1 text-center font-bold text-blue-400 cursor-pointer hover:text-blue-300 cat-rank-cell" data-player-id="${player.player_id}">
                             ${validRanks > 0 ? Math.round(catRankSum) : '-'}
                         </td>
@@ -462,7 +480,7 @@
         return tableHtml;
     }
 
-    function renderCategoryCheckboxes() { /* ... (Unchanged) ... */
+    function renderCategoryCheckboxes() {
         let checkboxHtml = `
             <div class="flex justify-between items-center mb-2">
                 <label class="block text-sm font-medium text-gray-300">Update Lineup Priority Based On:</label>
@@ -513,7 +531,7 @@
         yourTeamSelect.addEventListener('change', fetchAndRenderTable);
     }
 
-    function renderOptimalLineups(dailyLineups, lineupSettings) { /* ... (Unchanged) ... */
+    function renderOptimalLineups(dailyLineups, lineupSettings) {
         let finalHtml = '<div class="flex flex-wrap gap-4 justify-center">';
         const positionOrder = ['C', 'LW', 'RW', 'F', 'W', 'D', 'Util', 'G'];
 
@@ -562,7 +580,7 @@
         }
     }
 
-    function renderUnusedRosterSpotsTable(unusedSpotsData) { /* ... (Unchanged) ... */
+    function renderUnusedRosterSpotsTable(unusedSpotsData) {
         if (!unusedSpotsData) {
             unusedRosterSpotsContainer.innerHTML = '';
             return;
@@ -627,7 +645,6 @@
                     <tbody class="bg-gray-800 divide-y divide-gray-700">
         `;
         sortedMoves.forEach(move => {
-            // Handle null players
             const addedName = move.added_player ? move.added_player.player_name : '<span class="text-gray-500 italic">-</span>';
             const droppedName = move.dropped_player ? move.dropped_player.player_name : '<span class="text-gray-500 italic">-</span>';
 

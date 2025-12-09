@@ -20,7 +20,6 @@
 
     const CACHE_KEY = 'freeAgentsCache';
     const SIMULATION_KEY = 'simulationCache';
-    const CATEGORY_PREF_KEY = 'freeAgentCategoryPreferences';
 
     // --- Global State ---
     let allWaiverPlayers = [];
@@ -69,7 +68,6 @@
         }
     }
 
-    // --- [START] NEW: Number formatting helper ---
     function formatNumber(value, decimals, defaultVal = 'N/A') {
         if (value === null || value === undefined) return defaultVal;
         try {
@@ -80,7 +78,6 @@
             return defaultVal;
         }
     }
-    // --- [END] NEW ---
 
     function formatNullable(value) {
         return value ?? 'N/A';
@@ -116,7 +113,6 @@
         return bestPosA - bestPosB;
     };
 
-
     // --- Caching Functions ---
     function saveStateToCache() {
         try {
@@ -135,7 +131,6 @@
                 selectedDays,
                 injuryFilters: injuryFilters,
                 sortConfig,
-                unusedRosterSpotsHTML: unusedRosterSpotsContainer.innerHTML,
                 unusedRosterSpotsData: currentUnusedSpots,
                 currentTeamRoster: currentTeamRoster,
                 currentWeekDates: currentWeekDates,
@@ -169,15 +164,13 @@
             const currentSelectedWeek = weekSelect ? weekSelect.value : null;
 
             if (currentSelectedWeek && cachedState.selectedWeek !== currentSelectedWeek) {
-                console.warn("Cache is for a different week. Discarding cache.");
                 localStorage.removeItem(CACHE_KEY);
                 return null;
             }
             const currentSourcing = localStorage.getItem('selectedStatSourcing') || 'projected';
-            const cachedSourcing = cachedState.sourcing || 'projected'; // Default for old caches
+            const cachedSourcing = cachedState.sourcing || 'projected';
 
             if (cachedSourcing !== currentSourcing) {
-                console.log("Cache source mismatch (" + cachedSourcing + " vs " + currentSourcing + "). Discarding cache.");
                 localStorage.removeItem(CACHE_KEY);
                 return null;
             }
@@ -213,27 +206,6 @@
         const percentage = (clampedRank - minRank) / (maxRank - minRank);
         const hue = (1 - percentage) * 120;
         return `hsl(${hue}, 65%, 75%)`;
-    }
-
-    async function getTimestamp() {
-        if (!timestampText) return;
-        try {
-            const response = await fetch('/api/available_players_timestamp');
-            const data = await response.json();
-
-            if (!response.ok) {
-                throw new Error(data.error || 'Failed to fetch timestamp.');
-            }
-
-            if (data.timestamp) {
-                timestampText.textContent = `Available player data was last refreshed at: ${data.timestamp}`;
-            } else {
-                timestampText.textContent = 'Available player data has not been updated. Please run an update from the League Database page.';
-            }
-        } catch (error) {
-            console.error('Error setting timestamp:', error);
-            timestampText.textContent = 'Could not load data status.';
-        }
     }
 
     async function fetchData(selectedCategories = null) {
@@ -303,9 +275,8 @@
         }
     }
 
-    // --- NEW: Global Toggle Listener ---
     window.addEventListener('rawDataToggled', (e) => {
-        filterAndSortPlayers(); // Re-render with new view mode
+        filterAndSortPlayers();
     });
 
     function renderCategoryCheckboxes() {
@@ -333,101 +304,100 @@
     }
 
     function renderPositionFilters() {
-            const POSITIONS = ['C', 'LW', 'RW', 'D', 'G'];
-            let filterHtml = '';
-            POSITIONS.forEach(pos => {
-                const isChecked = selectedPositions.includes(pos);
-                filterHtml += `
-                    <div class="flex items-center">
-                        <input id="pos-${pos}" name="position-filter" type="checkbox" value="${pos}" ${isChecked ? 'checked' : ''} class="h-4 w-4 bg-gray-700 border-gray-600 text-indigo-600 focus:ring-indigo-500 rounded">
-                        <label for="pos-${pos}" class="ml-2 text-sm text-gray-300">${pos}</label>
-                    </div>
-                `;
-            });
-            positionFiltersContainer.innerHTML = filterHtml;
-        }
-    function renderInjuryFilters() {
-            if (!injuryFiltersContainer) return;
-            let filterHtml = `
-                <div classflex items-center mr-4">
-                    <input id="filter-hide-dtd" name="injury-filter" type="checkbox" value="DTD" ${injuryFilters.hideDTD ? 'checked' : ''} class="h-4 w-4 bg-gray-700 border-gray-600 text-indigo-600 focus:ring-indigo-500 rounded">
-                    <label for="filter-hide-dtd" class="ml-2 text-sm text-gray-300">Hide DTD/O</label>
-                </div>
+        const POSITIONS = ['C', 'LW', 'RW', 'D', 'G'];
+        let filterHtml = '';
+        POSITIONS.forEach(pos => {
+            const isChecked = selectedPositions.includes(pos);
+            filterHtml += `
                 <div class="flex items-center">
-                    <input id="filter-hide-ir" name="injury-filter" type="checkbox" value="IR" ${injuryFilters.hideIR ? 'checked' : ''} class="h-4 w-4 bg-gray-700 border-gray-600 text-indigo-600 focus:ring-indigo-500 rounded">
-                    <label for="filter-hide-ir" class="ml-2 text-sm text-gray-300">Hide IR</label>
+                    <input id="pos-${pos}" name="position-filter" type="checkbox" value="${pos}" ${isChecked ? 'checked' : ''} class="h-4 w-4 bg-gray-700 border-gray-600 text-indigo-600 focus:ring-indigo-500 rounded">
+                    <label for="pos-${pos}" class="ml-2 text-sm text-gray-300">${pos}</label>
                 </div>
             `;
-            injuryFiltersContainer.innerHTML = filterHtml;
-        }
+        });
+        positionFiltersContainer.innerHTML = filterHtml;
+    }
+
+    function renderInjuryFilters() {
+        if (!injuryFiltersContainer) return;
+        let filterHtml = `
+            <div class="flex items-center mr-4">
+                <input id="filter-hide-dtd" name="injury-filter" type="checkbox" value="DTD" ${injuryFilters.hideDTD ? 'checked' : ''} class="h-4 w-4 bg-gray-700 border-gray-600 text-indigo-600 focus:ring-indigo-500 rounded">
+                <label for="filter-hide-dtd" class="ml-2 text-sm text-gray-300">Hide DTD/O</label>
+            </div>
+            <div class="flex items-center">
+                <input id="filter-hide-ir" name="injury-filter" type="checkbox" value="IR" ${injuryFilters.hideIR ? 'checked' : ''} class="h-4 w-4 bg-gray-700 border-gray-600 text-indigo-600 focus:ring-indigo-500 rounded">
+                <label for="filter-hide-ir" class="ml-2 text-sm text-gray-300">Hide IR</label>
+            </div>
+        `;
+        injuryFiltersContainer.innerHTML = filterHtml;
+    }
 
     function renderDayFilters() {
-            const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-            let filterHtml = '';
-            DAYS.forEach(day => {
-                const isChecked = selectedDays.includes(day);
-                filterHtml += `
-                    <div class="flex items-center">
-                        <input id="day-${day}" name="day-filter" type="checkbox" value="${day}" ${isChecked ? 'checked' : ''} class="h-4 w-4 bg-gray-700 border-gray-600 text-indigo-500 focus:ring-indigo-500 rounded">
-                        <label for="day-${day}" class="ml-2 text-sm text-gray-300">${day}</label>
-                    </div>
-                `;
-            });
-            dayFiltersContainer.innerHTML = filterHtml;
-        }
+        const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+        let filterHtml = '';
+        DAYS.forEach(day => {
+            const isChecked = selectedDays.includes(day);
+            filterHtml += `
+                <div class="flex items-center">
+                    <input id="day-${day}" name="day-filter" type="checkbox" value="${day}" ${isChecked ? 'checked' : ''} class="h-4 w-4 bg-gray-700 border-gray-600 text-indigo-500 focus:ring-indigo-500 rounded">
+                    <label for="day-${day}" class="ml-2 text-sm text-gray-300">${day}</label>
+                </div>
+            `;
+        });
+        dayFiltersContainer.innerHTML = filterHtml;
+    }
 
-        function filterAndSortPlayers() {
-            const searchTerm = playerSearchInput.value.toLowerCase();
-            // ... (Filters same as before) ...
-            const positionFilter = (player) => { if (selectedPositions.length === 0) return true; return selectedPositions.some(pos => (player.positions || '').includes(pos)); };
-            const dayFilter = (player) => { if (selectedDays.length === 0) return true; return selectedDays.every(day => (player.games_this_week || []).includes(day)); };
-            const searchFilter = (player) => player.player_name.toLowerCase().includes(searchTerm);
-            const injuryFilter = (player) => {
-                const status = player.status;
-                if (injuryFilters.hideDTD && (status === 'DTD' || status === 'O')) return false;
-                if (injuryFilters.hideIR && (status === 'IR' || status === 'IR-NR' || status === 'IR-LT')) return false;
-                return true;
-            };
+    function filterAndSortPlayers() {
+        const searchTerm = playerSearchInput.value.toLowerCase();
+        const positionFilter = (player) => { if (selectedPositions.length === 0) return true; return selectedPositions.some(pos => (player.positions || '').includes(pos)); };
+        const dayFilter = (player) => { if (selectedDays.length === 0) return true; return selectedDays.every(day => (player.games_this_week || []).includes(day)); };
+        const searchFilter = (player) => player.player_name.toLowerCase().includes(searchTerm);
+        const injuryFilter = (player) => {
+            const status = player.status;
+            if (injuryFilters.hideDTD && (status === 'DTD' || status === 'O')) return false;
+            if (injuryFilters.hideIR && (status === 'IR' || status === 'IR-NR' || status === 'IR-LT')) return false;
+            return true;
+        };
 
-            const waiverSkaters = allWaiverPlayers.filter(p => !(p.positions || '').includes('G'));
-            const waiverGoalies = allWaiverPlayers.filter(p => (p.positions || '').includes('G'));
-            const faSkaters = allFreeAgents.filter(p => !(p.positions || '').includes('G'));
-            const faGoalies = allFreeAgents.filter(p => (p.positions || '').includes('G'));
+        const waiverSkaters = allWaiverPlayers.filter(p => !(p.positions || '').includes('G'));
+        const waiverGoalies = allWaiverPlayers.filter(p => (p.positions || '').includes('G'));
+        const faSkaters = allFreeAgents.filter(p => !(p.positions || '').includes('G'));
+        const faGoalies = allFreeAgents.filter(p => (p.positions || '').includes('G'));
 
-            const filteredWaiverSkaters = waiverSkaters.filter(p => searchFilter(p) && positionFilter(p) && dayFilter(p) && injuryFilter(p));
-            const filteredWaiverGoalies = waiverGoalies.filter(p => searchFilter(p) && positionFilter(p) && dayFilter(p) && injuryFilter(p));
-            const filteredFaSkaters = faSkaters.filter(p => searchFilter(p) && positionFilter(p) && dayFilter(p) && injuryFilter(p));
-            const filteredFaGoalies = faGoalies.filter(p => searchFilter(p) && positionFilter(p) && dayFilter(p) && injuryFilter(p));
+        const filteredWaiverSkaters = waiverSkaters.filter(p => searchFilter(p) && positionFilter(p) && dayFilter(p) && injuryFilter(p));
+        const filteredWaiverGoalies = waiverGoalies.filter(p => searchFilter(p) && positionFilter(p) && dayFilter(p) && injuryFilter(p));
+        const filteredFaSkaters = faSkaters.filter(p => searchFilter(p) && positionFilter(p) && dayFilter(p) && injuryFilter(p));
+        const filteredFaGoalies = faGoalies.filter(p => searchFilter(p) && positionFilter(p) && dayFilter(p) && injuryFilter(p));
 
-            // Sort by IR then User Preference
-            [filteredWaiverSkaters, filteredWaiverGoalies, filteredFaSkaters, filteredFaGoalies].forEach(list => list.sort(irSortFn));
-            sortPlayers(filteredWaiverSkaters, sortConfig.waiverSkaters);
-            sortPlayers(filteredWaiverGoalies, sortConfig.waiverGoalies);
-            sortPlayers(filteredFaSkaters, sortConfig.freeAgentSkaters);
-            sortPlayers(filteredFaGoalies, sortConfig.freeAgentGoalies);
+        [filteredWaiverSkaters, filteredWaiverGoalies, filteredFaSkaters, filteredFaGoalies].forEach(list => list.sort(irSortFn));
+        sortPlayers(filteredWaiverSkaters, sortConfig.waiverSkaters);
+        sortPlayers(filteredWaiverGoalies, sortConfig.waiverGoalies);
+        sortPlayers(filteredFaSkaters, sortConfig.freeAgentSkaters);
+        sortPlayers(filteredFaGoalies, sortConfig.freeAgentGoalies);
 
-            renderPlayerTable('Skaters', filteredWaiverSkaters, waiverSkatersContainer, 'waiverSkaters', skaterCategories, false);
-            renderPlayerTable('Goalies', filteredWaiverGoalies, waiverGoaliesContainer, 'waiverGoalies', goalieCategories, false);
-            renderPlayerTable('Skaters', filteredFaSkaters, freeAgentSkatersContainer, 'freeAgentSkaters', skaterCategories, true);
-            renderPlayerTable('Goalies', filteredFaGoalies, freeAgentGoaliesContainer, 'freeAgentGoalies', goalieCategories, true);
-        }
+        renderPlayerTable('Skaters', filteredWaiverSkaters, waiverSkatersContainer, 'waiverSkaters', skaterCategories, false);
+        renderPlayerTable('Goalies', filteredWaiverGoalies, waiverGoaliesContainer, 'waiverGoalies', goalieCategories, false);
+        renderPlayerTable('Skaters', filteredFaSkaters, freeAgentSkatersContainer, 'freeAgentSkaters', skaterCategories, true);
+        renderPlayerTable('Goalies', filteredFaGoalies, freeAgentGoaliesContainer, 'freeAgentGoalies', goalieCategories, true);
+    }
 
-        function sortPlayers(players, config) {
-            const getSortableValue = (value) => (value === null || value === undefined || value === 0 || value === '-') ? Infinity : value;
-            players.sort((a, b) => {
-                let valA = (config.key === 'player_name') ? String(a.player_name).toLowerCase() : getSortableValue(a[config.key]);
-                let valB = (config.key === 'player_name') ? String(b.player_name).toLowerCase() : getSortableValue(b[config.key]);
-                if (valA < valB) return config.direction === 'ascending' ? -1 : 1;
-                if (valA > valB) return config.direction === 'ascending' ? 1 : -1;
-                return 0;
-            });
-        }
+    function sortPlayers(players, config) {
+        const getSortableValue = (value) => (value === null || value === undefined || value === 0 || value === '-') ? Infinity : value;
+        players.sort((a, b) => {
+            let valA = (config.key === 'player_name') ? String(a.player_name).toLowerCase() : getSortableValue(a[config.key]);
+            let valB = (config.key === 'player_name') ? String(b.player_name).toLowerCase() : getSortableValue(b[config.key]);
+            if (valA < valB) return config.direction === 'ascending' ? -1 : 1;
+            if (valA > valB) return config.direction === 'ascending' ? 1 : -1;
+            return 0;
+        });
+    }
 
-        function renderPlayerTable(title, players, container, tableType, categories, shouldCap = false) {
+    function renderPlayerTable(title, players, container, tableType, categories, shouldCap = false) {
         const showRaw = localStorage.getItem('showRawData') === 'true';
         if (!players) { container.innerHTML = `<h3 class="text-xl font-bold text-white mb-2">${title}</h3><p class="text-gray-400">No players found.</p>`; return; }
         const playersToDisplay = shouldCap ? players.slice(0, 100) : players;
-        const totalColumns = 9 + categories.length;
+        const totalColumns = 10 + categories.length; // Increased col count for new column
 
         let tableHtml = `
             <div class="bg-gray-900 rounded-lg shadow mb-8">
@@ -444,7 +414,8 @@
                                 <th class="px-2 py-2 text-left text-xs font-bold text-gray-300 uppercase tracking-wider">Opponents</th>
                                 <th class="px-2 py-2 text-left text-xs font-bold text-gray-300 uppercase tracking-wider">Next Week</th>
                                 <th class="px-2 py-2 text-left text-xs font-bold text-gray-300 uppercase tracking-wider">PP Utilization<span class="text-xs text-gray-400 font-light block">(Click)</span></th>
-                                <th class="px-2 py-2 text-center text-xs font-bold text-gray-300 uppercase tracking-wider">Trending</th>
+                                <th class="px-2 py-2 text-center text-xs font-bold text-gray-300 uppercase tracking-wider"><div class="text-[10px] leading-tight">L20 | L10 | L5 | H/A</div></th>
+                                <th class="px-2 py-2 text-center text-xs font-bold text-gray-300 uppercase tracking-wider"><div class="text-[10px] leading-tight">L20 | L10 | L5 | H/A</div></th>
                                 <th class="px-2 py-2 text-left text-xs font-bold text-gray-300 uppercase tracking-wider sortable" data-sort-key="total_cat_rank" data-table-type="${tableType}">Total Cat Rank</th>
         `;
         categories.forEach(cat => {
@@ -462,7 +433,6 @@
                     const checkboxDisabled = isAlreadyAdded ? 'disabled' : '';
                     const statusHtml = player.status ? ` <a href="https://sports.yahoo.com/nhl/players/${player.player_id}/news/" target="_blank" rel="noopener noreferrer" class="text-red-400 ml-1 hover:text-red-300 hover:underline">(${player.status})</a>` : '';
 
-                    // --- LINE INFO PILL LOGIC (Updated & Safe) ---
                     let pillHtml = '';
                     const isGoalie = (player.positions || player.eligible_positions || '').includes('G');
 
@@ -490,15 +460,38 @@
                                 ${lineVal} | ${ppVal}
                             </span>`;
                     }
-                    let trendIcon = '';
-                    if (player.trend_status === 'up') {
-                        trendIcon = `<span class="text-green-500 text-lg cursor-pointer trending-icon" data-player-id="${player.player_id}">&#9650;</span>`; // Up Triangle
-                    } else if (player.trend_status === 'down') {
-                        trendIcon = `<span class="text-red-500 text-lg cursor-pointer trending-icon" data-player-id="${player.player_id}">&#9660;</span>`; // Down Triangle
+
+                    // --- TRENDING COLUMN LOGIC ---
+                    const tSum = player.trend_summary || ['N/A', 'N/A', 'N/A', 'N/A'];
+                    const icons = {
+                        'UP': `<span class="text-green-500 text-lg cursor-pointer trending-icon" data-player-id="${player.player_id}">&#9650;</span>`,
+                        'DOWN': `<span class="text-red-500 text-lg cursor-pointer trending-icon" data-player-id="${player.player_id}">&#9660;</span>`,
+                        'FLAT': `<span class="text-yellow-500 text-lg cursor-pointer trending-icon" data-player-id="${player.player_id}">&#8722;</span>`,
+                        'N/A': `<span class="text-gray-600 text-[10px] cursor-pointer trending-icon" data-player-id="${player.player_id}">-</span>`
+                    };
+
+                    let haHtml = '';
+                    if (tSum[3].includes('_')) {
+                        const [loc, color] = tSum[3].split('_');
+                        const colorClass = color === 'GREEN' ? 'text-green-500' : (color === 'RED' ? 'text-red-500' : 'text-gray-400');
+                        haHtml = `<span class="${colorClass} font-bold text-sm cursor-pointer trending-icon" data-player-id="${player.player_id}">${loc}</span>`;
+                    } else if (tSum[3] !== 'N/A') {
+                        haHtml = `<span class="text-gray-400 font-bold text-sm cursor-pointer trending-icon" data-player-id="${player.player_id}">${tSum[3]}</span>`;
                     } else {
-                        trendIcon = `<span class="text-yellow-500 text-lg cursor-pointer trending-icon" data-player-id="${player.player_id}">&#8722;</span>`; // Hyphen
+                        haHtml = `<span class="text-gray-600 text-[10px] cursor-pointer trending-icon" data-player-id="${player.player_id}">-</span>`;
                     }
-                    // ----------------------------
+
+                    const trendHtml = `
+                        <div class="flex items-center justify-center space-x-1">
+                            ${icons[tSum[0]] || icons['N/A']}
+                            <span class="text-gray-700 text-[10px]">|</span>
+                            ${icons[tSum[1]] || icons['N/A']}
+                            <span class="text-gray-700 text-[10px]">|</span>
+                            ${icons[tSum[2]] || icons['N/A']}
+                            <span class="text-gray-700 text-[10px]">|</span>
+                            ${haHtml}
+                        </div>
+                    `;
 
                     const playerPositions = player.positions ? player.positions.split(',') : [];
                     const gamesThisWeek = player.games_this_week || [];
@@ -526,7 +519,12 @@
                             <td class="px-2 py-2 whitespace-nowrap text-sm text-gray-300 cursor-pointer hover:bg-gray-700 opponent-stats-cell" data-player-name="${player.player_name}" data-is-goalie="${isGoalie}" data-opponent-stats='${opponentStatsJson}'>${opponentsList}</td>
                             <td class="px-2 py-2 whitespace-nowrap text-sm text-gray-300">${(player.games_next_week || []).join(', ')}</td>
                             <td class="px-2 py-2 whitespace-nowrap text-sm text-gray-300 cursor-pointer hover:bg-gray-700 pp-util-cell" data-player-name="${player.player_name}" data-avg-pp-pct="${player.avg_ppTimeOnIcePctPerGame}" data-lg-pp-toi="${player.lg_ppTimeOnIce}" data-lg-pp-pct="${player.lg_ppTimeOnIcePctPerGame}" data-lg-ppa="${player.lg_ppAssists}" data-lg-ppg="${player.lg_ppGoals}" data-lw-pp-toi="${player.avg_ppTimeOnIce}" data-lw-pp-pct="${player.avg_ppTimeOnIcePctPerGame}" data-lw-ppa="${player.total_ppAssists}" data-lw-ppg="${player.total_ppGoals}" data-lw-gp="${player.team_games_played}">${formatPercentage(player.avg_ppTimeOnIcePctPerGame)}</td>
-                            <td class="px-2 py-2 whitespace-nowrap text-center">${trendIcon}</td>
+                            <td class="px-2 py-2 whitespace-nowrap text-center text-gray-300 cursor-pointer hover:bg-gray-700 goalie-stats-cell" data-player-id="${player.player_id}">
+                                <div class="text-[10px] leading-tight">
+                                    ${formatPercentage(player.goalie_data?.l10_start_pct)} | ${formatNumber(player.goalie_data?.l10_start_pct / 10, 1)} | ${formatNumber(player.goalie_data?.l10_start_pct / 20, 1)} | ${player.goalie_data?.next_loc || 'N/A'}
+                                </div>
+                            </td>
+                            <td class="px-2 py-2 whitespace-nowrap text-center">${trendHtml}</td>
                             <td class="px-2 py-2 whitespace-nowrap text-sm font-bold text-blue-400 cursor-pointer hover:text-blue-300 cat-rank-cell" data-player-id="${player.player_id}">${player.total_cat_rank}</td>
                     `;
 
@@ -563,7 +561,6 @@
         tableHtml += `</tbody></table></div></div>`;
         container.innerHTML = tableHtml;
 
-        // Re-attach Sort Listeners
         document.querySelectorAll(`[data-table-type="${tableType}"].sortable`).forEach(header => {
             header.classList.remove('sort-asc', 'sort-desc');
             if (header.dataset.sortKey === sortConfig[tableType].key) header.classList.add(sortConfig[tableType].direction === 'ascending' ? 'sort-desc' : 'sort-asc');
@@ -571,7 +568,6 @@
             header.addEventListener('click', handleSortClick);
         });
     }
-
 
     function handleSortClick(e) {
         const key = e.target.closest('[data-sort-key]').dataset.sortKey;
@@ -589,7 +585,7 @@
             sortConfig[tableType].direction = 'ascending';
         }
 
-        filterAndSortPlayers(); // This re-sorts and re-renders all tables
+        filterAndSortPlayers();
         saveStateToCache();
     }
 
@@ -599,9 +595,7 @@
         fetchData(selectedCategories);
     }
 
-    // --- SIMULATION FUNCTIONS (Unchanged) ---
     function populateDropPlayerDropdown() {
-        // Filter out moves that don't have a dropped player
         const droppedPlayerIds = new Set(
             simulatedMoves
                 .filter(m => m.dropped_player)
@@ -617,7 +611,6 @@
         });
 
         simulatedMoves.forEach(move => {
-            // Only allow dropping players who were actually added (not null)
             const player = move.added_player;
             if (player && !droppedPlayerIds.has(player.player_id)) {
                 optionsHtml += `<option value="${player.player_id}" data-type="simulated" data-add-date="${move.date}">
@@ -629,32 +622,30 @@
     }
 
     function populateTransactionDatePicker(weekDates) {
-            if (!transactionDatePicker) return;
+        if (!transactionDatePicker) return;
 
-            const previouslySelected = transactionDatePicker.value;
-            let html = '<option value="" disabled selected>Select Date</option>';
+        const previouslySelected = transactionDatePicker.value;
+        let html = '<option value="" disabled selected>Select Date</option>';
 
-            if (weekDates && weekDates.length > 0) {
-                weekDates.forEach(dateStr => {
-                    // dateStr is "YYYY-MM-DD"
-                    html += `<option value="${dateStr}">${dateStr}</option>`;
-                });
-            } else {
-                html = '<option value="" disabled selected>No dates available</option>';
-            }
+        if (weekDates && weekDates.length > 0) {
+            weekDates.forEach(dateStr => {
+                html += `<option value="${dateStr}">${dateStr}</option>`;
+            });
+        } else {
+            html = '<option value="" disabled selected>No dates available</option>';
+        }
 
-            transactionDatePicker.innerHTML = html;
+        transactionDatePicker.innerHTML = html;
 
-            // Attempt to restore previous selection or default to today if it's in the list
-            if (previouslySelected && weekDates.includes(previouslySelected)) {
-                transactionDatePicker.value = previouslySelected;
-            } else {
-                const today = new Date().toISOString().split('T')[0];
-                if (weekDates.includes(today)) {
-                    transactionDatePicker.value = today;
-                }
+        if (previouslySelected && weekDates.includes(previouslySelected)) {
+            transactionDatePicker.value = previouslySelected;
+        } else {
+            const today = new Date().toISOString().split('T')[0];
+            if (weekDates.includes(today)) {
+                transactionDatePicker.value = today;
             }
         }
+    }
 
     function renderSimulatedMovesLog() {
         if (simulatedMoves.length === 0) {
@@ -696,15 +687,12 @@
         const droppedPlayerOption = playerDropDropdown.options[playerDropDropdown.selectedIndex];
         const transactionDate = transactionDatePicker.value;
 
-        // 1. Require Date
         if (!transactionDate) return alert("Please select a transaction date.");
 
-        // 2. Require EITHER an Add OR a Drop
         if (!checkedBox && !droppedPlayerOption.value) {
             return alert("Please select a player to ADD or a player to DROP (or both).");
         }
 
-        // Validate Drop Date Logic (only if dropping a simulated player)
         if (droppedPlayerOption.value && droppedPlayerOption.dataset.type === 'simulated') {
             const addDate = droppedPlayerOption.dataset.addDate;
             if (transactionDate < addDate) {
@@ -735,8 +723,8 @@
 
         simulatedMoves.push({
             date: transactionDate,
-            added_player: addedPlayer,     // Can be null
-            dropped_player: droppedPlayer  // Can be null
+            added_player: addedPlayer,
+            dropped_player: droppedPlayer
         });
 
         localStorage.setItem(SIMULATION_KEY, JSON.stringify(simulatedMoves));
@@ -746,14 +734,13 @@
         fetchData(selectedCategories);
 
         if (checkedBox) checkedBox.checked = false;
-        // Reset dropdown logic happens in popuplateDropPlayerDropdown during fetchData
     }
 
     function handleResetClick() {
         if (confirm("Are you sure you want to reset all simulated moves?")) {
             simulatedMoves = [];
             localStorage.removeItem(SIMULATION_KEY);
-            localStorage.removeItem(CACHE_KEY); // Invalidate cache
+            localStorage.removeItem(CACHE_KEY);
             fetchData();
         }
     }
@@ -813,91 +800,11 @@
         const yourTeamSelect = document.getElementById('your-team-select');
         if (yourTeamSelect) { yourTeamSelect.addEventListener('change', () => { localStorage.removeItem(CACHE_KEY); const selectedCategories = Array.from(document.querySelectorAll('#category-checkboxes-container input:checked')).map(cb => cb.value); fetchData(selectedCategories); }); }
 
-        // --- Event Delegation ---
         document.body.addEventListener('click', (e) => {
-            if (e.target.closest('#pp-modal-close') || e.target.id === 'pp-stats-modal') document.getElementById('pp-stats-modal').classList.add('hidden');
-            if (e.target.closest('#opponent-modal-close') || e.target.id === 'opponent-stats-modal') document.getElementById('opponent-stats-modal').classList.add('hidden');
-
-            const ppCell = e.target.closest('.pp-util-cell');
-            if (ppCell) { /* ... (PP logic handled above) ... */ }
-            const oppCell = e.target.closest('.opponent-stats-cell');
-            if (oppCell) { /* ... (Opp logic handled above) ... */ }
-            const pill = e.target.closest('.line-info-pill');
-            if (pill && window.openLineInfoModal) {
-                const pid = String(pill.dataset.playerId);
-                // Search both arrays since we don't know which table triggered it
-                const player = [...allWaiverPlayers, ...allFreeAgents].find(p => String(p.player_id) === pid);
-                if (player) {
-                    window.openLineInfoModal(player);
-                }
-                return;
-            }
-            const gPill = e.target.closest('.goalie-info-pill');
-            if (gPill && window.openGoalieInfoModal) {
-                const pid = String(gPill.dataset.playerId);
-                // Search both waiver and FA lists
-                const player = [...allWaiverPlayers, ...allFreeAgents].find(p => String(p.player_id) === pid);
-                if (player) window.openGoalieInfoModal(player);
-                return;
-            }
-            // --- [NEW] Cat Rank Logic ---
-            const rankCell = e.target.closest('.cat-rank-cell');
-            if (rankCell && window.openCatRankModal) {
-                const pid = String(rankCell.dataset.playerId);
-                // Search all lists
-                const player = [...allWaiverPlayers, ...allFreeAgents].find(p => String(p.player_id) === pid);
-                if (player) {
-                    const isGoalie = (player.positions || '').includes('G');
-                    const cats = isGoalie ? goalieCategories : skaterCategories;
-                    window.openCatRankModal(player, cats);
-                }
-            }
-        });
-    }
-
-    // --- Initial Load ---
-    async function init() {
-        // --- 1. Inject Local Modals (PP & Opponent) ---
-        // Only inject if they don't exist to prevent duplicates
-        if (!document.getElementById('pp-stats-modal')) {
-            const modalsHTML = `
-            <div id="pp-stats-modal" class="fixed inset-0 bg-gray-900 bg-opacity-75 flex items-center justify-center z-50 hidden" style="backdrop-filter: blur(2px);">
-                <div class="bg-gray-800 rounded-lg shadow-xl p-6 w-full max-w-lg relative border border-gray-700">
-                    <button id="pp-modal-close" class="absolute top-3 right-3 text-gray-400 hover:text-white text-2xl leading-none">&times;</button>
-                    <h3 id="pp-modal-title" class="text-xl font-bold text-white mb-4">Player PP Stats</h3>
-                    <div id="pp-modal-content" class="text-gray-300"></div>
-                </div>
-            </div>
-            <div id="opponent-stats-modal" class="fixed inset-0 bg-gray-900 bg-opacity-75 flex items-center justify-center z-50 hidden" style="backdrop-filter: blur(2px);">
-                <div class="bg-gray-800 rounded-lg shadow-xl p-6 w-full max-w-2xl relative border border-gray-700">
-                    <button id="opponent-modal-close" class="absolute top-3 right-3 text-gray-400 hover:text-white text-2xl leading-none">&times;</button>
-                    <h3 id="opponent-modal-title" class="text-xl font-bold text-white mb-4">Opponent Stats</h3>
-                    <div id="opponent-modal-content" class="text-gray-300 overflow-x-auto"></div>
-                </div>
-            </div>`;
-            document.body.insertAdjacentHTML('beforeend', modalsHTML);
-        }
-        if (!document.getElementById('trending-stats-modal')) {
-             const trendingModalHTML = `
-            <div id="trending-stats-modal" class="fixed inset-0 bg-gray-900 bg-opacity-75 flex items-center justify-center z-50 hidden" style="backdrop-filter: blur(2px);">
-                <div class="bg-gray-800 rounded-lg shadow-xl p-6 w-full max-w-sm relative border border-gray-700">
-                    <button id="trending-modal-close" class="absolute top-3 right-3 text-gray-400 hover:text-white text-2xl leading-none">&times;</button>
-                    <h3 id="trending-modal-title" class="text-xl font-bold text-white mb-4">Player Trending</h3>
-                    <div id="trending-modal-content" class="text-gray-300">
-                        <p>Detailed trend analysis coming soon...</p>
-                    </div>
-                </div>
-            </div>`;
-            document.body.insertAdjacentHTML('beforeend', trendingModalHTML);
-        }
-        // --- 2. Global Click Handler (Delegation for all tables) ---
-        document.body.addEventListener('click', (e) => {
-            // Close Buttons
             if (e.target.closest('#pp-modal-close') || e.target.id === 'pp-stats-modal') document.getElementById('pp-stats-modal').classList.add('hidden');
             if (e.target.closest('#opponent-modal-close') || e.target.id === 'opponent-stats-modal') document.getElementById('opponent-stats-modal').classList.add('hidden');
             if (e.target.closest('#trending-modal-close') || e.target.id === 'trending-stats-modal') document.getElementById('trending-stats-modal').classList.add('hidden');
 
-            // A. PP Util Cell
             const ppCell = e.target.closest('.pp-util-cell');
             if (ppCell) {
                 const data = ppCell.dataset;
@@ -908,10 +815,7 @@
                     <div><h4 class="text-md font-semibold text-white mb-2">Last Week</h4><dl class="grid grid-cols-2 sm:grid-cols-5 gap-x-4 gap-y-2"><div class="bg-gray-700 p-2 rounded"><dt class="text-xs text-gray-400">Avg PP TOI</dt><dd class="text-sm font-medium">${formatSecondsToMMSS(data.lwPpToi)}</dd></div><div class="bg-gray-700 p-2 rounded"><dt class="text-xs text-gray-400">Avg PP %</dt><dd class="text-sm font-medium">${formatPercentage(data.lwPpPct)}</dd></div><div class="bg-gray-700 p-2 rounded"><dt class="text-xs text-gray-400">Tot PPA</dt><dd class="text-sm font-medium">${formatNullable(data.lwPpa)}</dd></div><div class="bg-gray-700 p-2 rounded"><dt class="text-xs text-gray-400">Tot PPG</dt><dd class="text-sm font-medium">${formatNullable(data.lwPpg)}</dd></div><div class="bg-gray-700 p-2 rounded"><dt class="text-xs text-gray-400">GP</dt><dd class="text-sm font-medium">${formatNullable(data.lwGp)}</dd></div></dl></div>
                 </div>`;
                 document.getElementById('pp-stats-modal').classList.remove('hidden');
-                return;
             }
-
-            // B. Opponent Stats Cell
             const oppCell = e.target.closest('.opponent-stats-cell');
             if (oppCell) {
                 const data = oppCell.dataset;
@@ -961,12 +865,23 @@
                 document.getElementById('opponent-modal-content').innerHTML = tableHtml;
                 document.getElementById('opponent-stats-modal').classList.remove('hidden');
             }
-
-            // C. Cat Rank Cell (Global Modal)
+            const pill = e.target.closest('.line-info-pill');
+            if (pill && window.openLineInfoModal) {
+                const pid = String(pill.dataset.playerId);
+                const player = [...allWaiverPlayers, ...allFreeAgents].find(p => String(p.player_id) === pid);
+                if (player) {
+                    window.openLineInfoModal(player);
+                }
+            }
+            const gPill = e.target.closest('.goalie-info-pill');
+            if (gPill && window.openGoalieInfoModal) {
+                const pid = String(gPill.dataset.playerId);
+                const player = [...allWaiverPlayers, ...allFreeAgents].find(p => String(p.player_id) === pid);
+                if (player) window.openGoalieInfoModal(player);
+            }
             const rankCell = e.target.closest('.cat-rank-cell');
             if (rankCell && window.openCatRankModal) {
                 const pid = String(rankCell.dataset.playerId);
-                // We search both pools since we don't know which table clicked
                 let player = [...allWaiverPlayers, ...allFreeAgents].find(p => String(p.player_id) === pid);
 
                 if (player) {
@@ -981,31 +896,20 @@
                 const player = [...allWaiverPlayers, ...allFreeAgents].find(p => String(p.player_id) === pid);
                 if (player) {
                     document.getElementById('trending-modal-title').textContent = `${player.player_name} - Trend`;
-                    // Dump the placeholder details for now
                     document.getElementById('trending-modal-content').innerHTML = `<pre class="text-xs">${JSON.stringify(player.trend_details, null, 2)}</pre>`;
                     document.getElementById('trending-stats-modal').classList.remove('hidden');
                 }
             }
         });
 
-        // --- 3. Listen for Raw Data Toggle ---
-        window.addEventListener('rawDataToggled', (e) => {
-            // Re-render active tables
-            filterAndSortPlayers();
-        });
-
-        // --- 4. Caching Logic ---
-        // Always attempt to load simulation state first
         const cachedSim = localStorage.getItem(SIMULATION_KEY);
         if (cachedSim) {
             simulatedMoves = JSON.parse(cachedSim);
         }
 
-        // Try to load full page state
         const cachedState = loadStateFromCache();
 
         if (cachedState) {
-            // Restore state variables
             allWaiverPlayers = cachedState.allWaiverPlayers;
             allFreeAgents = cachedState.allFreeAgents;
             allScoringCategories = cachedState.allScoringCategories;
@@ -1013,33 +917,45 @@
             goalieCategories = cachedState.goalieCategories;
             checkedCategories = cachedState.checkedCategories;
             currentUnusedSpots = cachedState.unusedRosterSpotsData;
-            currentTeamRoster = cachedState.currentTeamRoster; // Restore roster
+            currentTeamRoster = cachedState.currentTeamRoster;
             currentWeekDates = cachedState.currentWeekDates;
 
-            // Restore UI elements
             const teamSelect = document.getElementById('your-team-select');
             if (teamSelect) teamSelect.value = cachedState.selectedTeam;
             playerSearchInput.value = cachedState.searchTerm;
 
-            // Render everything from cache
             renderCategoryCheckboxes();
             renderPositionFilters();
             renderDayFilters();
             renderInjuryFilters();
-            filterAndSortPlayers(); // This triggers the new renderTable
+            filterAndSortPlayers();
             populateDropPlayerDropdown();
             renderSimulatedMovesLog();
             populateTransactionDatePicker(currentWeekDates);
             renderUnusedRosterSpotsTable(currentUnusedSpots);
             setupEventListeners();
         } else {
-            // No valid cache, fetch fresh data
             setupEventListeners();
             fetchData();
         }
 
         simulateButton.addEventListener('click', handleSimulateClick);
         resetButton.addEventListener('click', handleResetClick);
+    }
+
+    // --- Inject Trending Modal ---
+    if (!document.getElementById('trending-stats-modal')) {
+            const trendingModalHTML = `
+        <div id="trending-stats-modal" class="fixed inset-0 bg-gray-900 bg-opacity-75 flex items-center justify-center z-50 hidden" style="backdrop-filter: blur(2px);">
+            <div class="bg-gray-800 rounded-lg shadow-xl p-6 w-full max-w-sm relative border border-gray-700">
+                <button id="trending-modal-close" class="absolute top-3 right-3 text-gray-400 hover:text-white text-2xl leading-none">&times;</button>
+                <h3 id="trending-modal-title" class="text-xl font-bold text-white mb-4">Player Trending</h3>
+                <div id="trending-modal-content" class="text-gray-300">
+                    <p>Detailed trend analysis coming soon...</p>
+                </div>
+            </div>
+        </div>`;
+        document.body.insertAdjacentHTML('beforeend', trendingModalHTML);
     }
 
     init();
