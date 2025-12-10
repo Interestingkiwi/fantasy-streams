@@ -2536,7 +2536,7 @@ def calculate_trend_metrics(recent_stats, season_avg_stats, groups_config, anoma
             s_val = season_avg_stats.get(stat, 0) or 0
             r_val = normalized_recent.get(stat, 0)
 
-            if s_val < 0.5 and r_val < 0.5: continue # Skip noise
+            if s_val < 0.5 and r_val < 0.5: continue
 
             if s_val == 0:
                 diff = -1.0 if r_val > 0 else 0.0
@@ -2578,14 +2578,26 @@ def calculate_trend_metrics(recent_stats, season_avg_stats, groups_config, anoma
                 s_total += (season_avg_stats.get(stat, 0) or 0)
                 r_total += (normalized_recent.get(stat, 0) or 0)
 
-            if s_total == 0:
-                if r_total > 1:
-                    anomalies.append(f"{check['name']} (High Spike)")
-            else:
-                variance = abs((r_total - s_total) / s_total)
-                if variance > check['threshold']:
-                    direction = "High" if r_total > s_total else "Low"
+            # --- NEW LOGIC: Check for Absolute vs Percentage ---
+            threshold = check['threshold']
+            is_absolute = check.get('is_absolute', False)
+
+            if is_absolute:
+                # Additive Difference (e.g. 16.0 - 6.0 = 10.0)
+                diff = r_total - s_total
+                if abs(diff) > threshold:
+                    direction = "High" if diff > 0 else "Low"
                     anomalies.append(f"{check['name']} ({direction})")
+            else:
+                # Percentage Variance (Standard)
+                if s_total == 0:
+                    if r_total > 1:
+                        anomalies.append(f"{check['name']} (High Spike)")
+                else:
+                    variance = abs((r_total - s_total) / s_total)
+                    if variance > threshold:
+                        direction = "High" if r_total > s_total else "Low"
+                        anomalies.append(f"{check['name']} ({direction})")
 
     trends['anomalies'] = anomalies
     return trends
@@ -2609,18 +2621,16 @@ def generate_player_trends():
 
     SKATER_ANOMALIES = [
         {'name': 'Bad Luck', 'stats': ['missedshots', 'shotattemptsblocked'], 'threshold': 0.30},
-        {'name': 'PIM Spike', 'stats': ['penaltyminutes'], 'threshold': 0.20},
-        {'name': 'Shooting %', 'stats': ['shootingpct'], 'threshold': 0.10},
+
+        # PIM: 300% variance to catch major spikes
+        {'name': 'PIM Spike', 'stats': ['penaltyminutes'], 'threshold': 3.00},
+
+        # Shooting %: Now checking for ADDITIVE difference of 10.0 (e.g. 6% vs 16%)
+        {'name': 'Shooting %', 'stats': ['shootingpct'], 'threshold': 10.0, 'is_absolute': True},
+
         {'name': 'Heavy Workload', 'stats': ['timeonice'], 'threshold': 0.40},
         {'name': 'Special Teams', 'stats': ['pptimeonice', 'ottimeonice', 'shtimeonice'], 'threshold': 0.25}
     ]
-
-    # ... [Rest of logic is mostly same, just fetching specific skater columns] ...
-    # To be safe and avoid mixing goalie/skater rows, we should check which players to process.
-    # However, since the table mixes them, we can try to process everyone.
-    # If a goalie row is missing 'shots' (skater stat), it will just compute 0s, which is fine
-    # as long as we run generate_goalie_trends AFTER to overwrite them with correct goalie groups.
-    # BETTER APPROACH: We can detect if it's a goalie or skater based on keys in 'season_avg'.
 
     BLOCK_KEYS = [f"block_{i+1}_{i+5}" for i in range(0, 75, 5)] + ["block_76_82"]
 
@@ -2635,7 +2645,7 @@ def generate_player_trends():
     try:
         with get_db_connection() as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cursor:
-                # Fetch only rows that look like skaters (have 'shifts' or 'shots' in season_avg)
+                # Fetch only rows that look like skaters
                 query_cols = ", ".join(BLOCK_KEYS)
                 cursor.execute(f"""
                     SELECT player_name_normalized, season_avg, home_stats, away_stats, {query_cols}
@@ -2700,7 +2710,6 @@ def generate_player_trends():
             print("Skater trends analysis complete.")
     except Exception as e:
         print(f"Error generating skater trends: {e}")
-
 
 def update_goalie_trends():
     """
