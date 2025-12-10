@@ -50,9 +50,7 @@
             const num = parseFloat(decimal);
             if (isNaN(num)) return 'N/A';
             return (num * 100).toFixed(1) + '%';
-        } catch (e) {
-            return 'N/A';
-        }
+        } catch (e) { return 'N/A'; }
     }
 
     function formatSecondsToMMSS(seconds) {
@@ -63,9 +61,7 @@
             const minutes = Math.floor(s / 60);
             const remainingSeconds = s % 60;
             return `${minutes}:${remainingSeconds < 10 ? '0' : ''}${remainingSeconds}`;
-        } catch (e) {
-            return 'N/A';
-        }
+        } catch (e) { return 'N/A'; }
     }
 
     function formatNumber(value, decimals, defaultVal = 'N/A') {
@@ -74,14 +70,10 @@
             const num = parseFloat(value);
             if (isNaN(num)) return defaultVal;
             return num.toFixed(decimals);
-        } catch (e) {
-            return defaultVal;
-        }
+        } catch (e) { return defaultVal; }
     }
 
-    function formatNullable(value) {
-        return value ?? 'N/A';
-    }
+    function formatNullable(value) { return value ?? 'N/A'; }
 
     const irSortFn = (a, b) => {
         const positionOrder = ['C', 'LW', 'RW', 'D', 'G', 'IR', 'IR+'];
@@ -94,23 +86,15 @@
             let minIndex = Infinity;
             let isIR = false;
             posArr.forEach(p => {
-                if (p.includes('IR')) {
-                    isIR = true;
-                }
+                if (p.includes('IR')) isIR = true;
                 const idx = positionOrder.indexOf(p);
-                if (idx !== -1 && idx < minIndex) {
-                    minIndex = idx;
-                }
+                if (idx !== -1 && idx < minIndex) minIndex = idx;
             });
             if (isIR) return 100;
             if (minIndex === Infinity) return 99;
             return minIndex;
         };
-
-        const bestPosA = getBestPosIndex(posA);
-        const bestPosB = getBestPosIndex(posB);
-
-        return bestPosA - bestPosB;
+        return getBestPosIndex(posA) - getBestPosIndex(posB);
     };
 
     // --- Caching Functions ---
@@ -120,30 +104,18 @@
             const selectedWeek = weekSelect ? weekSelect.value : null;
             const selectedSourcing = localStorage.getItem('selectedStatSourcing') || 'projected';
             const state = {
-                allWaiverPlayers,
-                allFreeAgents,
-                allScoringCategories,
-                rankedCategories,
-                skaterCategories,
-                goalieCategories,
-                checkedCategories,
-                selectedPositions,
-                selectedDays,
-                injuryFilters: injuryFilters,
-                sortConfig,
+                allWaiverPlayers, allFreeAgents, allScoringCategories, rankedCategories,
+                skaterCategories, goalieCategories, checkedCategories, selectedPositions,
+                selectedDays, injuryFilters, sortConfig,
                 unusedRosterSpotsData: currentUnusedSpots,
-                currentTeamRoster: currentTeamRoster,
-                currentWeekDates: currentWeekDates,
+                currentTeamRoster, currentWeekDates,
                 selectedTeam: document.getElementById('your-team-select')?.value,
                 searchTerm: playerSearchInput.value,
                 timestamp: Date.now(),
-                selectedWeek: selectedWeek,
-                sourcing: selectedSourcing
+                selectedWeek, sourcing: selectedSourcing
             };
             localStorage.setItem(CACHE_KEY, JSON.stringify(state));
-        } catch (error) {
-            console.warn("Could not save state to local storage.", error);
-        }
+        } catch (error) { console.warn("Could not save state to local storage.", error); }
     }
 
     function loadStateFromCache() {
@@ -155,25 +127,23 @@
             if (!cachedJSON) return null;
 
             const cachedState = JSON.parse(cachedJSON);
-            const CACHE_TTL_MS = 2 * 60 * 1000; // 2 minutes
+            const CACHE_TTL_MS = 2 * 60 * 1000;
             if (Date.now() - cachedState.timestamp > CACHE_TTL_MS) {
                 localStorage.removeItem(CACHE_KEY);
                 return null;
             }
             const weekSelect = document.getElementById('week-select');
             const currentSelectedWeek = weekSelect ? weekSelect.value : null;
-
             if (currentSelectedWeek && cachedState.selectedWeek !== currentSelectedWeek) {
                 localStorage.removeItem(CACHE_KEY);
                 return null;
             }
             const currentSourcing = localStorage.getItem('selectedStatSourcing') || 'projected';
-            const cachedSourcing = cachedState.sourcing || 'projected';
-
-            if (cachedSourcing !== currentSourcing) {
+            if ((cachedState.sourcing || 'projected') !== currentSourcing) {
                 localStorage.removeItem(CACHE_KEY);
                 return null;
             }
+
             skaterCategories = cachedState.skaterCategories || [];
             goalieCategories = cachedState.goalieCategories || [];
             const defaultSortConfig = {
@@ -189,9 +159,7 @@
             currentWeekDates = cachedState.currentWeekDates || [];
             selectedPositions = cachedState.selectedPositions || [];
             selectedDays = cachedState.selectedDays || [];
-            injuryFilters = cachedState.injuryFilters !== undefined
-                ? cachedState.injuryFilters
-                : { hideDTD: true, hideIR: true };
+            injuryFilters = cachedState.injuryFilters !== undefined ? cachedState.injuryFilters : { hideDTD: true, hideIR: true };
             return cachedState;
         } catch (error) {
             console.warn("Could not load state from local storage.", error);
@@ -201,10 +169,10 @@
 
     function getHeatmapColor(rank) {
         if (rank === null || rank === undefined || rank === '-') return '';
-        const minRank = 1, maxRank = 20;
-        const clampedRank = Math.max(minRank, Math.min(rank, maxRank));
-        const percentage = (clampedRank - minRank) / (maxRank - minRank);
-        const hue = (1 - percentage) * 120;
+        const min = 1, max = 20;
+        const clamped = Math.max(min, Math.min(rank, max));
+        const pct = (clamped - min) / (max - min);
+        const hue = (1 - pct) * 120;
         return `hsl(${hue}, 65%, 75%)`;
     }
 
@@ -215,10 +183,8 @@
         freeAgentGoaliesContainer.innerHTML = '<p class="text-gray-400">Loading free agent goalies...</p>';
         unusedRosterSpotsContainer.innerHTML = '<p class="text-gray-400">Loading unused spots...</p>';
 
-        const yourTeamSelect = document.getElementById('your-team-select');
-        const selectedTeam = yourTeamSelect ? yourTeamSelect.value : null;
-        const weekSelect = document.getElementById('week-select');
-        const selectedWeek = weekSelect ? weekSelect.value : null;
+        const selectedTeam = document.getElementById('your-team-select')?.value;
+        const selectedWeek = document.getElementById('week-select')?.value;
         const selectedSourcing = localStorage.getItem('selectedStatSourcing') || 'projected';
 
         try {
@@ -275,17 +241,15 @@
         }
     }
 
-    window.addEventListener('rawDataToggled', (e) => {
-        filterAndSortPlayers();
-    });
+    window.addEventListener('rawDataToggled', () => filterAndSortPlayers());
 
     function renderCategoryCheckboxes() {
         let checkboxHtml = `
             <div class="flex justify-between items-center mb-2">
                 <label class="block text-sm font-medium text-gray-300">Recalculate Rank Based On:</label>
                 <div>
-                    <button id="check-all-btn" class="text-xs bg-gray-600 hover:bg-gray-500 text-white py-1 px-2 rounded mr-2 transition-colors duration-150">Check All</button>
-                    <button id="uncheck-all-btn" class="text-xs bg-gray-600 hover:bg-gray-500 text-white py-1 px-2 rounded transition-colors duration-150">Uncheck All</button>
+                    <button id="check-all-btn" class="text-xs bg-gray-600 hover:bg-gray-500 text-white py-1 px-2 rounded mr-2">Check All</button>
+                    <button id="uncheck-all-btn" class="text-xs bg-gray-600 hover:bg-gray-500 text-white py-1 px-2 rounded">Uncheck All</button>
                 </div>
             </div>
             <div class="grid grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-2">
@@ -294,10 +258,9 @@
             const isChecked = checkedCategories.includes(cat);
             checkboxHtml += `
                 <div class="flex items-center">
-                    <input id="cat-${cat}" name="category" type="checkbox" value="${cat}" ${isChecked ? 'checked' : ''} class="h-4 w-4 bg-gray-700 border-gray-600 text-indigo-600 focus:ring-indigo-500 rounded">
+                    <input id="cat-${cat}" name="category" type="checkbox" value="${cat}" ${isChecked ? 'checked' : ''} class="h-4 w-4 bg-gray-700 border-gray-600 text-indigo-600 rounded">
                     <label for="cat-${cat}" class="ml-2 block text-sm text-gray-300">${cat}</label>
-                </div>
-            `;
+                </div>`;
         });
         checkboxHtml += '</div>';
         checkboxesContainer.innerHTML = checkboxHtml;
@@ -310,10 +273,9 @@
             const isChecked = selectedPositions.includes(pos);
             filterHtml += `
                 <div class="flex items-center">
-                    <input id="pos-${pos}" name="position-filter" type="checkbox" value="${pos}" ${isChecked ? 'checked' : ''} class="h-4 w-4 bg-gray-700 border-gray-600 text-indigo-600 focus:ring-indigo-500 rounded">
+                    <input id="pos-${pos}" name="position-filter" type="checkbox" value="${pos}" ${isChecked ? 'checked' : ''} class="h-4 w-4 bg-gray-700 border-gray-600 text-indigo-600 rounded">
                     <label for="pos-${pos}" class="ml-2 text-sm text-gray-300">${pos}</label>
-                </div>
-            `;
+                </div>`;
         });
         positionFiltersContainer.innerHTML = filterHtml;
     }
@@ -322,11 +284,11 @@
         if (!injuryFiltersContainer) return;
         let filterHtml = `
             <div class="flex items-center mr-4">
-                <input id="filter-hide-dtd" name="injury-filter" type="checkbox" value="DTD" ${injuryFilters.hideDTD ? 'checked' : ''} class="h-4 w-4 bg-gray-700 border-gray-600 text-indigo-600 focus:ring-indigo-500 rounded">
+                <input id="filter-hide-dtd" name="injury-filter" type="checkbox" value="DTD" ${injuryFilters.hideDTD ? 'checked' : ''} class="h-4 w-4 bg-gray-700 border-gray-600 text-indigo-600 rounded">
                 <label for="filter-hide-dtd" class="ml-2 text-sm text-gray-300">Hide DTD/O</label>
             </div>
             <div class="flex items-center">
-                <input id="filter-hide-ir" name="injury-filter" type="checkbox" value="IR" ${injuryFilters.hideIR ? 'checked' : ''} class="h-4 w-4 bg-gray-700 border-gray-600 text-indigo-600 focus:ring-indigo-500 rounded">
+                <input id="filter-hide-ir" name="injury-filter" type="checkbox" value="IR" ${injuryFilters.hideIR ? 'checked' : ''} class="h-4 w-4 bg-gray-700 border-gray-600 text-indigo-600 rounded">
                 <label for="filter-hide-ir" class="ml-2 text-sm text-gray-300">Hide IR</label>
             </div>
         `;
@@ -340,10 +302,9 @@
             const isChecked = selectedDays.includes(day);
             filterHtml += `
                 <div class="flex items-center">
-                    <input id="day-${day}" name="day-filter" type="checkbox" value="${day}" ${isChecked ? 'checked' : ''} class="h-4 w-4 bg-gray-700 border-gray-600 text-indigo-500 focus:ring-indigo-500 rounded">
+                    <input id="day-${day}" name="day-filter" type="checkbox" value="${day}" ${isChecked ? 'checked' : ''} class="h-4 w-4 bg-gray-700 border-gray-600 text-indigo-500 rounded">
                     <label for="day-${day}" class="ml-2 text-sm text-gray-300">${day}</label>
-                </div>
-            `;
+                </div>`;
         });
         dayFiltersContainer.innerHTML = filterHtml;
     }
@@ -397,7 +358,7 @@
         const showRaw = localStorage.getItem('showRawData') === 'true';
         if (!players) { container.innerHTML = `<h3 class="text-xl font-bold text-white mb-2">${title}</h3><p class="text-gray-400">No players found.</p>`; return; }
         const playersToDisplay = shouldCap ? players.slice(0, 100) : players;
-        const totalColumns = 10 + categories.length; // Increased col count for new column
+        const totalColumns = 10 + categories.length;
 
         let tableHtml = `
             <div class="bg-gray-900 rounded-lg shadow mb-8">
@@ -617,27 +578,19 @@
 
     function populateTransactionDatePicker(weekDates) {
         if (!transactionDatePicker) return;
-
         const previouslySelected = transactionDatePicker.value;
         let html = '<option value="" disabled selected>Select Date</option>';
-
         if (weekDates && weekDates.length > 0) {
-            weekDates.forEach(dateStr => {
-                html += `<option value="${dateStr}">${dateStr}</option>`;
-            });
+            weekDates.forEach(dateStr => { html += `<option value="${dateStr}">${dateStr}</option>`; });
         } else {
             html = '<option value="" disabled selected>No dates available</option>';
         }
-
         transactionDatePicker.innerHTML = html;
-
         if (previouslySelected && weekDates.includes(previouslySelected)) {
             transactionDatePicker.value = previouslySelected;
         } else {
             const today = new Date().toISOString().split('T')[0];
-            if (weekDates.includes(today)) {
-                transactionDatePicker.value = today;
-            }
+            if (weekDates.includes(today)) transactionDatePicker.value = today;
         }
     }
 
@@ -663,7 +616,6 @@
         sortedMoves.forEach(move => {
             const addedName = move.added_player ? move.added_player.player_name : '<span class="text-gray-500 italic">-</span>';
             const droppedName = move.dropped_player ? move.dropped_player.player_name : '<span class="text-gray-500 italic">-</span>';
-
             logHtml += `
                 <tr class="hover:bg-gray-700/50">
                     <td class="px-3 py-2 whitespace-nowrap text-sm text-gray-300">${move.date}</td>
@@ -682,16 +634,11 @@
         const transactionDate = transactionDatePicker.value;
 
         if (!transactionDate) return alert("Please select a transaction date.");
-
-        if (!checkedBox && !droppedPlayerOption.value) {
-            return alert("Please select a player to ADD or a player to DROP (or both).");
-        }
+        if (!checkedBox && !droppedPlayerOption.value) return alert("Please select a player to ADD or a player to DROP (or both).");
 
         if (droppedPlayerOption.value && droppedPlayerOption.dataset.type === 'simulated') {
             const addDate = droppedPlayerOption.dataset.addDate;
-            if (transactionDate < addDate) {
-                return alert(`Error: Cannot drop ${droppedPlayerOption.text.split('(')[0].trim()} on ${transactionDate} because they are not scheduled to be added until ${addDate}.`);
-            }
+            if (transactionDate < addDate) return alert(`Error: Cannot drop ${droppedPlayerOption.text.split('(')[0].trim()} on ${transactionDate} because they are not scheduled to be added until ${addDate}.`);
         }
 
         let addedPlayer = null;
@@ -715,18 +662,11 @@
             if (!droppedPlayer) return alert("An error occurred trying to find the player to drop.");
         }
 
-        simulatedMoves.push({
-            date: transactionDate,
-            added_player: addedPlayer,
-            dropped_player: droppedPlayer
-        });
-
+        simulatedMoves.push({ date: transactionDate, added_player: addedPlayer, dropped_player: droppedPlayer });
         localStorage.setItem(SIMULATION_KEY, JSON.stringify(simulatedMoves));
         localStorage.removeItem(CACHE_KEY);
-
         const selectedCategories = Array.from(document.querySelectorAll('#category-checkboxes-container input:checked')).map(cb => cb.value);
         fetchData(selectedCategories);
-
         if (checkedBox) checkedBox.checked = false;
     }
 
@@ -744,13 +684,10 @@
             unusedRosterSpotsContainer.innerHTML = '';
             return;
         }
-
         const dayOrder = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
         const sortedDays = Object.keys(unusedSpotsData).sort((a, b) => dayOrder.indexOf(a) - dayOrder.indexOf(b));
-
         const firstDayData = unusedSpotsData[sortedDays[0]];
         const availablePositions = Object.keys(firstDayData);
-
         const masterOrder = ['C', 'LW', 'RW', 'F', 'W', 'D', 'Util', 'G'];
         const positionOrder = masterOrder.filter(pos => availablePositions.includes(pos));
 
@@ -768,12 +705,11 @@
                         <tbody class="bg-gray-800 divide-y divide-gray-700">
         `;
         sortedDays.forEach(day => {
-            tableHtml += `<tr class="hover:bg-gray-700/50">
-                <td class="px-2 py-1 whitespace-nowrap text-sm font-medium text-gray-300">${day}</td>`;
+            tableHtml += `<tr class="hover:bg-gray-700/50"><td class="px-2 py-1 whitespace-nowrap text-sm font-medium text-gray-300">${day}</td>`;
             positionOrder.forEach(pos => {
-            const value = unusedSpotsData[day][pos];
-            const stringValue = String(value);
-            const highlightClass = (stringValue !== '0') ? 'bg-green-200 text-gray-900' : 'text-gray-300';
+                const value = unusedSpotsData[day][pos];
+                const stringValue = String(value);
+                const highlightClass = (stringValue !== '0') ? 'bg-green-200 text-gray-900' : 'text-gray-300';
                 tableHtml += `<td class="px-2 py-1 whitespace-nowrap text-sm text-center ${highlightClass}">${value}</td>`;
             });
             tableHtml += `</tr>`;
@@ -797,7 +733,6 @@
         document.body.addEventListener('click', (e) => {
             if (e.target.closest('#pp-modal-close') || e.target.id === 'pp-stats-modal') document.getElementById('pp-stats-modal').classList.add('hidden');
             if (e.target.closest('#opponent-modal-close') || e.target.id === 'opponent-stats-modal') document.getElementById('opponent-stats-modal').classList.add('hidden');
-            if (e.target.closest('#trending-modal-close') || e.target.id === 'trending-stats-modal') document.getElementById('trending-stats-modal').classList.add('hidden');
 
             const ppCell = e.target.closest('.pp-util-cell');
             if (ppCell) {
@@ -816,7 +751,6 @@
                 const isGoalie = data.isGoalie === 'true';
                 const stats = JSON.parse(data.opponentStats || '[]');
                 document.getElementById('opponent-modal-title').textContent = `${data.playerName} - Opponent Stats`;
-
                 let headers, statKeys, totalAvgs;
                 if (isGoalie) {
                     headers = ["Date", "Opp", "GF/G (Szn)", "GF/G (Last Wk)", "SOG/G (Szn)", "SOG/G (Last Wk)"];
@@ -827,7 +761,6 @@
                     statKeys = ["ga_gm", "ga_gm_weekly", "soga_gm", "soga_gm_weekly", "pk_pct", "pk_pct_weekly"];
                     totalAvgs = { ga_gm: 0, soga_gm: 0, ga_gm_weekly: 0, soga_gm_weekly: 0, pk_pct: 0, pk_pct_weekly: 0, count: 0 };
                 }
-
                 let tableHtml = `<table class="min-w-full divide-y divide-gray-700"><thead class="bg-gray-700/50"><tr>${headers.map(h => `<th class="px-2 py-1 text-left text-xs font-bold text-gray-300 uppercase tracking-wider">${h}</th>`).join('')}</tr></thead><tbody class="bg-gray-800 divide-y divide-gray-700">`;
                 if (stats.length === 0) {
                     tableHtml += `<tr><td colspan="${headers.length}" class="text-center text-gray-400 py-3">No opponent data available for this week.</td></tr>`;
@@ -863,9 +796,7 @@
             if (pill && window.openLineInfoModal) {
                 const pid = String(pill.dataset.playerId);
                 const player = [...allWaiverPlayers, ...allFreeAgents].find(p => String(p.player_id) === pid);
-                if (player) {
-                    window.openLineInfoModal(player);
-                }
+                if (player) window.openLineInfoModal(player);
             }
             const gPill = e.target.closest('.goalie-info-pill');
             if (gPill && window.openGoalieInfoModal) {
@@ -877,7 +808,6 @@
             if (rankCell && window.openCatRankModal) {
                 const pid = String(rankCell.dataset.playerId);
                 let player = [...allWaiverPlayers, ...allFreeAgents].find(p => String(p.player_id) === pid);
-
                 if (player) {
                     const isGoalie = (player.positions || '').includes('G');
                     const cats = isGoalie ? goalieCategories : skaterCategories;
@@ -893,14 +823,33 @@
                 }
             }
         });
+    }
 
-        const cachedSim = localStorage.getItem(SIMULATION_KEY);
-        if (cachedSim) {
-            simulatedMoves = JSON.parse(cachedSim);
+    // --- Initial Load ---
+    async function init() {
+        if (!document.getElementById('pp-stats-modal')) {
+            const modalsHTML = `
+            <div id="pp-stats-modal" class="fixed inset-0 bg-gray-900 bg-opacity-75 flex items-center justify-center z-50 hidden" style="backdrop-filter: blur(2px);">
+                <div class="bg-gray-800 rounded-lg shadow-xl p-6 w-full max-w-lg relative border border-gray-700">
+                    <button id="pp-modal-close" class="absolute top-3 right-3 text-gray-400 hover:text-white text-2xl leading-none">&times;</button>
+                    <h3 id="pp-modal-title" class="text-xl font-bold text-white mb-4">Player PP Stats</h3>
+                    <div id="pp-modal-content" class="text-gray-300"></div>
+                </div>
+            </div>
+            <div id="opponent-stats-modal" class="fixed inset-0 bg-gray-900 bg-opacity-75 flex items-center justify-center z-50 hidden" style="backdrop-filter: blur(2px);">
+                <div class="bg-gray-800 rounded-lg shadow-xl p-6 w-full max-w-2xl relative border border-gray-700">
+                    <button id="opponent-modal-close" class="absolute top-3 right-3 text-gray-400 hover:text-white text-2xl leading-none">&times;</button>
+                    <h3 id="opponent-modal-title" class="text-xl font-bold text-white mb-4">Opponent Stats</h3>
+                    <div id="opponent-modal-content" class="text-gray-300 overflow-x-auto"></div>
+                </div>
+            </div>`;
+            document.body.insertAdjacentHTML('beforeend', modalsHTML);
         }
 
-        const cachedState = loadStateFromCache();
+        const cachedSim = localStorage.getItem(SIMULATION_KEY);
+        if (cachedSim) simulatedMoves = JSON.parse(cachedSim);
 
+        const cachedState = loadStateFromCache();
         if (cachedState) {
             allWaiverPlayers = cachedState.allWaiverPlayers;
             allFreeAgents = cachedState.allFreeAgents;
@@ -933,21 +882,6 @@
 
         simulateButton.addEventListener('click', handleSimulateClick);
         resetButton.addEventListener('click', handleResetClick);
-    }
-
-    // --- Inject Trending Modal ---
-    if (!document.getElementById('trending-stats-modal')) {
-            const trendingModalHTML = `
-        <div id="trending-stats-modal" class="fixed inset-0 bg-gray-900 bg-opacity-75 flex items-center justify-center z-50 hidden" style="backdrop-filter: blur(2px);">
-            <div class="bg-gray-800 rounded-lg shadow-xl p-6 w-full max-w-sm relative border border-gray-700">
-                <button id="trending-modal-close" class="absolute top-3 right-3 text-gray-400 hover:text-white text-2xl leading-none">&times;</button>
-                <h3 id="trending-modal-title" class="text-xl font-bold text-white mb-4">Player Trending</h3>
-                <div id="trending-modal-content" class="text-gray-300">
-                    <p>Detailed trend analysis coming soon...</p>
-                </div>
-            </div>
-        </div>`;
-        document.body.insertAdjacentHTML('beforeend', trendingModalHTML);
     }
 
     init();
