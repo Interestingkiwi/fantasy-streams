@@ -420,11 +420,22 @@ document.addEventListener('DOMContentLoaded', () => {
             const leagueResp = await fetch('/api/my_leagues');
             const leagueData = await leagueResp.json();
 
+            // --- [START] FIX 1: Generate League Options ---
+            let leagueOptions = '';
+            if (leagueData.leagues && leagueData.leagues.length > 0) {
+                 leagueOptions = leagueData.leagues.map(l =>
+                    `<option value="${l.league_id}" ${l.league_id == leagueData.current_league_id ? 'selected' : ''}>${l.name}</option>`
+                 ).join('');
+            } else {
+                 leagueOptions = '<option>No Leagues Found</option>';
+            }
+            // --- [END] FIX 1 ---
+
             // 2. Fetch Matchup Data (This tells us if DB exists)
             const response = await fetch('/api/matchup_page_data');
             const data = await response.json();
 
-            // --- [START] NEW: Manage Navigation Visibility ---
+            // --- Manage Navigation Visibility ---
             const navButtons = document.querySelectorAll('.toggle-btn');
             const dbExists = response.ok && data.db_exists;
 
@@ -436,7 +447,6 @@ document.addEventListener('DOMContentLoaded', () => {
                         btn.classList.add('hidden');
                     } else {
                         btn.classList.remove('hidden');
-                        // Force click if we are currently on a hidden page (optional safety)
                     }
                 } else {
                     // DB Exists: Show everything
@@ -497,11 +507,8 @@ document.addEventListener('DOMContentLoaded', () => {
                         body: JSON.stringify({ league_id: newLeagueId })
                     });
                     if(res.ok) {
-                        // --- FIX: Clear stored week so the new league defaults to ITS current week ---
                         localStorage.removeItem('selectedWeek');
-                        // Optional: Clear session flag to ensure a "fresh start" logic runs
                         sessionStorage.removeItem('fantasySessionStarted');
-
                         window.location.reload();
                     } else {
                         alert("Failed to switch league.");
@@ -534,12 +541,20 @@ document.addEventListener('DOMContentLoaded', () => {
             document.getElementById('week-select').addEventListener('change', (e) => { localStorage.setItem('selectedWeek', e.target.value); });
             document.getElementById('your-team-select').addEventListener('change', (e) => { localStorage.setItem('selectedTeam', e.target.value); });
 
+            // --- [START] FIX 2: Dispatch Event for Stat Sourcing ---
             const statSourcingSelect = document.getElementById('stat-sourcing-select');
             statSourcingSelect.addEventListener('change', (e) => {
-                localStorage.setItem('selectedStatSourcing', e.target.value);
+                const newVal = e.target.value;
+                localStorage.setItem('selectedStatSourcing', newVal);
+
+                // Dispatch event so sub-pages (Matchup, Free Agents) can react immediately
+                window.dispatchEvent(new CustomEvent('statSourcingChanged', { detail: { sourcing: newVal } }));
+
+                // Legacy support if specific pages still look for this button
                 const recalculateBtn = document.getElementById('recalculate-button');
                 if (recalculateBtn) recalculateBtn.click();
             });
+            // --- [END] FIX 2 ---
 
         } catch (error) {
             console.error('Initialization error for dropdowns:', error.message);
@@ -557,33 +572,24 @@ document.addEventListener('DOMContentLoaded', () => {
         const savedTeam = localStorage.getItem('selectedTeam');
         if (savedTeam) yourTeamSelect.value = savedTeam;
 
-        // --- NEW LOGIC START: Handle Week Selection with "New Day" Reset ---
+        // Handle Week Selection with "New Day" Reset
         const currentWeek = pageData.current_week;
         const todayStr = new Date().toDateString(); // e.g. "Mon Dec 11 2025"
         const lastVisitDate = localStorage.getItem('lastVisitDate');
 
-        // Check 1: Is this a "New Day" visit? (Fixes the Sunday -> Monday issue)
         const isNewDay = lastVisitDate !== todayStr;
-
-        // Check 2: Is this a completely fresh tab session?
         const isNewSession = !sessionStorage.getItem('fantasySessionStarted');
 
         if (isNewDay || isNewSession) {
-            // Force update to Current Week
             weekSelect.value = currentWeek;
             localStorage.setItem('selectedWeek', currentWeek);
-
-            // Mark session as started and update the visit date
             sessionStorage.setItem('fantasySessionStarted', 'true');
             localStorage.setItem('lastVisitDate', todayStr);
-
         } else {
-            // Same day, same session: Allow user to stay on a previous week (e.g. if looking at history)
             const savedWeek = localStorage.getItem('selectedWeek');
             if (savedWeek) weekSelect.value = savedWeek;
             else weekSelect.value = currentWeek;
         }
-        // --- NEW LOGIC END ---
     }
 
     function populateStatSourcingDropdown() {
