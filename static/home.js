@@ -420,19 +420,29 @@ document.addEventListener('DOMContentLoaded', () => {
             const leagueResp = await fetch('/api/my_leagues');
             const leagueData = await leagueResp.json();
 
-            // 2. Fetch Matchup Data
+            // 2. Fetch Matchup Data (This tells us if DB exists)
             const response = await fetch('/api/matchup_page_data');
             const data = await response.json();
 
-            // Construct the HTML for the dropdowns
-            // We add a new "League" dropdown at the top left
-            let leagueOptions = '<option disabled>No leagues found</option>';
+            // --- [START] NEW: Manage Navigation Visibility ---
+            const navButtons = document.querySelectorAll('.toggle-btn');
+            const dbExists = response.ok && data.db_exists;
 
-            if (leagueData.leagues && leagueData.leagues.length > 0) {
-                leagueOptions = leagueData.leagues.map(lg =>
-                    `<option value="${lg.league_id}" ${lg.league_id == leagueData.current_league_id ? 'selected' : ''}>${lg.name}</option>`
-                ).join('');
-            }
+            navButtons.forEach(btn => {
+                const page = btn.getAttribute('data-page');
+                if (!dbExists) {
+                    // DB Missing: Hide everything except 'league-database'
+                    if (page !== 'league-database') {
+                        btn.classList.add('hidden');
+                    } else {
+                        btn.classList.remove('hidden');
+                        // Force click if we are currently on a hidden page (optional safety)
+                    }
+                } else {
+                    // DB Exists: Show everything
+                    btn.classList.remove('hidden');
+                }
+            });
 
             // HTML Structure
             dropdownContainer.innerHTML = `

@@ -6,7 +6,7 @@
     const actionButton = document.getElementById('db-action-button');
     const statUpdateContainer = document.getElementById('stat-update-container');
     const statUpdateCheckbox = document.getElementById('check-stat-updates');
-    const logContainer = document.getElementById('log-container');
+    let logContainer = document.getElementById('log-container');
     const infoText = document.getElementById('db-info-text');
 
     if (!statusText || !actionButton || !statUpdateContainer || !statUpdateCheckbox || !logContainer || !infoText) {
@@ -16,28 +16,42 @@
 
     initPremiumFeatures();
 
-    let dbExists = false; // State to track DB status
+    let dbExists = false;
 
     const updateStatus = (data) => {
-        dbExists = data.db_exists; // Store state
+        dbExists = data.db_exists;
 
         if (data.db_exists) {
+            // --- CASE: DB EXISTS (Established League) ---
             const date = new Date(data.timestamp * 1000);
             statusText.textContent = `Your league: '${data.league_name}'s data is up to date as of: ${date.toLocaleString()}`;
             actionButton.textContent = 'Update Rosters';
 
-            // Show the stat update option
             statUpdateContainer.classList.remove('hidden');
+
+            // 1. Hide the Hardcoded Log Container
+            logContainer.classList.add('hidden');
+
+            // 2. Change its ID so window.startLogStream CANNOT find it.
+            // This forces startLogStream to use the Floating Corner Window.
+            logContainer.id = 'log-container-disabled';
+
         } else {
+            // --- CASE: NO DB (Initialization Phase) ---
             statusText.textContent = "Your league's data has not been initialized. Please initialize the database.";
             actionButton.textContent = 'Initialize Database';
             statUpdateContainer.classList.add('hidden');
             statUpdateCheckbox.checked = false;
 
-            // 4. Set dynamic text for missing database
             infoText.innerHTML = `Please click Initialize Database to build the file tailored to your league. This can be a lengthy process, especially if it is later in the season as each fantasy day for each team in your league must be called.
             <br><br>
             You do not need to remain on the site for the job to run, so feel free to close the page, and simply refresh after some time (15-30minutes).`;
+
+            // 1. Show the Hardcoded Log Container
+            logContainer.classList.remove('hidden');
+
+            // 2. Ensure ID is correct so window.startLogStream uses IT (large view) instead of floating window.
+            logContainer.id = 'log-container';
         }
     };
 
@@ -57,120 +71,36 @@
         }
     };
 
-    let eventSource = null;
-
-    const connectToLogStream = (buildId) => {
-        // Close any existing stream
-        if (eventSource) {
-            eventSource.close();
-        }
-
-        actionButton.textContent = 'Update in Progress...';
-
-        eventSource = new EventSource(`/api/db_log_stream?build_id=${buildId}`);
-
-        eventSource.onmessage = function(event) {
-
-            // --- MODIFICATION: Handle Invalid Build ID error first ---
-            if (event.data.startsWith('ERROR: Invalid build ID') || event.data.startsWith('ERROR: No build_id')) {
-                logContainer.innerHTML = `
-                    <p class="text-yellow-400 font-bold">The Database Update is in fact in progress, only you are unable to see the log.</p>
-                    <p class="text-gray-300 mt-2">This can happen if the build was started from another device or a previous session, and that build has just completed.</p>
-                    <p class="text-gray-300">Please wait a few minutes, and refresh the website to see if the update has been complete.</p>
-                    <p class="text-gray-300">Please do not start an additional update, thank you.</p>
-                `;
-                logContainer.scrollTop = logContainer.scrollHeight; // Auto-scroll
-
-                // Manually stop the stream and reset the button
-                eventSource.close();
-                eventSource = null;
-                actionButton.disabled = false;
-                actionButton.classList.remove('opacity-50', 'cursor-not-allowed');
-                actionButton.textContent = 'Refresh Status';
-                fetchStatus();
-                return;
-            }
-            // --- END MODIFICATION ---
-
-            // 3. Check for the sentinel message
-            if (event.data === '__DONE__') {
-                eventSource.close();
-                eventSource = null;
-                logContainer.scrollTop = logContainer.scrollHeight;
-                // Re-enable button and refresh status
-                actionButton.disabled = false;
-                actionButton.classList.remove('opacity-50', 'cursor-not-allowed');
-                actionButton.textContent = 'Update Complete';
-                fetchStatus(); // Refresh main status
-                return;
-            }
-
-            const p = document.createElement('p');
-            p.textContent = event.data;
-
-            if (event.data.startsWith('--- SUCCESS:')) {
-                p.className = 'text-green-400 font-bold';
-            } else if (event.data.startsWith('--- ERROR:') || event.data.startsWith('--- FATAL ERROR:')) {
-                p.className = 'text-red-400 font-bold';
-            } else if (event.data.startsWith('ERROR:')) {
-                p.className = 'text-red-400';
-            } else if (event.data.startsWith('---')) {
-                 p.className = 'text-yellow-400';
-            } else {
-                p.className = 'text-gray-300';
-            }
-            logContainer.appendChild(p);
-            logContainer.scrollTop = logContainer.scrollHeight; // Auto-scroll
-        };
-
-        eventSource.onerror = function(err) {
-            console.error('EventSource failed:', err);
-            const p = document.createElement('p');
-            p.className = 'text-red-500';
-            p.textContent = 'Connection to log stream lost. Refreshing status...';
-            logContainer.appendChild(p);
-            if (eventSource) eventSource.close();
-            eventSource = null;
-            // Refresh the main status when the stream closes
-            fetchStatus();
-            // Re-enable button
-            actionButton.disabled = false;
-            actionButton.classList.remove('opacity-50', 'cursor-not-allowed');
-            actionButton.textContent = 'Stream Error';
-        };
-    };
-    // --- END NEW FUNCTION ---
+    // --- REMOVED LOCAL connectToLogStream FUNCTION ENTIRELY ---
+    // We now rely exclusively on window.startLogStream from home.js
 
     const handleDbAction = async (event) => {
         event.preventDefault();
         actionButton.disabled = true;
         actionButton.classList.add('opacity-50', 'cursor-not-allowed');
         actionButton.textContent = 'Starting Update...';
-        logContainer.innerHTML = '';
 
-        if (eventSource) eventSource.close();
+        // Clear log container if visible
+        if (logContainer && logContainer.id === 'log-container') {
+             logContainer.innerHTML = '';
+        }
 
-        // --- LOGIC BRANCHING ---
+        // Logic Branching
         let captureLineups = false;
         let rosterUpdatesOnly = false;
 
         if (!dbExists) {
-            // Scenario 1: No DB exists -> Force Full Build
             captureLineups = true;
             rosterUpdatesOnly = false;
         } else {
-            // Scenario 2: DB exists
             if (statUpdateCheckbox.checked) {
-                // "Check for Stat Updated" -> Partial Stat Update
                 captureLineups = false;
                 rosterUpdatesOnly = false;
             } else {
-                // Default -> Roster Updates Only
                 captureLineups = false;
                 rosterUpdatesOnly = true;
             }
         }
-        // -----------------------
 
         try {
             const options = {
@@ -187,8 +117,8 @@
             if (!response.ok) {
                 const err = await response.json();
                 if (response.status === 409 && err.build_id) {
-                    logContainer.innerHTML = '<p class="text-yellow-400">A build is already in progress. Attempting to connect to the log stream...</p>';
-                    connectToLogStream(err.build_id);
+                    // Use Global Streamer
+                    if (window.startLogStream) window.startLogStream(err.build_id);
                 } else {
                      throw new Error(err.error || `Server error: ${response.status}`);
                 }
@@ -197,12 +127,18 @@
                 if (!data.success || !data.build_id) {
                      throw new Error('Failed to start build process. Server did not return a build_id.');
                 }
-                connectToLogStream(data.build_id);
+                // Use Global Streamer
+                if (window.startLogStream) window.startLogStream(data.build_id);
             }
 
         } catch (error) {
             console.error('Error performing DB action:', error);
-            logContainer.innerHTML = `<p class="text-red-400">Error: ${error.message}</p>`;
+            // Fallback display if global streamer fails or logic error
+            if(logContainer.id === 'log-container') {
+                logContainer.innerHTML = `<p class="text-red-400">Error: ${error.message}</p>`;
+            } else {
+                alert(`Error: ${error.message}`);
+            }
             actionButton.disabled = false;
             actionButton.classList.remove('opacity-50', 'cursor-not-allowed');
             actionButton.textContent = 'Update Failed';
