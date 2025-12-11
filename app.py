@@ -1682,11 +1682,11 @@ def login():
     session['oauth_state'] = state
     return jsonify({'auth_url': authorization_url})
 
+
 @app.route('/callback')
 def callback():
     if 'error' in request.args:
-        error_msg = request.args.get('error_description', 'An unknown error occurred.')
-        return f'<h1>Error: {error_msg}</h1>', 400
+        return f"<h1>Error: {request.args.get('error_description')}</h1>", 400
 
     if request.args.get('state') != session.get('oauth_state'):
         return '<h1>Error: State mismatch.</h1>', 400
@@ -1700,52 +1700,117 @@ def callback():
             client_secret=session['consumer_secret'],
             code=request.args.get('code')
         )
-
-        # 1. Basic Token Save
         session['yahoo_token'] = token
 
-        # 2. Ensure we have the GUID
+        # 1. Fetch User GUID (Required)
         if 'xoauth_yahoo_guid' not in token:
-            logging.info("GUID missing from initial token. Fetching via Fantasy API...")
-            try:
-                resp = yahoo.get('https://fantasysports.yahooapis.com/fantasy/v2/users;use_login=1?format=json')
+            resp = yahoo.get('https://fantasysports.yahooapis.com/fantasy/v2/users;use_login=1?format=json')
+            data = resp.json()
+            guid = data['fantasy_content']['users']['0']['user'][0]['guid']
+            token['xoauth_yahoo_guid'] = guid
+            session['yahoo_token'] = token
 
-                if resp.status_code == 200:
-                    data = resp.json()
-                    # Parse: fantasy_content -> users -> 0 -> user -> 0 -> guid
-                    user_obj = data['fantasy_content']['users']['0']['user'][0]
-                    guid = user_obj['guid']
+        # 2. Fetch User's NHL Leagues (NEW LOGIC)
+        # Query Yahoo for all NHL leagues this user is in
+        leagues_resp = yahoo.get('https://fantasysports.yahooapis.com/fantasy/v2/users;use_login=1/games;game_keys=nhl/leagues?format=json')
+        leagues_data = leagues_resp.json()
 
-                    # Retrofit the GUID into the token object so the rest of the app works normally
-                    token['xoauth_yahoo_guid'] = guid
-                    session['yahoo_token'] = token # Re-save the complete token to session
-                    logging.info(f"GUID retrieved successfully: {guid}")
-                else:
-                    logging.error(f"Failed to fetch user GUID. Status: {resp.status_code} Body: {resp.text}")
-                    return '<h1>Error: Could not identify user.</h1>', 500
-            except Exception as e:
-                logging.error(f"Exception fetching fallback GUID: {e}")
-                return '<h1>Error: Authentication failed during user identification.</h1>', 500
+        user_leagues = []
+        try:
+            # parsing: users -> 0 -> user -> 1 -> games -> 0 -> game -> 1 -> leagues
+            games = leagues_data['fantasy_content']['users']['0']['user'][1]['games']
+            # Depending on season timing, 'games' might be a dict or list. Assume standard structure:
+            game_leagues = games['0']['game'][1]['leagues']
 
-        # 3. Persist Credentials to Admin DB
-        save_user_credentials(
-            session['yahoo_token'],
-            session.get('consumer_key'),
-            session.get('consumer_secret')
-        )
+            # 'leagues' is a dictionary with numeric keys '0', '1', etc., plus 'count'
+            count = game_leagues.get('count', 0)
+            for i in range(count):
+                lg = game_leagues[str(i)]['league'][0]
+                user_leagues.append({
+                    'league_id': lg['league_id'],
+                    'name': lg['name'],
+                    'key': lg['league_key']
+                })
+        except Exception as e:
+            logging.warning(f"Could not parse user leagues: {e}")
 
-        # 4. Assign as Updater if needed
-        current_league_id = session.get('league_id')
-        user_guid = session['yahoo_token'].get('xoauth_yahoo_guid')
+        # Store these in session for the dropdown
+        session['user_leagues'] = user_leagues
 
-        if current_league_id and user_guid:
-            assign_league_updater(current_league_id, user_guid)
+        # 3. Validation / Default Selection
+        requested_league_id = session.get('league_id')
+
+        # If no league requested (e.g. clean login), default to the first one
+        if not requested_league_id and user_leagues:
+            requested_league_id = user_leagues[0]['league_id']
+            session['league_id'] = requested_league_id
+
+        # Validate membership
+        is_member = any(l['league_id'] == requested_league_id for l in user_leagues)
+
+        if not is_member and not session.get('dev_mode'):
+             # Allow access if they have NO leagues (rare edge case), otherwise deny
+             if user_leagues:
+                 session.clear()
+                 return "<h1>Access Denied: You are not a member of this league.</h1>", 403
+
+        # 4. Save Credentials & Updater Logic
+        save_user_credentials(session['yahoo_token'], session.get('consumer_key'), session.get('consumer_secret'))
+
+        user_guid = token.get('xoauth_yahoo_guid')
+        if requested_league_id and user_guid:
+            assign_league_updater(requested_league_id, user_guid)
 
     except Exception as e:
-        logging.error(f"Error in callback sequence: {e}", exc_info=True)
-        return '<h1>Error: Login sequence failed.</h1>', 500
+        logging.error(f"Callback Error: {e}", exc_info=True)
+        return f'<h1>Login Failed: {e}</h1>', 500
 
     return redirect(url_for('home'))
+
+
+@app.route('/api/my_leagues')
+def get_my_leagues():
+    """Returns the list of leagues the user belongs to."""
+    if 'yahoo_token' not in session:
+        return jsonify({'error': 'Not logged in'}), 401
+
+    return jsonify({
+        'current_league_id': session.get('league_id'),
+        'leagues': session.get('user_leagues', [])
+    })
+
+
+
+@app.route('/api/switch_league', methods=['POST'])
+def switch_league():
+    """Switches the active league in the session."""
+    if 'yahoo_token' not in session:
+        return jsonify({'error': 'Not logged in'}), 401
+
+    data = request.get_json()
+    new_league_id = data.get('league_id')
+
+    # 1. Security Check: Is the user actually in this league?
+    user_leagues = session.get('user_leagues', [])
+    is_member = any(l['league_id'] == new_league_id for l in user_leagues)
+
+    # (Optional: Allow switching to a Dev ID if dev_mode is on)
+    if session.get('dev_mode'):
+        is_member = True
+
+    if not is_member:
+        return jsonify({'error': 'Unauthorized access to this league'}), 403
+
+    # 2. Update Session
+    session['league_id'] = new_league_id
+
+    # 3. Trigger Updater Assignment (Optional but good practice)
+    user_guid = session['yahoo_token'].get('xoauth_yahoo_guid')
+    assign_league_updater(new_league_id, user_guid)
+
+    logging.info(f"User switched to League ID: {new_league_id}")
+    return jsonify({'success': True})
+
 
 @app.route('/logout')
 def logout():

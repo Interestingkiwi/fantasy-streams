@@ -437,33 +437,50 @@ document.addEventListener('DOMContentLoaded', () => {
 
     async function initDropdowns() {
         try {
+            // 1. Fetch User's Leagues
+            const leagueResp = await fetch('/api/my_leagues');
+            const leagueData = await leagueResp.json();
+
+            // 2. Fetch Matchup Data
             const response = await fetch('/api/matchup_page_data');
             const data = await response.json();
 
-            if (!response.ok || !data.db_exists) {
-                dropdownContainer.innerHTML = `<button id="reload-dropdowns" class="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded">Create DB then press to load</button>`;
-                document.getElementById('reload-dropdowns').addEventListener('click', initDropdowns);
-                return;
+            // Construct the HTML for the dropdowns
+            // We add a new "League" dropdown at the top left
+            let leagueOptions = '<option disabled>No leagues found</option>';
+
+            if (leagueData.leagues && leagueData.leagues.length > 0) {
+                leagueOptions = leagueData.leagues.map(lg =>
+                    `<option value="${lg.league_id}" ${lg.league_id == leagueData.current_league_id ? 'selected' : ''}>${lg.name}</option>`
+                ).join('');
             }
 
+            // HTML Structure
             dropdownContainer.innerHTML = `
                 <div class="flex flex-col gap-2">
                     <div class="flex items-center gap-2 justify-end">
-                        <label for="week-select" class="text-sm font-medium text-gray-300 w-24 text-right">Fantasy Week:</label>
-                        <select id="week-select" class="bg-gray-700 border border-gray-600 text-white text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-48 p-2">
-                            <option selected>Choose a week</option>
+                        <label for="league-select" class="text-sm font-bold text-blue-400 w-24 text-right">League:</label>
+                        <select id="league-select" class="bg-gray-800 border border-blue-500 text-white text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-48 p-2 font-bold">
+                            ${leagueOptions}
                         </select>
                     </div>
                     <div class="flex items-center gap-2 justify-end">
-                        <label for="your-team-select" class="text-sm font-medium text-gray-300 w-24 text-right">Your Team:</label>
-                        <select id="your-team-select" class="bg-gray-700 border border-gray-600 text-white text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-48 p-2">
-                            <option selected>Choose your team</option>
+                        <label for="week-select" class="text-sm font-medium text-gray-300 w-24 text-right">Fantasy Week:</label>
+                        <select id="week-select" class="bg-gray-700 border border-gray-600 text-white text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-48 p-2">
+                            <option selected>Loading...</option>
                         </select>
                     </div>
                 </div>
 
                 <div class="flex flex-col gap-2">
                     <div class="flex items-center gap-2 justify-end">
+                        <label for="your-team-select" class="text-sm font-medium text-gray-300 w-24 text-right">Your Team:</label>
+                        <select id="your-team-select" class="bg-gray-700 border border-gray-600 text-white text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-48 p-2">
+                            <option selected>Choose your team</option>
+                        </select>
+                    </div>
+
+                     <div class="flex items-center gap-2 justify-end">
                         <label for="stat-sourcing-select" class="text-sm font-medium text-gray-300 w-24 text-right">Stat Sourcing:</label>
                         <select id="stat-sourcing-select" class="bg-gray-700 border border-gray-600 text-white text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-48 p-2">
                             <option value="projected">Projected ROS</option>
@@ -471,16 +488,44 @@ document.addEventListener('DOMContentLoaded', () => {
                             <option value="combined">Combined</option>
                         </select>
                     </div>
-                    <div class="flex justify-end">
-                        <div class="flex items-center gap-2 bg-gray-800 py-1.5 px-4 rounded-lg border border-gray-600 shadow-sm w-48 justify-center">
-                            <input type="checkbox" id="global-show-raw-data" class="w-4 h-4 text-blue-600 bg-gray-700 border-gray-500 rounded focus:ring-blue-500 focus:ring-2 cursor-pointer">
-                            <label for="global-show-raw-data" class="text-sm font-medium text-gray-300 cursor-pointer select-none">Show Raw Data</label>
-                        </div>
-                    </div>
+                </div>
+
+                <div class="flex items-center gap-2 bg-gray-800 py-1.5 px-4 rounded-lg border border-gray-600 shadow-sm h-min self-center">
+                    <input type="checkbox" id="global-show-raw-data" class="w-4 h-4 text-blue-600 bg-gray-700 border-gray-500 rounded focus:ring-blue-500 focus:ring-2 cursor-pointer">
+                    <label for="global-show-raw-data" class="text-sm font-medium text-gray-300 cursor-pointer select-none">Show Raw Data</label>
                 </div>
             `;
-            dropdownContainer.className = 'flex items-start gap-6';
 
+            dropdownContainer.className = 'flex items-start gap-6 bg-gray-900 p-3 rounded-lg border border-gray-700';
+
+            // --- EVENT LISTENER FOR LEAGUE SWITCH ---
+            document.getElementById('league-select').addEventListener('change', async (e) => {
+                const newLeagueId = e.target.value;
+                if(confirm("Switch league? This will reload the dashboard.")) {
+                    const res = await fetch('/api/switch_league', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({ league_id: newLeagueId })
+                    });
+                    if(res.ok) {
+                        window.location.reload();
+                    } else {
+                        alert("Failed to switch league.");
+                    }
+                }
+            });
+
+            // Handle DB not existing case
+            if (!response.ok || !data.db_exists) {
+                // If DB missing, disable the other dropdowns but leave League enabled so they can switch out
+                ['week-select', 'your-team-select', 'stat-sourcing-select'].forEach(id => {
+                    document.getElementById(id).disabled = true;
+                    document.getElementById(id).innerHTML = '<option>No DB Found</option>';
+                });
+                return;
+            }
+
+            // Populate the standard dropdowns
             pageData = data;
             populateDropdowns();
             populateStatSourcingDropdown();
@@ -491,6 +536,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 showRawCheckbox.checked = localStorage.getItem('showRawData') === 'true';
             }
 
+            // Add standard listeners
             document.getElementById('week-select').addEventListener('change', (e) => { localStorage.setItem('selectedWeek', e.target.value); });
             document.getElementById('your-team-select').addEventListener('change', (e) => { localStorage.setItem('selectedTeam', e.target.value); });
 
@@ -499,10 +545,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 localStorage.setItem('selectedStatSourcing', e.target.value);
                 const recalculateBtn = document.getElementById('recalculate-button');
                 if (recalculateBtn) recalculateBtn.click();
-                else {
-                    const activeTab = document.querySelector('.toggle-btn.bg-blue-600');
-                    if (activeTab) activeTab.click();
-                }
             });
 
         } catch (error) {
