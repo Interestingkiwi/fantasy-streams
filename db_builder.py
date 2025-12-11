@@ -1084,8 +1084,6 @@ def _update_current_rosters(yq, cursor, conn, league_id, num_teams, logger):
         return
 
     try:
-        # --- FIX: Fetch actual team IDs to handle gaps (e.g. 1, 2, 4) ---
-        # The previous loop `range(1, num_teams + 1)` assumed sequential IDs.
         logger.info("Fetching valid team IDs for current roster update...")
         league_teams = yq.get_league_teams()
         sorted_teams = sorted(league_teams, key=lambda t: int(t.team_id))
@@ -1095,13 +1093,36 @@ def _update_current_rosters(yq, cursor, conn, league_id, num_teams, logger):
 
         for team in sorted_teams:
             team_id = int(team.team_id)
+
+            # --- START RETRY LOGIC ---
+            max_retries = 3
+            attempt = 0
+            players = None
+
+            while attempt < max_retries:
+                try:
+                    players = yq.get_team_roster_player_info_by_date(team_id, date.today().isoformat())
+                    break # Success, exit loop
+                except Exception as e:
+                    attempt += 1
+                    if "503" in str(e) or "502" in str(e) or "504" in str(e):
+                        logger.warning(f"Yahoo API Error (Attempt {attempt}/{max_retries}) for team {team_id}: {e}. Retrying in 2s...")
+                        time.sleep(3 * attempt) # Exponential backoff: 2s, 4s, 6s
+                    else:
+                        logger.error(f"Failed to fetch current roster for team {team_id}: {e}")
+                        break # Non-transient error, exit loop
+            # --- END RETRY LOGIC ---
+
+            if not players:
+                logger.error(f"Skipping team {team_id} after {attempt} failed attempts.")
+                continue
+
             try:
-                players = yq.get_team_roster_player_info_by_date(team_id, date.today().isoformat())
                 p_ids = [p.player_id for p in players][:MAX_PLAYERS]
                 padded = p_ids + [None] * (MAX_PLAYERS - len(p_ids))
                 data.append([league_id, team_id] + padded)
             except Exception as e:
-                logger.error(f"Failed to fetch current roster for team {team_id}: {e}")
+                logger.error(f"Failed to parse roster data for team {team_id}: {e}")
                 continue
 
         if data:
