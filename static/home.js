@@ -508,6 +508,11 @@ document.addEventListener('DOMContentLoaded', () => {
                         body: JSON.stringify({ league_id: newLeagueId })
                     });
                     if(res.ok) {
+                        // --- FIX: Clear stored week so the new league defaults to ITS current week ---
+                        localStorage.removeItem('selectedWeek');
+                        // Optional: Clear session flag to ensure a "fresh start" logic runs
+                        sessionStorage.removeItem('fantasySessionStarted');
+
                         window.location.reload();
                     } else {
                         alert("Failed to switch league.");
@@ -556,22 +561,40 @@ document.addEventListener('DOMContentLoaded', () => {
         const weekSelect = document.getElementById('week-select');
         const yourTeamSelect = document.getElementById('your-team-select');
 
+        // Populate options (existing code)
         weekSelect.innerHTML = pageData.weeks.map(week => `<option value="${week.week_num}">Week ${week.week_num} (${week.start_date} to ${week.end_date})</option>`).join('');
         yourTeamSelect.innerHTML = pageData.teams.map(team => `<option value="${team.name}">${team.name}</option>`).join('');
 
         const savedTeam = localStorage.getItem('selectedTeam');
         if (savedTeam) yourTeamSelect.value = savedTeam;
 
-        if (!sessionStorage.getItem('fantasySessionStarted')) {
-            const currentWeek = pageData.current_week;
+        // --- NEW LOGIC START: Handle Week Selection with "New Day" Reset ---
+        const currentWeek = pageData.current_week;
+        const todayStr = new Date().toDateString(); // e.g. "Mon Dec 11 2025"
+        const lastVisitDate = localStorage.getItem('lastVisitDate');
+
+        // Check 1: Is this a "New Day" visit? (Fixes the Sunday -> Monday issue)
+        const isNewDay = lastVisitDate !== todayStr;
+
+        // Check 2: Is this a completely fresh tab session?
+        const isNewSession = !sessionStorage.getItem('fantasySessionStarted');
+
+        if (isNewDay || isNewSession) {
+            // Force update to Current Week
             weekSelect.value = currentWeek;
             localStorage.setItem('selectedWeek', currentWeek);
+
+            // Mark session as started and update the visit date
             sessionStorage.setItem('fantasySessionStarted', 'true');
+            localStorage.setItem('lastVisitDate', todayStr);
+
         } else {
+            // Same day, same session: Allow user to stay on a previous week (e.g. if looking at history)
             const savedWeek = localStorage.getItem('selectedWeek');
             if (savedWeek) weekSelect.value = savedWeek;
-            else weekSelect.value = pageData.current_week;
+            else weekSelect.value = currentWeek;
         }
+        // --- NEW LOGIC END ---
     }
 
     function populateStatSourcingDropdown() {
