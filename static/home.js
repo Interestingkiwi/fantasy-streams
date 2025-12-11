@@ -601,7 +601,8 @@ function startLogStream(buildId) {
     const onPageLog = document.getElementById('log-container');
     let logOutput = null;
 
-    if (onPageLog) {
+    // Check if the element exists AND is currently part of the visible DOM
+    if (onPageLog && document.body.contains(onPageLog)) {
         // CASE A: We are on the League Database page.
         // Make sure the existing box is visible and use it.
         onPageLog.classList.remove('hidden');
@@ -613,7 +614,7 @@ function startLogStream(buildId) {
             logOutput.setAttribute('data-stream-active', 'true');
         }
     } else {
-        // CASE B: We are on another page (Home, Matchups, etc.).
+        // CASE B: We are on another page (Home, Matchups, etc.) OR the tab hasn't loaded yet.
         // Create/Use the Floating Status Box.
 
         // Check if we already created it (prevent duplicates)

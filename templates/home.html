@@ -252,12 +252,42 @@
             });
 
             // Initial load
-            const firstButton = allToggleButtons[0];
-            if (firstButton) {
-                allToggleButtons.forEach((btn, index) => {
-                    setButtonState(btn, index === 0);
+            // 1. UPDATED: Event Listener to save selection
+            allToggleButtons.forEach((button) => {
+                button.addEventListener('click', () => {
+                    const pageToLoad = button.getAttribute('data-page');
+
+                    // Save the current page to LocalStorage
+                    localStorage.setItem('lastActivePage', pageToLoad);
+
+                    // Set state and load
+                    allToggleButtons.forEach(btn => setButtonState(btn, false));
+                    setButtonState(button, true);
+                    loadPage(pageToLoad);
                 });
-                loadPage(firstButton.getAttribute('data-page'));
+            });
+
+            // 2. UPDATED: Smart Initial Load
+            const savedPage = localStorage.getItem('lastActivePage');
+
+            // Try to find the button for the saved page, otherwise default to index 0
+            let targetButton = null;
+
+            if (savedPage) {
+                targetButton = document.querySelector(`.toggle-btn[data-page="${savedPage}"]`);
+            }
+
+            // Fallback to first button if no saved page or saved page doesn't exist
+            if (!targetButton) {
+                targetButton = allToggleButtons[0];
+            }
+
+            if (targetButton) {
+                // Update UI state
+                allToggleButtons.forEach(btn => setButtonState(btn, btn === targetButton));
+
+                // Load the page
+                loadPage(targetButton.getAttribute('data-page'));
             }
 
             // Modal script
