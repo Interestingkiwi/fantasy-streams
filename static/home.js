@@ -447,6 +447,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         btn.classList.add('hidden');
                     } else {
                         btn.classList.remove('hidden');
+                        // Force click if we are currently on a hidden page (optional safety)
                     }
                 } else {
                     // DB Exists: Show everything
@@ -541,18 +542,28 @@ document.addEventListener('DOMContentLoaded', () => {
             document.getElementById('week-select').addEventListener('change', (e) => { localStorage.setItem('selectedWeek', e.target.value); });
             document.getElementById('your-team-select').addEventListener('change', (e) => { localStorage.setItem('selectedTeam', e.target.value); });
 
-            // --- [START] FIX 2: Dispatch Event for Stat Sourcing ---
+            // --- [START] FIX 2: Trigger Page Reload on Stat Sourcing Change ---
             const statSourcingSelect = document.getElementById('stat-sourcing-select');
             statSourcingSelect.addEventListener('change', (e) => {
                 const newVal = e.target.value;
                 localStorage.setItem('selectedStatSourcing', newVal);
 
-                // Dispatch event so sub-pages (Matchup, Free Agents) can react immediately
+                // Dispatch event (Standard practice)
                 window.dispatchEvent(new CustomEvent('statSourcingChanged', { detail: { sourcing: newVal } }));
 
-                // Legacy support if specific pages still look for this button
-                const recalculateBtn = document.getElementById('recalculate-button');
-                if (recalculateBtn) recalculateBtn.click();
+                // FORCE RELOAD: Simulate a click on the currently active navigation button
+                // This forces the home.html logic to re-run loadPage() for the current view
+                const lastPage = localStorage.getItem('lastActivePage');
+                if (lastPage) {
+                    const activeBtn = document.querySelector(`.toggle-btn[data-page="${lastPage}"]`);
+                    if (activeBtn) {
+                        activeBtn.click();
+                    }
+                } else {
+                    // Fallback: If no saved page, find the visually active button
+                    const visualBtn = document.querySelector('.toggle-btn.bg-blue-600');
+                    if (visualBtn) visualBtn.click();
+                }
             });
             // --- [END] FIX 2 ---
 
