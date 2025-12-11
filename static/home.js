@@ -324,31 +324,12 @@ document.addEventListener('DOMContentLoaded', () => {
         if (info.status === 'queued') {
             console.log("Automated update queued: " + info.job_id);
 
-            // 1. Find the "League Database" button
-            const leagueDbBtn = document.querySelector('button[data-page="league-database"]');
+            // CHANGED: We no longer force-click the League Database button.
+            // Instead, we just start the stream immediately.
+            // The startLogStream function handles the UI.
 
-            if (leagueDbBtn) {
-                // 2. Programmatically click it to load the page content
-                leagueDbBtn.click();
-
-                // 3. Wait for the 'log-container' box to appear in the DOM
-                const waitForLogBox = setInterval(() => {
-                    const staticLogBox = document.getElementById('log-container');
-
-                    if (staticLogBox) {
-                        clearInterval(waitForLogBox); // Stop checking
-                        staticLogBox.classList.remove('hidden');
-
-                        // 4. Insert Initial Message
-                        staticLogBox.innerHTML = `<div class="text-blue-400">➤ ${info.message}</div>`;
-                        staticLogBox.innerHTML += `<div class="text-gray-400">➤ Connecting to live stream...</div>`;
-
-                        // 5. Connect to the stream
-                        if (typeof startLogStream === 'function') {
-                            startLogStream(info.job_id);
-                        }
-                    }
-                }, 100);
+            if (typeof startLogStream === 'function') {
+                startLogStream(info.job_id);
             }
 
         } else if (info.status === 'fresh') {
@@ -618,10 +599,39 @@ document.addEventListener('DOMContentLoaded', () => {
 
 // [START] LOG STREAMING FUNCTION (Required for automated updates)
 function startLogStream(buildId) {
-    const logOutput = document.getElementById('log-container');
+    // 1. Try to find the standard log container (on League Database page)
+    let logOutput = document.getElementById('log-container');
+    let isFloating = false;
+
+    // 2. If standard container is missing, create a Floating Status Box
+    if (!logOutput) {
+        isFloating = true;
+
+        // Check if we already created it (prevent duplicates)
+        const existingFloating = document.getElementById('floating-log-wrapper');
+
+        if (!existingFloating) {
+            const floatingHTML = `
+            <div id="floating-log-wrapper" class="fixed bottom-6 right-6 w-80 bg-gray-800 border border-blue-500 rounded-lg shadow-2xl z-50 flex flex-col font-mono text-xs overflow-hidden animate-pulse-border">
+                <div class="bg-blue-900/80 p-3 border-b border-blue-500 flex justify-between items-center">
+                    <div class="flex items-center gap-2">
+                        <div class="w-2 h-2 bg-green-400 rounded-full animate-pulse"></div>
+                        <span class="text-white font-bold tracking-wide">UPDATING LEAGUE DATA...</span>
+                    </div>
+                </div>
+                <div id="floating-log-content" class="p-3 h-32 overflow-y-auto text-gray-300 space-y-1 bg-gray-900/90">
+                    <div class="text-blue-400">➤ Initializing background update...</div>
+                </div>
+            </div>`;
+            document.body.insertAdjacentHTML('beforeend', floatingHTML);
+        }
+
+        // Target the inner content area of the floating box
+        logOutput = document.getElementById('floating-log-content');
+    }
 
     if (!logOutput) {
-        console.error("Log output container not found!");
+        console.error("Could not initialize any log output container.");
         return;
     }
 
@@ -634,12 +644,16 @@ function startLogStream(buildId) {
         // Handle "Done" signal
         if (message === '__DONE__') {
             eventSource.close();
-            logOutput.innerHTML += '<div class="text-green-400 font-bold mt-2">➤ Update Complete.</div>';
+
+            // UI Feedback
+            const doneMsg = '<div class="text-green-400 font-bold mt-2 border-t border-gray-700 pt-2">➤ Update Complete. Refreshing...</div>';
+            logOutput.innerHTML += doneMsg;
+            logOutput.scrollTop = logOutput.scrollHeight;
 
             // Refresh the page after a short delay
             setTimeout(() => {
                 window.location.reload();
-            }, 1500);
+            }, 1000);
 
         }
         // Handle Errors
@@ -649,6 +663,8 @@ function startLogStream(buildId) {
         }
         // Handle Normal Logs
         else {
+            // If floating, we might want to truncate old logs to keep it clean,
+            // or just let it scroll. For now, simple append is fine.
             logOutput.innerHTML += `<div>➤ ${message}</div>`;
             // Auto-scroll to bottom
             logOutput.scrollTop = logOutput.scrollHeight;
@@ -656,7 +672,7 @@ function startLogStream(buildId) {
     };
 
     eventSource.onerror = function() {
-        logOutput.innerHTML += '<div class="text-red-400">➤ Connection lost (Stream closed).</div>';
+        logOutput.innerHTML += '<div class="text-red-400 pt-2">➤ Connection lost (Stream closed).</div>';
         eventSource.close();
     };
 }
