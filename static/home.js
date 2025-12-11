@@ -324,10 +324,8 @@ document.addEventListener('DOMContentLoaded', () => {
         if (info.status === 'queued') {
             console.log("Automated update queued: " + info.job_id);
 
-            // CHANGED: We no longer force-click the League Database button.
-            // Instead, we just start the stream immediately.
-            // The startLogStream function handles the UI.
-
+            // Directly start the stream.
+            // The function above will decide whether to use the Page Box or Floating Box.
             if (typeof startLogStream === 'function') {
                 startLogStream(info.job_id);
             }
@@ -600,12 +598,23 @@ document.addEventListener('DOMContentLoaded', () => {
 // [START] LOG STREAMING FUNCTION (Required for automated updates)
 function startLogStream(buildId) {
     // 1. Try to find the standard log container (on League Database page)
-    let logOutput = document.getElementById('log-container');
-    let isFloating = false;
+    const onPageLog = document.getElementById('log-container');
+    let logOutput = null;
 
-    // 2. If standard container is missing, create a Floating Status Box
-    if (!logOutput) {
-        isFloating = true;
+    if (onPageLog) {
+        // CASE A: We are on the League Database page.
+        // Make sure the existing box is visible and use it.
+        onPageLog.classList.remove('hidden');
+        logOutput = onPageLog;
+
+        // Clear previous content if restarting
+        if (!logOutput.hasAttribute('data-stream-active')) {
+            logOutput.innerHTML = '';
+            logOutput.setAttribute('data-stream-active', 'true');
+        }
+    } else {
+        // CASE B: We are on another page (Home, Matchups, etc.).
+        // Create/Use the Floating Status Box.
 
         // Check if we already created it (prevent duplicates)
         const existingFloating = document.getElementById('floating-log-wrapper');
@@ -650,7 +659,7 @@ function startLogStream(buildId) {
             logOutput.innerHTML += doneMsg;
             logOutput.scrollTop = logOutput.scrollHeight;
 
-            // Refresh the page after a short delay
+            // Refresh the CURRENT page after a short delay
             setTimeout(() => {
                 window.location.reload();
             }, 1000);
@@ -663,8 +672,6 @@ function startLogStream(buildId) {
         }
         // Handle Normal Logs
         else {
-            // If floating, we might want to truncate old logs to keep it clean,
-            // or just let it scroll. For now, simple append is fine.
             logOutput.innerHTML += `<div>➤ ${message}</div>`;
             // Auto-scroll to bottom
             logOutput.scrollTop = logOutput.scrollHeight;
