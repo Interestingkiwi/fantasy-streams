@@ -1327,17 +1327,16 @@ def init_admin_db():
 # Run this once on startup
 init_admin_db()
 
-def save_user_credentials(token, consumer_key, consumer_secret):
+def save_user_credentials(token, consumer_key, consumer_secret, terms_accepted=False):
     """Saves or updates user credentials in the admin DB."""
     guid = token.get('xoauth_yahoo_guid')
-
-    # Calculate a token time if not present (current time)
-    # Yahoo tokens usually provide 'expires_in', but we store the absolute time 'token_time'
     token_time = token.get('expires_at', time.time())
 
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
+                # We use a conditional update for terms:
+                # If they are logging in, we update the timestamp.
                 cursor.execute("""
                     INSERT INTO users (
                         guid,
@@ -1347,14 +1346,18 @@ def save_user_credentials(token, consumer_key, consumer_secret):
                         expires_in,
                         token_time,
                         consumer_key,
-                        consumer_secret
+                        consumer_secret,
+                        terms_accepted,
+                        terms_accepted_at
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, CASE WHEN %s THEN NOW() ELSE NULL END)
                     ON CONFLICT (guid) DO UPDATE SET
                         access_token = EXCLUDED.access_token,
                         refresh_token = EXCLUDED.refresh_token,
                         token_time = EXCLUDED.token_time,
-                        expires_in = EXCLUDED.expires_in;
+                        expires_in = EXCLUDED.expires_in,
+                        terms_accepted = EXCLUDED.terms_accepted,
+                        terms_accepted_at = CASE WHEN EXCLUDED.terms_accepted THEN NOW() ELSE users.terms_accepted_at END;
                 """, (
                     guid,
                     token.get('access_token'),
@@ -1363,7 +1366,9 @@ def save_user_credentials(token, consumer_key, consumer_secret):
                     token.get('expires_in'),
                     token_time,
                     consumer_key,
-                    consumer_secret
+                    consumer_secret,
+                    terms_accepted,
+                    terms_accepted  # Used for the CASE statement
                 ))
                 conn.commit()
                 logging.info(f"Successfully saved credentials for {guid}")
@@ -1653,7 +1658,7 @@ def home():
 def login():
     data = request.get_json()
     league_id_input = data.get('league_id', '').strip()
-
+    session['terms_accepted'] = data.get('terms_accepted', False)
     # --- [START] DEV BACKDOOR ---
     # Format: {league_id}-{password}
     # Checks against environment variable DEV_BACKDOOR_PASS
@@ -1773,7 +1778,12 @@ def callback():
                  return "<h1>Access Denied: You are not a member of this league.</h1>", 403
 
         # 4. Save Credentials & Updater Logic
-        save_user_credentials(session['yahoo_token'], session.get('consumer_key'), session.get('consumer_secret'))
+        save_user_credentials(
+            session['yahoo_token'],
+            session.get('consumer_key'),
+            session.get('consumer_secret'),
+            terms_accepted=session.get('terms_accepted', False) # <--- Pass the value here
+        )
 
         user_guid = token.get('xoauth_yahoo_guid')
         if requested_league_id and user_guid:

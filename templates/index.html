@@ -27,7 +27,6 @@
 
     <main class="flex-grow container mx-auto p-4 md:p-8 flex items-center justify-center">
 
-        <!-- AUTHENTICATION VIEW -->
         <div id="auth-view">
             <div class="max-w-xl mx-auto bg-gray-800 p-8 rounded-lg shadow-xl">
 
@@ -67,13 +66,30 @@
 
     <script>
     document.addEventListener('DOMContentLoaded', () => {
+        // --- 1. CONFIGURATION: TERMS VERSION ---
+        // Change this string whenever you update your terms (e.g., '2026-01-01_v2').
+        // This will invalidate the user's previous acceptance and force a re-check.
+        const CURRENT_TERMS_VERSION = '2025-12-12_v1';
+
         const credentialsForm = document.getElementById('credentials-form');
         const authError = document.getElementById('auth-error');
+        const tosCheckbox = document.getElementById('tos_consent');
 
         const showAuthError = (message) => {
             authError.textContent = `Error: ${message}`;
             authError.classList.remove('hidden');
         };
+
+        // --- 2. CHECK LOCAL STORAGE ON LOAD ---
+        if (tosCheckbox) {
+            const storedVersion = localStorage.getItem('accepted_terms_version');
+            if (storedVersion === CURRENT_TERMS_VERSION) {
+                tosCheckbox.checked = true;
+            } else {
+                // Version mismatch (or new user): Ensure it is unchecked
+                tosCheckbox.checked = false;
+            }
+        }
 
         if (credentialsForm) {
             credentialsForm.addEventListener('submit', async (e) => {
@@ -85,19 +101,25 @@
                 button.textContent = 'Processing...';
                 button.disabled = true;
 
+                // --- 3. SAVE TO LOCAL STORAGE ON SUBMIT ---
+                if (tosCheckbox && tosCheckbox.checked) {
+                    localStorage.setItem('accepted_terms_version', CURRENT_TERMS_VERSION);
+                }
+
                 try {
                     const response = await fetch('/login', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
                             league_id: document.getElementById('league_id').value,
+                            // --- 4. PASS ACCEPTANCE TO BACKEND ---
+                            terms_accepted: tosCheckbox.checked
                         })
                     });
 
                     const data = await response.json();
                     if (!response.ok) throw new Error(data.error || 'Failed to start login.');
 
-                    // --- FIX IS HERE ---
                     if (data.dev_login && data.redirect_url) {
                         // Direct redirect for dev backdoor
                         window.location.href = data.redirect_url;
