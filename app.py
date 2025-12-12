@@ -1280,7 +1280,9 @@ def init_admin_db():
                         consumer_key TEXT,
                         consumer_secret TEXT,
                         is_premium BOOLEAN DEFAULT FALSE,
-                        premium_expiration_date DATE
+                        premium_expiration_date DATE,
+                        tos_accepted_version INTEGER DEFAULT 0,
+                        tos_accepted_at TIMESTAMP
                     );
                 """)
 
@@ -1586,6 +1588,22 @@ def trigger_smart_update(league_id, user_guid):
     except Exception as e:
         logging.error(f"Failed to trigger smart update: {e}", exc_info=True)
         return {'status': 'error', 'message': str(e)}
+
+
+@app.route('/terms')
+def terms():
+    """Serves the Terms of Service page."""
+    return render_template('terms.html', date_today=date.today().strftime('%B %d, %Y'))
+
+
+@app.route('/privacy')
+def privacy():
+    """
+    Serves the Privacy Policy.
+    (You can use the same template structure as terms.html for now,
+    or just redirect to terms if they are combined).
+    """
+    return render_template('terms.html', date_today=date.today().strftime('%B %d, %Y'))
 
 
 @app.route('/home')

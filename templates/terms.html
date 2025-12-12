@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Terms of Service - Fantasy Streams</title>
+    <script src="{{ url_for('static', filename='tailwind.js') }}"></script>
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        h2 { color: #60A5FA; font-weight: 600; margin-top: 1.5rem; margin-bottom: 0.5rem; }
+        p, li { color: #D1D5DB; line-height: 1.6; margin-bottom: 1rem; }
+        ul { list-style-type: disc; margin-left: 1.5rem; margin-bottom: 1rem; }
+    </style>
+    <link rel="stylesheet" href="https://rsms.me/inter/inter.css">
+</head>
+<body class="bg-gray-900 text-gray-200 flex flex-col min-h-screen">
+
+    <header class="bg-gray-800 shadow-md p-4">
+        <div class="container mx-auto">
+            <h1 class="text-2xl font-bold text-white">Fantasy Streams</h1>
+        </div>
+    </header>
+
+    <main class="flex-grow container mx-auto p-6 md:p-12 max-w-4xl">
+        <div class="bg-gray-800 p-8 rounded-lg shadow-xl border border-gray-700">
+            <h1 class="text-3xl font-bold text-white mb-6">Terms of Service</h1>
+            <p class="text-sm text-gray-400 mb-8">Last Updated: {{ date_today }}</p>
+
+            <section>
+                <h2>1. Acceptance of Terms</h2>
+                <p>By accessing and using Fantasy Streams (the "Service"), you accept and agree to be bound by the terms and provision of this agreement. If you do not agree to abide by these terms, please do not use this Service.</p>
+            </section>
+
+            <section>
+                <h2>2. Description of Service</h2>
+                <p>Fantasy Streams is a tool designed to provide analytics, statistics, and insights for fantasy hockey leagues hosted on Yahoo! Fantasy Sports. The Service retrieves, stores, and analyzes data from your connected Yahoo! account.</p>
+            </section>
+
+            <section>
+                <h2>3. Data Collection and Usage</h2>
+                <p>To provide this Service, we access and store data from your Yahoo! Fantasy Sports account, including but not limited to:</p>
+                <ul>
+                    <li>Your League Settings and Rosters</li>
+                    <li>Matchup History and Scores</li>
+                    <li>Transaction Logs (Adds/Drops/Trades)</li>
+                    <li>Team Names and Managers</li>
+                </ul>
+                <p>This data is stored securely on our servers to enable features such as historical analysis, trade evaluation, and schedule planning.</p>
+            </section>
+
+            <section>
+                <h2>4. Data Aggregation and Analytics (Important)</h2>
+                <p>By using the Service, you grant us a perpetual, worldwide, non-exclusive, royalty-free, and irrevocable license to use, reproduce, modify, anonymize, and aggregate your League Data.</p>
+                <p><strong>We may use this anonymized and aggregated data to:</strong></p>
+                <ul>
+                    <li>Generate global statistics and benchmarks (e.g., "Most Added Players across all leagues").</li>
+                    <li>Improve the features and functionality of the Service.</li>
+                    <li>Publish insights or trends for the benefit of other users or third parties.</li>
+                </ul>
+                <p>We will never share your personal data or specific league details in a way that personally identifies you or your league members without your explicit consent.</p>
+            </section>
+
+            <section>
+                <h2>5. Third-Party Services (Yahoo!)</h2>
+                <p>This Service uses the Yahoo! Fantasy Sports API. By using our Service, you acknowledge and agree that:</p>
+                <ul>
+                    <li>Your use of Yahoo! services is governed by <a href="https://legal.yahoo.com/us/en/yahoo/terms/otos/index.html" target="_blank" class="text-blue-400 hover:underline">Yahoo!'s Terms of Service</a>.</li>
+                    <li>We are not affiliated with, endorsed by, or sponsored by Yahoo! Inc.</li>
+                    <li>We are not responsible for any downtime, data inaccuracies, or service interruptions caused by the Yahoo! API.</li>
+                </ul>
+            </section>
+
+            <section>
+                <h2>6. Disclaimer of Warranties</h2>
+                <p>The Service is provided on an "AS IS" and "AS AVAILABLE" basis. We make no warranties, expressed or implied, regarding the accuracy, reliability, or availability of the Service. Any reliance you place on the analytics or advice provided by the Service is strictly at your own risk. We do not guarantee success in your fantasy leagues.</p>
+            </section>
+
+            <section>
+                <h2>7. Limitation of Liability</h2>
+                <p>In no event shall Fantasy Streams, its owners, or developers be liable for any damages (including, without limitation, damages for loss of data or profit, or due to business interruption) arising out of the use or inability to use the Service.</p>
+            </section>
+
+            <section>
+                <h2>8. Changes to Terms</h2>
+                <p>We reserve the right to update these Terms of Service at any time. We will notify users of significant changes by updating the "Last Updated" date at the top of this page. Your continued use of the Service after any changes constitutes your acceptance of the new Terms.</p>
+            </section>
+
+            <div class="mt-8 pt-6 border-t border-gray-700">
+                <a href="/" class="text-blue-400 hover:text-blue-300 font-medium">&larr; Back to Login</a>
+            </div>
+        </div>
+    </main>
+
+    <footer class="bg-gray-800 text-center p-4 text-gray-500 text-sm mt-auto">
+        &copy; 2025 Fantasy Streams. All rights reserved.
+    </footer>
+</body>
+</html>

@@ -45,6 +45,14 @@
                             <label for="league_id" class="block mb-2 text-sm font-medium"></label>
                             <input type="text" id="league_id" class="form-input w-full p-2.5 rounded-md focus:ring-blue-500 focus:border-blue-500" placeholder="e.g., 12345" required>
                         </div>
+                        <div class="flex items-start mb-4 mt-4">
+                            <div class="flex items-center h-5">
+                                <input id="tos_consent" type="checkbox" required class="w-4 h-4 border border-gray-600 rounded bg-gray-700 focus:ring-3 focus:ring-blue-600 ring-offset-gray-800">
+                            </div>
+                            <label for="tos_consent" class="ml-2 text-sm font-medium text-gray-300">
+                                I agree to the <a href="/terms" class="text-blue-500 hover:underline">Terms of Service</a> and <a href="/privacy" class="text-blue-500 hover:underline">Privacy Policy</a>.
+                            </label>
+                        </div>                        
                         <button type="submit" class="w-full btn-primary font-medium rounded-md text-sm px-5 py-2.5 text-center transition-colors duration-200">
                             Login with Yahoo
                         </button>
