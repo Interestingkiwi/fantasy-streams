@@ -66,6 +66,12 @@ token_url = 'https://api.login.yahoo.com/oauth2/get_token'
 redis_conn = redis.from_url(os.environ.get('REDIS_URL', 'redis://red-d4ae0rur433s73eil750:6379'))
 high_queue = Queue('high', connection=redis_conn)
 
+class HealthCheckFilter(logging.Filter):
+    def filter(self, record):
+        # Return False if the message contains '/healthz', filtering it out.
+        return "/healthz" not in record.getMessage()
+
+logging.getLogger("werkzeug").addFilter(HealthCheckFilter())
 
 def model_to_dict(obj):
     """
@@ -1332,11 +1338,12 @@ def save_user_credentials(token, consumer_key, consumer_secret, terms_accepted=F
     guid = token.get('xoauth_yahoo_guid')
     token_time = token.get('expires_at', time.time())
 
+    # Convert Boolean to Integer for the DB
+    tos_version = 1 if terms_accepted else 0
+
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
-                # We use a conditional update for terms:
-                # If they are logging in, we update the timestamp.
                 cursor.execute("""
                     INSERT INTO users (
                         guid,
@@ -1347,17 +1354,17 @@ def save_user_credentials(token, consumer_key, consumer_secret, terms_accepted=F
                         token_time,
                         consumer_key,
                         consumer_secret,
-                        terms_accepted,
-                        terms_accepted_at
+                        tos_accepted_version,
+                        tos_accepted_at
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, CASE WHEN %s THEN NOW() ELSE NULL END)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, CASE WHEN %s > 0 THEN NOW() ELSE NULL END)
                     ON CONFLICT (guid) DO UPDATE SET
                         access_token = EXCLUDED.access_token,
                         refresh_token = EXCLUDED.refresh_token,
                         token_time = EXCLUDED.token_time,
                         expires_in = EXCLUDED.expires_in,
-                        terms_accepted = EXCLUDED.terms_accepted,
-                        terms_accepted_at = CASE WHEN EXCLUDED.terms_accepted THEN NOW() ELSE users.terms_accepted_at END;
+                        tos_accepted_version = EXCLUDED.tos_accepted_version,
+                        tos_accepted_at = CASE WHEN EXCLUDED.tos_accepted_version > 0 THEN NOW() ELSE users.tos_accepted_at END;
                 """, (
                     guid,
                     token.get('access_token'),
@@ -1367,8 +1374,8 @@ def save_user_credentials(token, consumer_key, consumer_secret, terms_accepted=F
                     token_time,
                     consumer_key,
                     consumer_secret,
-                    terms_accepted,
-                    terms_accepted  # Used for the CASE statement
+                    tos_version,
+                    tos_version  # Used for the CASE statement logic
                 ))
                 conn.commit()
                 logging.info(f"Successfully saved credentials for {guid}")
