@@ -420,7 +420,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const leagueResp = await fetch('/api/my_leagues');
             const leagueData = await leagueResp.json();
 
-            // --- [START] FIX 1: Generate League Options ---
+            // Generate League Options
             let leagueOptions = '';
             if (leagueData.leagues && leagueData.leagues.length > 0) {
                  leagueOptions = leagueData.leagues.map(l =>
@@ -429,28 +429,24 @@ document.addEventListener('DOMContentLoaded', () => {
             } else {
                  leagueOptions = '<option>No Leagues Found</option>';
             }
-            // --- [END] FIX 1 ---
 
             // 2. Fetch Matchup Data (This tells us if DB exists)
             const response = await fetch('/api/matchup_page_data');
             const data = await response.json();
 
-            // --- Manage Navigation Visibility ---
+            // Manage Navigation Visibility
             const navButtons = document.querySelectorAll('.toggle-btn');
             const dbExists = response.ok && data.db_exists;
 
             navButtons.forEach(btn => {
                 const page = btn.getAttribute('data-page');
                 if (!dbExists) {
-                    // DB Missing: Hide everything except 'league-database'
                     if (page !== 'league-database') {
                         btn.classList.add('hidden');
                     } else {
                         btn.classList.remove('hidden');
-                        // Force click if we are currently on a hidden page (optional safety)
                     }
                 } else {
-                    // DB Exists: Show everything
                     btn.classList.remove('hidden');
                 }
             });
@@ -542,30 +538,36 @@ document.addEventListener('DOMContentLoaded', () => {
             document.getElementById('week-select').addEventListener('change', (e) => { localStorage.setItem('selectedWeek', e.target.value); });
             document.getElementById('your-team-select').addEventListener('change', (e) => { localStorage.setItem('selectedTeam', e.target.value); });
 
-            // --- [START] FIX 2: Trigger Page Reload on Stat Sourcing Change ---
             const statSourcingSelect = document.getElementById('stat-sourcing-select');
             statSourcingSelect.addEventListener('change', (e) => {
                 const newVal = e.target.value;
                 localStorage.setItem('selectedStatSourcing', newVal);
-
-                // Dispatch event (Standard practice)
                 window.dispatchEvent(new CustomEvent('statSourcingChanged', { detail: { sourcing: newVal } }));
 
-                // FORCE RELOAD: Simulate a click on the currently active navigation button
-                // This forces the home.html logic to re-run loadPage() for the current view
                 const lastPage = localStorage.getItem('lastActivePage');
                 if (lastPage) {
                     const activeBtn = document.querySelector(`.toggle-btn[data-page="${lastPage}"]`);
-                    if (activeBtn) {
-                        activeBtn.click();
-                    }
+                    if (activeBtn) activeBtn.click();
                 } else {
-                    // Fallback: If no saved page, find the visually active button
                     const visualBtn = document.querySelector('.toggle-btn.bg-blue-600');
                     if (visualBtn) visualBtn.click();
                 }
             });
-            // --- [END] FIX 2 ---
+
+            // --- [START] FIX 3: FORCE INITIAL REFRESH ---
+            // Now that dropdowns are populated, tell the active page to re-run its logic
+            // so it picks up the correct Week, Team, and Stat Source.
+            console.log("Dropdowns initialized. Refreshing active page context...");
+            const initialPage = localStorage.getItem('lastActivePage');
+            if (initialPage) {
+                const activeBtn = document.querySelector(`.toggle-btn[data-page="${initialPage}"]`);
+                if (activeBtn) activeBtn.click();
+            } else {
+                 // Fallback if no history (e.g. first load ever)
+                 const firstBtn = document.querySelector('.toggle-btn');
+                 if(firstBtn && !firstBtn.classList.contains('hidden')) firstBtn.click();
+            }
+            // --- [END] FIX 3 ---
 
         } catch (error) {
             console.error('Initialization error for dropdowns:', error.message);
