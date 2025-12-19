@@ -59,15 +59,12 @@ def process_due_transactions():
     with get_db_connection() as conn:
         with conn.cursor() as cursor:
             # 1. Fetch Due Transactions
-            # Note: Ensure timezone consistency. Assuming scheduled_time is stored in UTC or Server Local.
             cursor.execute("""
-                SELECT * FROM scheduled_transactions
+                SELECT id, user_guid, league_id, team_key, add_player_id, add_player_name, drop_player_id, drop_player_name
+                FROM scheduled_transactions
                 WHERE status = 'pending' AND scheduled_time <= NOW()
             """)
-            due_moves = cursor.fetchall() # Tuple rows
-
-            # Map column names if using standard cursor, or use RealDictCursor
-            # Assuming standard cursor for update safety, we map manually or switch cursor type carefully
+            due_moves = cursor.fetchall()
 
             if not due_moves:
                 return
@@ -75,11 +72,8 @@ def process_due_transactions():
             logger.info(f"Found {len(due_moves)} transactions to execute.")
 
             for move in due_moves:
-                # Unpack (adjust indices based on your table creation order)
-                # id(0), guid(1), league(2), team_key(3), add_id(4), add_name(5), drop_id(6), drop_name(7)...
                 trans_id = move[0]
                 user_guid = move[1]
-                league_id = move[2]
                 team_key = move[3]
                 add_id = move[4]
                 drop_id = move[6]
@@ -87,10 +81,6 @@ def process_due_transactions():
                 try:
                     # 2. Get User Credentials
                     cursor.execute("SELECT * FROM users WHERE guid = %s", (user_guid,))
-                    # Need Dict access here likely, or map columns
-                    # Let's assume we can fetch as dict for easier access
-                    # (In a real scenario, executing a new query with RealDictCursor context might be cleaner)
-                    # For brevity, reusing connection:
                     cols = [desc[0] for desc in cursor.description]
                     user_row_tuple = cursor.fetchone()
                     user_row = dict(zip(cols, user_row_tuple))
@@ -102,9 +92,8 @@ def process_due_transactions():
                     sc = refresh_user_token(cursor, user_guid, user_row)
 
                     # 4. Perform Move
-                    gm = yfa.Game(sc, 'nhl')
-                    # We can go straight to team if we have the key
-                    tm = gm.to_team(team_key)
+                    # FIX: Instantiate Team directly instead of using Game.to_team (which doesn't exist)
+                    tm = yfa.Team(sc, team_key)
 
                     logger.info(f"Executing: Add {add_id} / Drop {drop_id} for {team_key}")
                     tm.add_and_drop_players(add_id, drop_id)
