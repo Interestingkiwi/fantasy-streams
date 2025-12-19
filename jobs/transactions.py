@@ -1,112 +1,127 @@
-@app.route('/tools/scheduled-transactions')
-@requires_auth
-def scheduled_transactions_page():
-    return render_template('pages/scheduled_add_drops.html')
+import logging
+import time
+import json
+import os
+import tempfile
+import uuid
+from datetime import datetime
+from database import get_db_connection
+import yahoo_fantasy_api as yfa
+from yahoo_oauth import OAuth2
 
-@app.route('/api/tools/search_players')
-@requires_auth
-def search_players_tool():
-    """Smart search for the 'Add' field."""
-    query = request.args.get('q', '').strip()
-    if len(query) < 3:
-        return jsonify([])
+logger = logging.getLogger(__name__)
 
-    try:
-        with get_db_connection() as conn:
-            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cursor:
-                # Search by name, limit results
-                cursor.execute("""
-                    SELECT player_id, player_name, player_team, positions
-                    FROM players
-                    WHERE player_name ILIKE %s
-                    ORDER BY player_name ASC
-                    LIMIT 10
-                """, (f'%{query}%',))
-                players = cursor.fetchall()
-        return jsonify(players)
-    except Exception as e:
-        logging.error(f"Search error: {e}")
-        return jsonify([])
+def refresh_user_token(cursor, user_guid, user_row):
+    """Helper to refresh token using stored credentials."""
+    creds = {
+        "consumer_key": user_row['consumer_key'],
+        "consumer_secret": user_row['consumer_secret'],
+        "access_token": user_row['access_token'],
+        "refresh_token": user_row['refresh_token'],
+        "token_type": user_row['token_type'],
+        "token_time": user_row['token_time']
+    }
 
-@app.route('/api/tools/my_droppable_players')
-@requires_auth
-def get_droppable_players():
-    """Fetches the user's current roster for the 'Drop' dropdown."""
-    league_id = session.get('league_id')
-    if not league_id:
-        return jsonify({'error': 'No league selected'}), 400
+    # Write temp file for oauth lib
+    temp_dir = os.path.join(tempfile.gettempdir(), 'temp_creds')
+    os.makedirs(temp_dir, exist_ok=True)
+    temp_file_path = os.path.join(temp_dir, f"{uuid.uuid4()}.json")
 
     try:
-        # 1. Get User's Team Key/ID via YFA (safest way to link user->team)
-        lg = get_yfa_lg_instance()
-        if not lg:
-             return jsonify({'error': 'Could not connect to Yahoo.'}), 401
+        with open(temp_file_path, 'w') as f:
+            json.dump(creds, f)
 
-        user_team_key = lg.team_key() # e.g. 419.l.12345.t.2
-        team_id = user_team_key.split('.')[-1] # e.g. 2
+        sc = OAuth2(None, None, from_file=temp_file_path)
+        if not sc.token_is_valid():
+            logger.info(f"Refreshing token for user {user_guid}")
+            sc.refresh_access_token()
 
-        with get_db_connection() as conn:
-            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cursor:
-                # 2. Fetch roster from DB for this team
-                cursor.execute("""
-                    SELECT p.player_id, p.player_name, p.positions, rp.eligible_positions
-                    FROM rosters_tall rp
-                    JOIN players p ON CAST(rp.player_id AS TEXT) = p.player_id
-                    WHERE rp.league_id = %s AND rp.team_id = %s
-                    ORDER BY p.player_name
-                """, (league_id, team_id))
-                roster = cursor.fetchall()
+            # Read new creds
+            with open(temp_file_path, 'r') as f:
+                new_creds = json.load(f)
 
-        return jsonify({'roster': roster, 'team_key': user_team_key})
-    except Exception as e:
-        logging.error(f"Roster fetch error: {e}", exc_info=True)
-        return jsonify({'error': str(e)}), 500
+            # Update DB
+            cursor.execute("""
+                UPDATE users SET
+                    access_token = %s, refresh_token = %s, token_time = %s
+                WHERE guid = %s
+            """, (new_creds['access_token'], new_creds['refresh_token'], new_creds['token_time'], user_guid))
 
-@app.route('/api/tools/schedule_transaction', methods=['POST'])
-@requires_auth
-def schedule_transaction():
-    data = request.get_json()
-    league_id = session.get('league_id')
-    user_guid = session['yahoo_token'].get('xoauth_yahoo_guid')
+        return sc
+    finally:
+        if os.path.exists(temp_file_path):
+            os.remove(temp_file_path)
 
-    add_id = data.get('add_player_id')
-    add_name = data.get('add_player_name')
-    drop_id = data.get('drop_player_id')
-    drop_name = data.get('drop_player_name')
-    sched_time = data.get('scheduled_time') # Expecting ISO string (UTC recommended)
-    team_key = data.get('team_key')
+def process_due_transactions():
+    """Main job function called by Scheduler."""
+    logger.info("Checking for due transactions...")
 
-    if not all([add_id, drop_id, sched_time, team_key]):
-        return jsonify({'success': False, 'error': 'Missing required fields'}), 400
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            # 1. Fetch Due Transactions
+            # Note: Ensure timezone consistency. Assuming scheduled_time is stored in UTC or Server Local.
+            cursor.execute("""
+                SELECT * FROM scheduled_transactions
+                WHERE status = 'pending' AND scheduled_time <= NOW()
+            """)
+            due_moves = cursor.fetchall() # Tuple rows
 
-    try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute("""
-                    INSERT INTO scheduled_transactions
-                    (user_guid, league_id, team_key, add_player_id, add_player_name, drop_player_id, drop_player_name, scheduled_time)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                """, (user_guid, league_id, team_key, add_id, add_name, drop_id, drop_name, sched_time))
+            # Map column names if using standard cursor, or use RealDictCursor
+            # Assuming standard cursor for update safety, we map manually or switch cursor type carefully
+
+            if not due_moves:
+                return
+
+            logger.info(f"Found {len(due_moves)} transactions to execute.")
+
+            for move in due_moves:
+                # Unpack (adjust indices based on your table creation order)
+                # id(0), guid(1), league(2), team_key(3), add_id(4), add_name(5), drop_id(6), drop_name(7)...
+                trans_id = move[0]
+                user_guid = move[1]
+                league_id = move[2]
+                team_key = move[3]
+                add_id = move[4]
+                drop_id = move[6]
+
+                try:
+                    # 2. Get User Credentials
+                    cursor.execute("SELECT * FROM users WHERE guid = %s", (user_guid,))
+                    # Need Dict access here likely, or map columns
+                    # Let's assume we can fetch as dict for easier access
+                    # (In a real scenario, executing a new query with RealDictCursor context might be cleaner)
+                    # For brevity, reusing connection:
+                    cols = [desc[0] for desc in cursor.description]
+                    user_row_tuple = cursor.fetchone()
+                    user_row = dict(zip(cols, user_row_tuple))
+
+                    if not user_row:
+                        raise Exception("User credentials not found.")
+
+                    # 3. Authenticate & Refresh
+                    sc = refresh_user_token(cursor, user_guid, user_row)
+
+                    # 4. Perform Move
+                    gm = yfa.Game(sc, 'nhl')
+                    # We can go straight to team if we have the key
+                    tm = gm.to_team(team_key)
+
+                    logger.info(f"Executing: Add {add_id} / Drop {drop_id} for {team_key}")
+                    tm.add_and_drop_players(add_id, drop_id)
+
+                    # 5. Success Update
+                    cursor.execute("""
+                        UPDATE scheduled_transactions
+                        SET status = 'executed', result_message = 'Success'
+                        WHERE id = %s
+                    """, (trans_id,))
+
+                except Exception as e:
+                    logger.error(f"Transaction {trans_id} failed: {e}")
+                    cursor.execute("""
+                        UPDATE scheduled_transactions
+                        SET status = 'failed', result_message = %s
+                        WHERE id = %s
+                    """, (str(e), trans_id))
+
             conn.commit()
-
-        return jsonify({'success': True})
-    except Exception as e:
-        logging.error(f"Scheduling error: {e}", exc_info=True)
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-@app.route('/api/tools/get_scheduled_transactions')
-@requires_auth
-def get_scheduled_transactions():
-    league_id = session.get('league_id')
-    try:
-        with get_db_connection() as conn:
-            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cursor:
-                cursor.execute("""
-                    SELECT * FROM scheduled_transactions
-                    WHERE league_id = %s
-                    ORDER BY scheduled_time ASC
-                """, (league_id,))
-                rows = cursor.fetchall()
-        return jsonify(rows)
-    except Exception as e:
-        return jsonify([])
