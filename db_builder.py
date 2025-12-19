@@ -759,33 +759,55 @@ def _update_league_info(yq, cursor, league_id, league_name, league_metadata, log
 
 def _update_teams_info(yq, cursor, league_id, logger):
     logger.info("Updating teams table...")
+
+    # [NEW] Schema Migration: Ensure manager_guid column exists
+    try:
+        cursor.execute("""
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_name='teams' AND column_name='manager_guid'
+        """)
+        if not cursor.fetchone():
+            logger.info("Adding missing column 'manager_guid' to table 'teams'...")
+            cursor.execute("ALTER TABLE teams ADD COLUMN manager_guid TEXT")
+    except Exception as e:
+        logger.warning(f"Schema check for teams table failed: {e}")
+
     try:
         teams = yq.get_league_teams()
         teams_data_to_insert = []
         for team in teams:
             team_id = team.team_id
 
-            # --- FIX: Decode team name if it is bytes ---
+            # Decode team name
             team_name = team.name
             if isinstance(team_name, bytes):
                 team_name = team_name.decode('utf-8')
 
             manager_nickname = None
-            if team.managers and team.managers[0].nickname:
-                manager_nickname = team.managers[0].nickname
-                # --- FIX: Decode manager nickname if it is bytes ---
-                if isinstance(manager_nickname, bytes):
-                    manager_nickname = manager_nickname.decode('utf-8')
+            manager_guid = None
 
-            teams_data_to_insert.append((league_id, team_id, team_name, manager_nickname))
+            if team.managers:
+                mgr = team.managers[0]
+                if mgr.nickname:
+                    manager_nickname = mgr.nickname
+                    if isinstance(manager_nickname, bytes):
+                        manager_nickname = manager_nickname.decode('utf-8')
+                # [NEW] Capture the Manager GUID
+                if hasattr(mgr, 'guid') and mgr.guid:
+                    manager_guid = mgr.guid
 
+            teams_data_to_insert.append((league_id, team_id, team_name, manager_nickname, manager_guid))
+
+        # [UPDATED] Insert Query including manager_guid
         sql = """
-            INSERT INTO teams (league_id, team_id, name, manager_nickname)
-            VALUES (%s, %s, %s, %s)
+            INSERT INTO teams (league_id, team_id, name, manager_nickname, manager_guid)
+            VALUES (%s, %s, %s, %s, %s)
             ON CONFLICT (league_id, team_id)
             DO UPDATE SET
                 name = EXCLUDED.name,
-                manager_nickname = EXCLUDED.manager_nickname
+                manager_nickname = EXCLUDED.manager_nickname,
+                manager_guid = EXCLUDED.manager_guid
         """
         cursor.executemany(sql, teams_data_to_insert)
     except Exception as e:

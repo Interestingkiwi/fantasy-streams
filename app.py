@@ -5006,28 +5006,29 @@ def get_droppable_players():
         user_team_key = lg.team_key()
         team_id = None
 
-        # 2. If Yahoo fails (returns None), try to fetch from DB
+        # 2. If Yahoo fails, try DB fallback
         if not user_team_key:
             logging.warning(f"Yahoo API returned None for team_key. Attempting DB fallback for league {league_id}.")
             user_guid = session['yahoo_token'].get('xoauth_yahoo_guid')
 
             with get_db_connection() as conn:
                 with conn.cursor() as cursor:
-                    # Try to find team by matching user GUID (if available) or fallback to teams table
-                    # Note: You need a way to link user_guid to team_id in your DB.
-                    # Assuming you might have stored it in 'teams' table under 'manager_guid' or similar.
-                    # If not, we cannot proceed safely.
+                    # [FIX] Select team_id instead of team_key, and use manager_guid
                     cursor.execute("""
-                        SELECT team_key FROM teams
+                        SELECT team_id FROM teams
                         WHERE league_id = %s AND manager_guid = %s
                         LIMIT 1
                     """, (league_id, user_guid))
                     row = cursor.fetchone()
+
                     if row:
-                        user_team_key = row[0]
+                        team_id_db = row[0]
+                        # Construct the key manually: nhl.l.{league_id}.t.{team_id}
+                        # We assume 'nhl' because the app seems focused on it, or fetch game_code if needed
+                        user_team_key = f"nhl.l.{league_id}.t.{team_id_db}"
+                        logging.info(f"DB Fallback successful. Found team_key: {user_team_key}")
                     else:
-                        # Fallback failed
-                        return jsonify({'error': 'Could not determine your Team ID. Please ensure your database is synced.'}), 404
+                        return jsonify({'error': 'Could not determine your Team ID. Please ensure your database is synced and you are the team owner.'}), 404
 
         if user_team_key:
             team_id = user_team_key.split('.')[-1]
