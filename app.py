@@ -4953,12 +4953,10 @@ def db_log_stream():
 
 #Yahoo Direct Interactions:
 @app.route('/tools/scheduled-transactions')
-@requires_auth
 def scheduled_transactions_page():
     return render_template('pages/scheduled_add_drops.html')
 
 @app.route('/api/tools/search_players')
-@requires_auth
 def search_players_tool():
     """Smart search for the 'Add' field."""
     query = request.args.get('q', '').strip()
@@ -4983,7 +4981,6 @@ def search_players_tool():
         return jsonify([])
 
 @app.route('/api/tools/my_droppable_players')
-@requires_auth
 def get_droppable_players():
     """Fetches the user's current roster for the 'Drop' dropdown."""
     league_id = session.get('league_id')
@@ -5017,7 +5014,6 @@ def get_droppable_players():
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/tools/schedule_transaction', methods=['POST'])
-@requires_auth
 def schedule_transaction():
     data = request.get_json()
     league_id = session.get('league_id')
@@ -5049,7 +5045,6 @@ def schedule_transaction():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/api/tools/get_scheduled_transactions')
-@requires_auth
 def get_scheduled_transactions():
     league_id = session.get('league_id')
     try:
