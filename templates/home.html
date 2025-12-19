@@ -9,6 +9,11 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+    <script>
+        // Define global flag to control SPA routing
+        // This is set by Flask in app.py
+        window.disableSPARouting = {{ disable_spa_routing | default(False) | tojson }};
+    </script>
 </head>
 <body class="bg-gray-900 text-white">
 
@@ -85,15 +90,12 @@
                     </select>
                 </div>
                 <script>
-                    // Inline script to handle the Dev Switch logic
                     document.addEventListener('DOMContentLoaded', () => {
                         const devSelect = document.getElementById('dev-league-select');
 
                         if (devSelect) {
                             devSelect.addEventListener('change', async (e) => {
                                 const newLeagueId = e.target.value;
-
-                                // Disable to prevent multiple clicks
                                 devSelect.disabled = true;
                                 devSelect.classList.add('opacity-50');
 
@@ -107,7 +109,6 @@
                                     });
 
                                     if (response.ok) {
-                                        // Reload page to refresh data context
                                         window.location.reload();
                                     } else {
                                         alert('Failed to switch league.');
@@ -154,7 +155,7 @@
             </button>
 
             <script>
-                const isDevelopment = true; // Set to false for production
+                const isDevelopment = true;
                 if (isDevelopment) {
                     document.write(`
                         <button data-page="db" class="toggle-btn px-4 py-2 text-sm font-medium rounded-lg transition">
@@ -170,9 +171,6 @@
         </div>
     </div>
     <script>
-        // Pass Python data to JS from Flask
-        // 'auto_update' is passed from app.py
-        // We use |tojson|safe to render it as a valid JS object
         window.autoUpdateInfo = {{ auto_update | tojson | safe }};
     </script>
 
@@ -181,9 +179,8 @@
     <script>
         document.addEventListener('DOMContentLoaded', () => {
             const pageContent = document.getElementById('page-content');
-            let currentPageScript = null; // Keep track of the current page's script
+            let currentPageScript = null;
 
-            // Define the classes for each state
             const activeClasses = ['bg-blue-600', 'text-white'];
             const inactiveClasses = ['bg-gray-700', 'text-gray-300', 'hover:bg-gray-600'];
 
@@ -199,13 +196,11 @@
 
             async function loadPage(pageName) {
                 try {
-                    // Remove the old page's script to prevent duplicate event listeners
                     if (currentPageScript) {
                         currentPageScript.remove();
                         currentPageScript = null;
                     }
 
-                    // Add a loading state
                     pageContent.innerHTML = `<p class="text-gray-400">Loading ${pageName.replace(/-/g, ' ')}...</p>`;
 
                     const response = await fetch(`/pages/${pageName}.html`);
@@ -215,7 +210,6 @@
                     const content = await response.text();
                     pageContent.innerHTML = content;
 
-                    // After setting the innerHTML, find and execute the script
                     const scriptElement = pageContent.querySelector('script');
                     if (scriptElement) {
                         const newScript = document.createElement('script');
@@ -224,11 +218,11 @@
                             newScript.onload = () => console.log(`${pageName}.js loaded from src`);
                             document.body.appendChild(newScript);
                         } else {
-                            newScript.textContent = scriptElement.textContent; // Use textContent for security
+                            newScript.textContent = scriptElement.textContent;
                             document.body.appendChild(newScript);
                         }
-                        currentPageScript = newScript; // Store the new script
-                        scriptElement.remove(); // Remove the original script from the page content
+                        currentPageScript = newScript;
+                        scriptElement.remove();
                     }
 
                 } catch (error) {
@@ -237,82 +231,60 @@
                 }
             }
 
-            // This needs to be done inside DOMContentLoaded to ensure all buttons exist
             const allToggleButtons = document.querySelectorAll('.toggle-btn');
 
             allToggleButtons.forEach((button) => {
                 button.addEventListener('click', () => {
                     const pageToLoad = button.getAttribute('data-page');
 
-                    // Set all buttons to inactive first
                     allToggleButtons.forEach(btn => setButtonState(btn, false));
-
-                    // Then set the clicked button to active
                     setButtonState(button, true);
-
-                    // Load the page content
                     loadPage(pageToLoad);
                 });
             });
 
-            // Initial load logic
-            // 1. UPDATED: Event Listener to save selection
             allToggleButtons.forEach((button) => {
                 button.addEventListener('click', () => {
                     const pageToLoad = button.getAttribute('data-page');
-
-                    // Save the current page to LocalStorage
                     localStorage.setItem('lastActivePage', pageToLoad);
-
-                    // Set state and load
                     allToggleButtons.forEach(btn => setButtonState(btn, false));
                     setButtonState(button, true);
                     loadPage(pageToLoad);
                 });
             });
 
-            // 2. UPDATED: Smart Initial Load
-            // Only run this if we are in "SPA Mode" (i.e. on the dashboard).
-            // If disable_spa_routing is true (passed from Flask), we skip this
-            // so we don't overwrite the server-rendered tool page.
-            {% if not disable_spa_routing %}
+            // UPDATED: Smart Initial Load (Respects SPA Routing Flag)
+            // If window.disableSPARouting is true, we do NOT load the default page
+            if (!window.disableSPARouting) {
                 const savedPage = localStorage.getItem('lastActivePage');
-
-                // Try to find the button for the saved page, otherwise default to index 0
                 let targetButton = null;
 
                 if (savedPage) {
                     targetButton = document.querySelector(`.toggle-btn[data-page="${savedPage}"]`);
                 }
 
-                // Fallback to first button if no saved page or saved page doesn't exist
                 if (!targetButton) {
                     targetButton = allToggleButtons[0];
                 }
 
                 if (targetButton) {
-                    // Update UI state
                     allToggleButtons.forEach(btn => setButtonState(btn, btn === targetButton));
-
-                    // Load the page
                     loadPage(targetButton.getAttribute('data-page'));
                 }
-            {% endif %}
+            }
 
-            // Modal script
+            // --- Helper Modals ---
             const modal = document.getElementById('help-modal');
             const modalTitle = document.getElementById('modal-title');
             const modalText = document.getElementById('modal-text');
             const closeButton = document.querySelector('.close-button');
 
-            // Function to open the modal with specific content
             function openModal(title, text) {
                 modalTitle.textContent = title;
                 modalText.textContent = text;
                 modal.style.display = 'block';
             }
 
-            // Close the modal
             closeButton.onclick = () => {
                 modal.style.display = 'none';
             }
@@ -323,7 +295,6 @@
                 }
             }
 
-            // Attach event listener to a parent element (delegation)
             document.body.addEventListener('click', (event) => {
                 if (event.target.classList.contains('help-icon')) {
                     const title = event.target.dataset.title || 'Help';

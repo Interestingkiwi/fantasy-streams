@@ -4990,23 +4990,53 @@ def search_players_tool():
 
 @app.route('/api/tools/my_droppable_players')
 def get_droppable_players():
-    """Fetches the user's current roster for the 'Drop' dropdown."""
+    if 'yahoo_token' not in session:
+        return jsonify({'error': 'Not logged in'}), 401
+
     league_id = session.get('league_id')
     if not league_id:
         return jsonify({'error': 'No league selected'}), 400
 
     try:
-        # 1. Get User's Team Key/ID via YFA (safest way to link user->team)
         lg = get_yfa_lg_instance()
         if not lg:
              return jsonify({'error': 'Could not connect to Yahoo.'}), 401
 
-        user_team_key = lg.team_key() # e.g. 419.l.12345.t.2
-        team_id = user_team_key.split('.')[-1] # e.g. 2
+        # 1. Try to get team_key from Yahoo API
+        user_team_key = lg.team_key()
+        team_id = None
+
+        # 2. If Yahoo fails (returns None), try to fetch from DB
+        if not user_team_key:
+            logging.warning(f"Yahoo API returned None for team_key. Attempting DB fallback for league {league_id}.")
+            user_guid = session['yahoo_token'].get('xoauth_yahoo_guid')
+
+            with get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    # Try to find team by matching user GUID (if available) or fallback to teams table
+                    # Note: You need a way to link user_guid to team_id in your DB.
+                    # Assuming you might have stored it in 'teams' table under 'manager_guid' or similar.
+                    # If not, we cannot proceed safely.
+                    cursor.execute("""
+                        SELECT team_key FROM teams
+                        WHERE league_id = %s AND manager_guid = %s
+                        LIMIT 1
+                    """, (league_id, user_guid))
+                    row = cursor.fetchone()
+                    if row:
+                        user_team_key = row[0]
+                    else:
+                        # Fallback failed
+                        return jsonify({'error': 'Could not determine your Team ID. Please ensure your database is synced.'}), 404
+
+        if user_team_key:
+            team_id = user_team_key.split('.')[-1]
+
+        if not team_id:
+             return jsonify({'error': 'Team ID not found.'}), 404
 
         with get_db_connection() as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cursor:
-                # 2. Fetch roster from DB for this team
                 cursor.execute("""
                     SELECT p.player_id, p.player_name, p.positions, rp.eligible_positions
                     FROM rosters_tall rp

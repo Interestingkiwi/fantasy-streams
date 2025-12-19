@@ -557,15 +557,16 @@ document.addEventListener('DOMContentLoaded', () => {
             // --- [START] FIX 3: FORCE INITIAL REFRESH ---
             // Now that dropdowns are populated, tell the active page to re-run its logic
             // so it picks up the correct Week, Team, and Stat Source.
-            console.log("Dropdowns initialized. Refreshing active page context...");
-            const initialPage = localStorage.getItem('lastActivePage');
-            if (initialPage) {
-                const activeBtn = document.querySelector(`.toggle-btn[data-page="${initialPage}"]`);
-                if (activeBtn) activeBtn.click();
-            } else {
-                 // Fallback if no history (e.g. first load ever)
-                 const firstBtn = document.querySelector('.toggle-btn');
-                 if(firstBtn && !firstBtn.classList.contains('hidden')) firstBtn.click();
+            if (!window.disableSPARouting) {
+                console.log("Dropdowns initialized. Refreshing active page context...");
+                const initialPage = localStorage.getItem('lastActivePage');
+                if (initialPage) {
+                    const activeBtn = document.querySelector(`.toggle-btn[data-page="${initialPage}"]`);
+                    if (activeBtn) activeBtn.click();
+                } else {
+                     const firstBtn = document.querySelector('.toggle-btn');
+                     if(firstBtn && !firstBtn.classList.contains('hidden')) firstBtn.click();
+                }
             }
             // --- [END] FIX 3 ---
 
