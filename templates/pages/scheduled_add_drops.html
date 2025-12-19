@@ -1,0 +1,187 @@
+{% extends "home.html" %}
+
+{% block content %}
+<div class="max-w-4xl mx-auto p-6 bg-gray-800 rounded-lg shadow-lg mt-6">
+    <h1 class="text-2xl font-bold text-white mb-4">Scheduled Add/Drop Tool</h1>
+    <p class="text-gray-400 mb-6">Schedule a transaction to run automatically at a specific time.</p>
+
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+
+        <div class="bg-gray-700 p-4 rounded">
+            <label class="block text-gray-300 text-sm font-bold mb-2">1. Add Player</label>
+            <input type="text" id="playerSearch" placeholder="Type player name..." class="w-full p-2 rounded bg-gray-600 text-white border border-gray-500 focus:outline-none focus:border-blue-500">
+            <div id="searchResults" class="mt-2 max-h-40 overflow-y-auto bg-gray-600 rounded hidden"></div>
+
+            <div id="selectedAdd" class="mt-4 hidden p-2 bg-green-900 rounded border border-green-500 text-green-200">
+                Selected Add: <span id="addName" class="font-bold"></span>
+                <input type="hidden" id="addId">
+            </div>
+        </div>
+
+        <div class="bg-gray-700 p-4 rounded">
+            <label class="block text-gray-300 text-sm font-bold mb-2">2. Drop Player</label>
+            <select id="dropSelect" class="w-full p-2 rounded bg-gray-600 text-white border border-gray-500">
+                <option value="">Loading roster...</option>
+            </select>
+        </div>
+    </div>
+
+    <div class="mt-6 bg-gray-700 p-4 rounded">
+        <label class="block text-gray-300 text-sm font-bold mb-2">3. Execution Time</label>
+        <div class="flex flex-col md:flex-row gap-4">
+            <input type="datetime-local" id="schedTime" class="p-2 rounded bg-gray-600 text-white border border-gray-500">
+            <span class="text-sm text-gray-400 self-center">Note: Time is based on your local browser time.</span>
+        </div>
+    </div>
+
+    <button onclick="submitTransaction()" class="mt-6 w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-3 px-4 rounded transition">
+        Schedule Transaction
+    </button>
+
+    <div class="mt-10">
+        <h2 class="text-xl font-bold text-white mb-2">Scheduled Transactions</h2>
+        <div class="overflow-x-auto">
+            <table class="w-full text-left text-gray-300">
+                <thead class="bg-gray-700 text-xs uppercase">
+                    <tr>
+                        <th class="p-3">Time</th>
+                        <th class="p-3">Add</th>
+                        <th class="p-3">Drop</th>
+                        <th class="p-3">Status</th>
+                    </tr>
+                </thead>
+                <tbody id="transTable" class="divide-y divide-gray-700">
+                    </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<script>
+    let teamKey = null;
+
+    // 1. Fetch Roster on Load
+    fetch('/api/tools/my_droppable_players')
+        .then(r => r.json())
+        .then(data => {
+            const sel = document.getElementById('dropSelect');
+            sel.innerHTML = '<option value="">Select a player to drop...</option>';
+            if(data.error) {
+                alert(data.error);
+                return;
+            }
+            teamKey = data.team_key;
+            data.roster.forEach(p => {
+                const opt = document.createElement('option');
+                opt.value = p.player_id;
+                opt.text = `${p.player_name} (${p.positions})`;
+                opt.dataset.name = p.player_name;
+                sel.appendChild(opt);
+            });
+            loadHistory();
+        });
+
+    // 2. Smart Search for Adds
+    const searchInput = document.getElementById('playerSearch');
+    const resultsDiv = document.getElementById('searchResults');
+    let timeout = null;
+
+    searchInput.addEventListener('input', (e) => {
+        clearTimeout(timeout);
+        const q = e.target.value;
+        if(q.length < 3) { resultsDiv.classList.add('hidden'); return; }
+
+        timeout = setTimeout(() => {
+            fetch(`/api/tools/search_players?q=${q}`)
+                .then(r => r.json())
+                .then(players => {
+                    resultsDiv.innerHTML = '';
+                    if(players.length > 0) {
+                        resultsDiv.classList.remove('hidden');
+                        players.forEach(p => {
+                            const div = document.createElement('div');
+                            div.className = "p-2 hover:bg-gray-500 cursor-pointer text-white";
+                            div.textContent = `${p.player_name} (${p.player_team} - ${p.positions})`;
+                            div.onclick = () => selectAdd(p);
+                            resultsDiv.appendChild(div);
+                        });
+                    }
+                });
+        }, 300);
+    });
+
+    function selectAdd(player) {
+        document.getElementById('addName').textContent = player.player_name;
+        document.getElementById('addId').value = player.player_id;
+        document.getElementById('selectedAdd').classList.remove('hidden');
+        resultsDiv.classList.add('hidden');
+        searchInput.value = '';
+    }
+
+    // 3. Submit
+    function submitTransaction() {
+        const addId = document.getElementById('addId').value;
+        const addName = document.getElementById('addName').textContent;
+        const dropSelect = document.getElementById('dropSelect');
+        const dropId = dropSelect.value;
+        const dropName = dropSelect.options[dropSelect.selectedIndex]?.dataset.name;
+        const timeVal = document.getElementById('schedTime').value;
+
+        if(!addId || !dropId || !timeVal) {
+            alert("Please complete all fields.");
+            return;
+        }
+
+        // Convert local time to UTC for server consistency
+        const dateObj = new Date(timeVal);
+        const utcTime = dateObj.toISOString();
+
+        fetch('/api/tools/schedule_transaction', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                add_player_id: addId,
+                add_player_name: addName,
+                drop_player_id: dropId,
+                drop_player_name: dropName,
+                scheduled_time: utcTime,
+                team_key: teamKey
+            })
+        })
+        .then(r => r.json())
+        .then(res => {
+            if(res.success) {
+                alert("Transaction Scheduled!");
+                loadHistory();
+            } else {
+                alert("Error: " + res.error);
+            }
+        });
+    }
+
+    function loadHistory() {
+        fetch('/api/tools/get_scheduled_transactions')
+            .then(r => r.json())
+            .then(rows => {
+                const tbody = document.getElementById('transTable');
+                tbody.innerHTML = '';
+                rows.forEach(r => {
+                    // Convert UTC string back to local for display
+                    const localTime = new Date(r.scheduled_time).toLocaleString();
+                    const tr = document.createElement('tr');
+                    let color = 'text-yellow-400';
+                    if(r.status === 'executed') color = 'text-green-400';
+                    if(r.status === 'failed') color = 'text-red-400';
+
+                    tr.innerHTML = `
+                        <td class="p-3">${localTime}</td>
+                        <td class="p-3 font-bold text-green-300">+ ${r.add_player_name}</td>
+                        <td class="p-3 text-red-300">- ${r.drop_player_name}</td>
+                        <td class="p-3 ${color}">${r.status} ${r.result_message ? '('+r.result_message+')' : ''}</td>
+                    `;
+                    tbody.appendChild(tr);
+                });
+            });
+    }
+</script>
+{% endblock %}

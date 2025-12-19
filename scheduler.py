@@ -15,6 +15,7 @@ from rq import Queue
 from apscheduler.schedulers.background import BackgroundScheduler
 from database import get_db_connection
 from datetime import datetime
+from jobs.transactions import process_due_transactions
 
 
 
@@ -45,6 +46,23 @@ def queue_global_update_job():
         logger.info("Enqueued Global Update to High Priority Queue.")
     except Exception as e:
         logger.error(f"Failed to enqueue Global Update: {e}")
+
+
+def queue_transaction_check():
+    """
+    Enqueues the transaction processor to the HIGH priority queue.
+    This ensures trades are executed before any background league updates.
+    """
+    try:
+        high_queue.enqueue(
+            'jobs.transactions.process_due_transactions',
+            job_timeout=600, # 10 minutes max for execution
+            result_ttl=3600  # Keep result for 1 hour
+        )
+        # logger.info("Enqueued Scheduled Transaction Check (High Priority).")
+        # (Commented out logging to prevent spamming logs every minute)
+    except Exception as e:
+        logger.error(f"Failed to enqueue Transaction Check: {e}")
 
 
 def process_subscription_expirations():
@@ -127,10 +145,13 @@ def start_scheduler():
     logger.info("Initializing scheduler...")
     scheduler = BackgroundScheduler(timezone="UTC")
 
-    # 3. Schedule the TRIGGER, not the job itself
+    # 1. Schedule the TRIGGER, not the job itself
     scheduler.add_job(queue_global_update_job, trigger='cron', hour=10, minute=5)
 
-    # League updates
+    # 2. League updates
     scheduler.add_job(run_league_updates, trigger='cron', hour='*/1', minute=0)
+
+    # 3. Add Transaction Checker (Every 1 minute)
+    scheduler.add_job(queue_transaction_check, trigger='cron', minute='*')
 
     scheduler.start()
