@@ -5006,29 +5006,27 @@ def get_droppable_players():
         user_team_key = lg.team_key()
         team_id = None
 
-        # 2. If Yahoo fails, try DB fallback
+        # 2. If Yahoo fails (returns None), try to fetch from DB
         if not user_team_key:
             logging.warning(f"Yahoo API returned None for team_key. Attempting DB fallback for league {league_id}.")
             user_guid = session['yahoo_token'].get('xoauth_yahoo_guid')
 
             with get_db_connection() as conn:
                 with conn.cursor() as cursor:
-                    # [FIX] Select team_id instead of team_key, and use manager_guid
+                    # Select team_id using the manager_guid we populated
                     cursor.execute("""
                         SELECT team_id FROM teams
                         WHERE league_id = %s AND manager_guid = %s
                         LIMIT 1
                     """, (league_id, user_guid))
                     row = cursor.fetchone()
-
                     if row:
                         team_id_db = row[0]
-                        # Construct the key manually: nhl.l.{league_id}.t.{team_id}
-                        # We assume 'nhl' because the app seems focused on it, or fetch game_code if needed
+                        # Construct the key manually (assuming NHL)
                         user_team_key = f"nhl.l.{league_id}.t.{team_id_db}"
                         logging.info(f"DB Fallback successful. Found team_key: {user_team_key}")
                     else:
-                        return jsonify({'error': 'Could not determine your Team ID. Please ensure your database is synced and you are the team owner.'}), 404
+                        return jsonify({'error': 'Could not determine your Team ID. Please ensure your database is synced.'}), 404
 
         if user_team_key:
             team_id = user_team_key.split('.')[-1]
@@ -5038,8 +5036,9 @@ def get_droppable_players():
 
         with get_db_connection() as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cursor:
+                # [FIXED] Removed 'rp.eligible_positions' from the SELECT list
                 cursor.execute("""
-                    SELECT p.player_id, p.player_name, p.positions, rp.eligible_positions
+                    SELECT p.player_id, p.player_name, p.positions
                     FROM rosters_tall rp
                     JOIN players p ON CAST(rp.player_id AS TEXT) = p.player_id
                     WHERE rp.league_id = %s AND rp.team_id = %s
