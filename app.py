@@ -4954,7 +4954,15 @@ def db_log_stream():
 #Yahoo Direct Interactions:
 @app.route('/tools/scheduled-transactions')
 def scheduled_transactions_page():
-    return render_template('pages/scheduled_add_drops.html')
+    if 'yahoo_token' not in session:
+        return redirect('/')
+
+    # FIX: Pass 'auto_update' and 'dev_leagues' (defaults) so home.html doesn't crash
+    return render_template(
+        'pages/scheduled_add_drops.html',
+        auto_update=None,
+        dev_leagues=[]
+    )
 
 @app.route('/api/tools/search_players')
 def search_players_tool():
