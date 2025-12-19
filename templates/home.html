@@ -166,7 +166,8 @@
         </div>
 
         <div id="page-content" class="bg-gray-800 border border-gray-700 rounded-lg p-4 min-h-[60vh]">
-            </div>
+            {% block content %}{% endblock %}
+        </div>
     </div>
     <script>
         // Pass Python data to JS from Flask
@@ -254,7 +255,7 @@
                 });
             });
 
-            // Initial load
+            // Initial load logic
             // 1. UPDATED: Event Listener to save selection
             allToggleButtons.forEach((button) => {
                 button.addEventListener('click', () => {
@@ -271,27 +272,32 @@
             });
 
             // 2. UPDATED: Smart Initial Load
-            const savedPage = localStorage.getItem('lastActivePage');
+            // Only run this if we are in "SPA Mode" (i.e. on the dashboard).
+            // If disable_spa_routing is true (passed from Flask), we skip this
+            // so we don't overwrite the server-rendered tool page.
+            {% if not disable_spa_routing %}
+                const savedPage = localStorage.getItem('lastActivePage');
 
-            // Try to find the button for the saved page, otherwise default to index 0
-            let targetButton = null;
+                // Try to find the button for the saved page, otherwise default to index 0
+                let targetButton = null;
 
-            if (savedPage) {
-                targetButton = document.querySelector(`.toggle-btn[data-page="${savedPage}"]`);
-            }
+                if (savedPage) {
+                    targetButton = document.querySelector(`.toggle-btn[data-page="${savedPage}"]`);
+                }
 
-            // Fallback to first button if no saved page or saved page doesn't exist
-            if (!targetButton) {
-                targetButton = allToggleButtons[0];
-            }
+                // Fallback to first button if no saved page or saved page doesn't exist
+                if (!targetButton) {
+                    targetButton = allToggleButtons[0];
+                }
 
-            if (targetButton) {
-                // Update UI state
-                allToggleButtons.forEach(btn => setButtonState(btn, btn === targetButton));
+                if (targetButton) {
+                    // Update UI state
+                    allToggleButtons.forEach(btn => setButtonState(btn, btn === targetButton));
 
-                // Load the page
-                loadPage(targetButton.getAttribute('data-page'));
-            }
+                    // Load the page
+                    loadPage(targetButton.getAttribute('data-page'));
+                }
+            {% endif %}
 
             // Modal script
             const modal = document.getElementById('help-modal');
