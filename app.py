@@ -5098,6 +5098,37 @@ def get_scheduled_transactions():
     except Exception as e:
         return jsonify([])
 
+@app.route('/api/tools/cancel_transaction', methods=['POST'])
+def cancel_transaction():
+    if 'yahoo_token' not in session:
+        return jsonify({'success': False, 'error': 'Not logged in'}), 401
+
+    data = request.get_json()
+    trans_id = data.get('transaction_id')
+    user_guid = session['yahoo_token'].get('xoauth_yahoo_guid')
+
+    if not trans_id:
+        return jsonify({'success': False, 'error': 'Missing transaction ID'}), 400
+
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                # Only cancel if it belongs to the user and is currently pending
+                cursor.execute("""
+                    UPDATE scheduled_transactions
+                    SET status = 'cancelled', result_message = 'Cancelled by user'
+                    WHERE id = %s AND user_guid = %s AND status = 'pending'
+                """, (trans_id, user_guid))
+
+                if cursor.rowcount == 0:
+                    return jsonify({'success': False, 'error': 'Transaction not found or not pending.'}), 404
+
+            conn.commit()
+        return jsonify({'success': True})
+    except Exception as e:
+        logging.error(f"Cancel error: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+        
 #DEBUGGING Route:
 @app.route('/api/download_debug/<filename>')
 def download_debug_dump(filename):

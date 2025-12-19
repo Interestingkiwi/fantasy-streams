@@ -54,7 +54,8 @@ def refresh_user_token(cursor, user_guid, user_row):
 
 def process_due_transactions():
     """Main job function called by Scheduler."""
-    logger.info("Checking for due transactions...")
+    # [SILENCED] To prevent log spam every minute
+    # logger.info("Checking for due transactions...")
 
     with get_db_connection() as conn:
         with conn.cursor() as cursor:
@@ -92,7 +93,6 @@ def process_due_transactions():
                     sc = refresh_user_token(cursor, user_guid, user_row)
 
                     # 4. Perform Move
-                    # FIX: Instantiate Team directly instead of using Game.to_team (which doesn't exist)
                     tm = yfa.Team(sc, team_key)
 
                     logger.info(f"Executing: Add {add_id} / Drop {drop_id} for {team_key}")

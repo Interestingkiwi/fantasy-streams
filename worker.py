@@ -2,6 +2,7 @@ import os
 import redis
 import threading
 import scheduler
+import logging  # <--- NEW IMPORT
 from rq import Worker, Queue
 
 # Get the Redis URL
@@ -32,6 +33,10 @@ def start_worker():
 
     # 2. Start the RQ Worker
     try:
+        # --- NEW: Silence RQ 'Successfully completed' INFO logs ---
+        logging.getLogger('rq.worker').setLevel(logging.WARNING)
+        # ----------------------------------------------------------
+
         queues = [Queue(name, connection=conn) for name in listen]
         worker = Worker(queues, connection=conn)
 
