@@ -575,6 +575,20 @@ class DBFinalizer:
 def _create_tables(cursor, logger):
     logger.info("Creating database tables if they don't exist...")
 
+    # [NEW] Schema Migration: Ensure manager_guid column exists
+    # We check this every time to fix existing databases without deletion
+    try:
+        cursor.execute("""
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_name='teams' AND column_name='manager_guid'
+        """)
+        if not cursor.fetchone():
+            logger.info("Adding missing column 'manager_guid' to table 'teams'...")
+            cursor.execute("ALTER TABLE teams ADD COLUMN manager_guid TEXT")
+    except Exception as e:
+        logger.warning(f"Schema check for teams table failed: {e}")
+
     # ------------------------------------------------------------------------------
 
     # Tables with league_id in PK
@@ -759,20 +773,6 @@ def _update_league_info(yq, cursor, league_id, league_name, league_metadata, log
 
 def _update_teams_info(yq, cursor, league_id, logger):
     logger.info("Updating teams table...")
-
-    # [NEW] Schema Migration: Ensure manager_guid column exists
-    try:
-        cursor.execute("""
-            SELECT column_name
-            FROM information_schema.columns
-            WHERE table_name='teams' AND column_name='manager_guid'
-        """)
-        if not cursor.fetchone():
-            logger.info("Adding missing column 'manager_guid' to table 'teams'...")
-            cursor.execute("ALTER TABLE teams ADD COLUMN manager_guid TEXT")
-    except Exception as e:
-        logger.warning(f"Schema check for teams table failed: {e}")
-
     try:
         teams = yq.get_league_teams()
         teams_data_to_insert = []
@@ -793,6 +793,7 @@ def _update_teams_info(yq, cursor, league_id, logger):
                     manager_nickname = mgr.nickname
                     if isinstance(manager_nickname, bytes):
                         manager_nickname = manager_nickname.decode('utf-8')
+
                 # [NEW] Capture the Manager GUID
                 if hasattr(mgr, 'guid') and mgr.guid:
                     manager_guid = mgr.guid
@@ -1148,17 +1149,24 @@ def _update_current_rosters(yq, cursor, conn, league_id, num_teams, logger):
                 continue
 
         if data:
+            # [FIX] Deduplicate data in Python to prevent 'UniqueViolation'
+            # We use a dictionary keyed by (league_id, team_id) to ensure only one entry per team exists
+            unique_data = list({(row[0], row[1]): row for row in data}.values())
+
             placeholders = ', '.join(['%s'] * (MAX_PLAYERS + 2))
             cols = ", ".join([f"p{i}" for i in range(1, MAX_PLAYERS + 1)])
             sql = f"INSERT INTO rosters (league_id, team_id, {cols}) VALUES ({placeholders})"
-            cursor.executemany(sql, data)
+
+            cursor.executemany(sql, unique_data)
             conn.commit()
-            logger.info(f"Updated current rosters for {len(data)} teams.")
+            logger.info(f"Updated current rosters for {len(unique_data)} teams.")
         else:
             logger.warning("No roster data fetched.")
 
     except Exception as e:
         logger.error(f"Failed to update rosters: {e}", exc_info=True)
+        # [FIX] Rollback the failed transaction so the connection is usable for subsequent steps
+        conn.rollback()
 
 def _create_rosters_tall(cursor, conn, league_id, logger):
     logger.info("Updating tall rosters table...")
@@ -1328,9 +1336,8 @@ def update_league_db(yq, lg, league_id, logger, capture_lineups=False, roster_up
             _update_db_metadata(cursor, league_id, logger, is_full_update=(not roster_updates_only))
 
             _update_league_info(yq, cursor, league_id, league_name, league_metadata, logger)
-
+            _update_teams_info(yq, cursor, league_id, logger)
             if not roster_updates_only:
-                _update_teams_info(yq, cursor, league_id, logger)
                 playoff_week = _update_league_scoring_settings(yq, cursor, league_id, logger)
                 _update_lineup_settings(yq, cursor, league_id, logger)
                 _update_fantasy_weeks(yq, cursor, league_id, league_metadata.league_key, logger)
