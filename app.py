@@ -5084,20 +5084,28 @@ def schedule_transaction():
 
 @app.route('/api/tools/get_scheduled_transactions')
 def get_scheduled_transactions():
+    if 'yahoo_token' not in session:
+        return jsonify({'error': 'Not logged in'}), 401
+
     league_id = session.get('league_id')
+    user_guid = session['yahoo_token'].get('xoauth_yahoo_guid') # <--- Get current user's ID
+
     try:
         with get_db_connection() as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cursor:
+                # [FIX] Added 'AND user_guid = %s' to restrict results to the current user
                 cursor.execute("""
                     SELECT * FROM scheduled_transactions
-                    WHERE league_id = %s
+                    WHERE league_id = %s AND user_guid = %s
                     ORDER BY scheduled_time ASC
-                """, (league_id,))
+                """, (league_id, user_guid))
                 rows = cursor.fetchall()
         return jsonify(rows)
     except Exception as e:
+        logging.error(f"Error fetching scheduled transactions: {e}")
         return jsonify([])
 
+        
 @app.route('/api/tools/cancel_transaction', methods=['POST'])
 def cancel_transaction():
     if 'yahoo_token' not in session:
@@ -5128,7 +5136,7 @@ def cancel_transaction():
     except Exception as e:
         logging.error(f"Cancel error: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
-        
+
 #DEBUGGING Route:
 @app.route('/api/download_debug/<filename>')
 def download_debug_dump(filename):
