@@ -2253,10 +2253,10 @@ def verify_shift_coverage():
 
 def create_player_trends_table():
     """
-    Creates the player_trends table with columns for 5-game blocks,
-    trends, splits, season aggregates, and tracking.
+    Ensures the player_trends table exists and syncs new players from stats_to_date.
+    Does NOT drop the table or wipe existing data.
     """
-    print("Rebuilding player_trends table schema...")
+    print("Verifying player_trends schema and syncing roster...")
 
     # 1. Generate the 5-game block column definitions
     block_columns = []
@@ -2273,9 +2273,9 @@ def create_player_trends_table():
 
     blocks_sql = ",\n        ".join(block_columns)
 
+    # 2. Create Table (Only if it doesn't exist)
     create_query = f"""
-    DROP TABLE IF EXISTS player_trends;
-    CREATE TABLE player_trends (
+    CREATE TABLE IF NOT EXISTS player_trends (
         player_name_normalized TEXT PRIMARY KEY,
         team TEXT,
         nhlplayerid INTEGER,
@@ -2314,31 +2314,47 @@ def create_player_trends_table():
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
+                # 1. Create structure if missing
                 cursor.execute(create_query)
 
-                # Initialize with players
+                # 2. Insert NEW players only (Safe Sync)
+                # Uses 'DO NOTHING' on conflict to preserve existing 'last_date_used' and stats
                 init_query = """
                 INSERT INTO player_trends (player_name_normalized, team, nhlplayerid, last_date_used)
                 SELECT DISTINCT player_name_normalized, team, nhlplayerid, '2000-01-01'::DATE
                 FROM stats_to_date
-                WHERE player_name_normalized IS NOT NULL;
+                WHERE player_name_normalized IS NOT NULL
+                ON CONFLICT (player_name_normalized) DO NOTHING;
                 """
                 cursor.execute(init_query)
 
+                # 3. Update metadata for EXISTING players (e.g. Traded players or ID fixes)
+                # This keeps teams/IDs current without wiping statistical history
+                update_meta_query = """
+                UPDATE player_trends pt
+                SET team = s.team,
+                    nhlplayerid = s.nhlplayerid
+                FROM stats_to_date s
+                WHERE pt.player_name_normalized = s.player_name_normalized
+                  AND (pt.team IS DISTINCT FROM s.team OR pt.nhlplayerid IS DISTINCT FROM s.nhlplayerid);
+                """
+                cursor.execute(update_meta_query)
+
             conn.commit()
-            print("player_trends table created and initialized.")
+            print("player_trends table verified and roster synced.")
 
     except Exception as e:
-        print(f"Error creating player_trends table: {e}")
-        raise e
+        print(f"Error ensuring player_trends table: {e}")
+        # raise e  # Uncomment if you want the script to stop on error
 
 
 def update_player_trends():
     """
     Iterates through players, fetches new games, chunks them,
     aggregates stats (Season, Home, Away), and updates player_trends.
+    HARDENED VERSION: Commits per-player and logs activity.
     """
-    print("Starting player_trends update...")
+    print("Starting player_trends update (Debug Mode)...")
 
     # 1. Define Columns
     SUM_COLS = [
@@ -2352,25 +2368,26 @@ def update_player_trends():
     BLOCK_KEYS = [f"block_{i+1}_{i+5}" for i in range(0, 75, 5)]
     BLOCK_KEYS.append("block_76_82")
 
-    try:
-        with get_db_connection() as conn:
-            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cursor:
+    with get_db_connection() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cursor:
 
-                # 2. Get players and current state
-                cursor.execute(f"""
-                    SELECT player_name_normalized, nhlplayerid, last_date_used,
-                           season_total, home_total, away_total,
-                           {', '.join(BLOCK_KEYS)}
-                    FROM player_trends
-                """)
-                players = cursor.fetchall()
+            # 2. Get players and current state
+            cursor.execute(f"""
+                SELECT player_name_normalized, nhlplayerid, last_date_used,
+                       season_total, home_total, away_total,
+                       {', '.join(BLOCK_KEYS)}
+                FROM player_trends
+            """)
+            players = cursor.fetchall()
+            print(f"Found {len(players)} players to check.")
 
-                for p in players:
+            for p in players:
+                try:
                     p_name = p['player_name_normalized']
                     pid = p['nhlplayerid']
                     last_date = p['last_date_used'] or '2000-01-01'
 
-                    # Load existing totals or initialize
+                    # Initialize totals if None
                     season_total = p['season_total'] or {col: 0 for col in SUM_COLS}
                     home_total = p['home_total'] or {col: 0 for col in SUM_COLS}
                     away_total = p['away_total'] or {col: 0 for col in SUM_COLS}
@@ -2387,17 +2404,24 @@ def update_player_trends():
 
                     if not current_block_col: continue
 
-                    # 4. Fetch NEW games (Include homeroad)
+                    # 4. Fetch NEW games
                     cols_sql = ", ".join(SUM_COLS)
-                    cursor.execute(f"""
-                        SELECT gamedate, homeroad, {cols_sql}
-                        FROM historical_stats
-                        WHERE nhlplayerid = %s AND gamedate > %s
-                        ORDER BY gamedate ASC
-                    """, (pid, last_date))
+                    # Use a new cursor for the inner query to keep the outer loop clean
+                    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as inner_cursor:
+                        inner_cursor.execute(f"""
+                            SELECT gamedate, homeroad, {cols_sql}
+                            FROM historical_stats
+                            WHERE nhlplayerid = %s AND gamedate > %s
+                            ORDER BY gamedate ASC
+                        """, (pid, last_date))
+                        new_games = inner_cursor.fetchall()
 
-                    new_games = cursor.fetchall()
                     if not new_games: continue
+
+                    # DEBUG LOGGING for the player in question
+                    # (You can remove this condition later, or set it to the specific player name you are debugging)
+                    if len(new_games) >= 5:
+                        print(f"  -> Processing {p_name}: Found {len(new_games)} new games since {last_date}")
 
                     # 5. Chunking Logic
                     games_to_process = []
@@ -2424,33 +2448,31 @@ def update_player_trends():
 
                         def parse_val(v, col_name):
                             if v is None: return 0
+                            # Handle string TOI if necessary (though historical_stats should be int)
                             if 'timeonice' in col_name and isinstance(v, str) and ':' in v:
-                                m, s = v.split(':')
-                                return int(m) * 60 + int(s)
+                                try:
+                                    m, s = v.split(':')
+                                    return int(m) * 60 + int(s)
+                                except: return 0
                             return v
 
                         for game in games:
-                            # Determine Split (Home vs Away)
-                            # Assuming homeroad is 'H' or 'R'
                             is_home = (game.get('homeroad') == 'H')
                             target_split = home_total if is_home else away_total
 
                             for col in SUM_COLS:
                                 val = parse_val(game.get(col), col)
-                                block_stats[col] += val
+                                # Ensure val is numeric before adding
+                                if isinstance(val, (int, float)):
+                                    block_stats[col] += val
+                                    season_total[col] = season_total.get(col, 0) + val
+                                    target_split[col] = target_split.get(col, 0) + val
 
-                                # Update Season Total
-                                season_total[col] = season_total.get(col, 0) + val
-
-                                # Update Split Total
-                                target_split[col] = target_split.get(col, 0) + val
-
-                            # Increment Game Counts
                             target_split['games_played'] += 1
 
                         season_total['games_played'] += len(games)
 
-                        # Derived Stats Helper
+                        # Helper for Derived Stats
                         def calc_derived(stats_dict):
                             g, s = stats_dict.get('goals', 0), stats_dict.get('shots', 0)
                             stats_dict['shootingpct'] = round((g / s) * 100, 1) if s > 0 else 0.0
@@ -2466,41 +2488,46 @@ def update_player_trends():
                                     if k == 'games_played': continue
                                     avg_dict[k] = round((v / gp) * scale, 2)
                                 calc_derived(avg_dict)
-                                avg_dict['games_played'] = 1 if scale == 1 else 5 # Logic marker
+                                avg_dict['games_played'] = 1 if scale == 1 else 5
                             return avg_dict
 
                         calc_derived(block_stats)
 
-                        # Calculate Averages
-                        season_avg = calc_avg(season_total, scale=5.0) # Per 5 Games
-                        home_stats = calc_avg(home_total, scale=1.0)   # Per Game
-                        away_stats = calc_avg(away_total, scale=1.0)   # Per Game
+                        season_avg = calc_avg(season_total, scale=5.0)
+                        home_stats = calc_avg(home_total, scale=1.0)
+                        away_stats = calc_avg(away_total, scale=1.0)
 
                         new_last_date = games[-1]['gamedate']
 
-                        cursor.execute(f"""
-                            UPDATE player_trends
-                            SET {block_name} = %s,
-                                season_total = %s, season_avg = %s,
-                                home_total = %s, home_stats = %s,
-                                away_total = %s, away_stats = %s,
-                                last_date_used = %s
-                            WHERE player_name_normalized = %s
-                        """, (
-                            json.dumps(block_stats),
-                            json.dumps(season_total), json.dumps(season_avg),
-                            json.dumps(home_total), json.dumps(home_stats),
-                            json.dumps(away_total), json.dumps(away_stats),
-                            new_last_date,
-                            p_name
-                        ))
+                        # Use a dedicated cursor for the UPDATE
+                        with conn.cursor() as update_cursor:
+                            update_cursor.execute(f"""
+                                UPDATE player_trends
+                                SET {block_name} = %s,
+                                    season_total = %s, season_avg = %s,
+                                    home_total = %s, home_stats = %s,
+                                    away_total = %s, away_stats = %s,
+                                    last_date_used = %s
+                                WHERE player_name_normalized = %s
+                            """, (
+                                json.dumps(block_stats),
+                                json.dumps(season_total), json.dumps(season_avg),
+                                json.dumps(home_total), json.dumps(home_stats),
+                                json.dumps(away_total), json.dumps(away_stats),
+                                new_last_date,
+                                p_name
+                            ))
+                            print(f"    Updated {p_name}: {block_name} (New Last Date: {new_last_date})")
 
-            conn.commit()
-        print("Player trends update complete.")
+                    # COMMIT PER PLAYER to save progress and isolate errors
+                    conn.commit()
 
-    except Exception as e:
-        print(f"Error updating player trends: {e}")
+                except Exception as e:
+                    print(f"ERROR updating {p.get('player_name_normalized', 'Unknown')}: {e}")
+                    conn.rollback() # Rollback only this failed player
+                    continue
 
+    print("Player trends update complete.")
 
 def calculate_trend_metrics(recent_stats, season_avg_stats, groups_config, anomaly_checks):
     """
@@ -2996,7 +3023,7 @@ def update_toi_stats():
     create_stats_to_date_table()
     calculate_and_save_to_date_ranks()
     create_combined_projections()
-#    create_player_trends_table()
+    create_player_trends_table()
     update_player_trends()
     update_goalie_trends()
     generate_player_trends()
