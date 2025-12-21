@@ -17,8 +17,6 @@ import json
 import psycopg2
 import psycopg2.extras
 import io
-from bs4 import BeautifulSoup
-from contextlib import contextmanager
 
 # Add parent dir to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
