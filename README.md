@@ -1,104 +1,55 @@
-yfpy Web Terminal
+# Fantasy Streams - H2H Fantasy Hockey Optimizer
 
-This is a web-based application that provides a secure, interactive terminal to execute queries against the Yahoo Fantasy Sports API using the yfpy Python library.
+**Fantasy Streams** is a powerful web application designed to give Head-to-Head (H2H) fantasy hockey managers a competitive edge. It connects directly to your Yahoo! Fantasy Sports league to provide advanced analytics, optimal lineup planning, and automated tools that go far beyond the standard Yahoo dashboard.
 
-How It Works
+## 🚀 Key Features
 
-The application uses a Flask backend with Socket.IO for real-time communication, and an Xterm.js frontend to create a functional terminal in your browser. It safely parses your commands to prevent security risks and pretty-prints the API output.
+### 📊 League Analytics
+-   **League Database:** Automatically fetches and caches your entire league's history, rosters, and settings into a PostgreSQL database for instant analysis.
+-   **Matchup Dashboard:** Compare your team against your current opponent with live stats, projected stats, and category-level win probabilities.
+-   **Smart Caching:** Background workers keep data fresh without hitting Yahoo API rate limits.
 
-Deployment Instructions
+### 🛠️ Manager Tools
+-   **Free Agent Finder:** Advanced filtering for waiver wire players using ROS (Rest of Season) projections, L10/L5 trends, and schedule density.
+-   **Goalie Planner:** Analyze upcoming goalie matchups, back-to-backs, and strength of schedule to maximize starts.
+-   **Trade Helper:** Visualize how a potential trade impacts your team's category strengths and weaknesses.
+-   **Schedule Insights:** Identify "Off-Day" games to maximize your roster utilization (Games Played).
 
-This app is designed to be hosted on a service like Render. Authentication is handled via environment variables, so you never have to commit your secret keys to your repository.
+### ⚡ Automation
+-   **Scheduled Add/Drops:** Set up player transactions to execute automatically at a specific date and time—perfect for beating opponents to waiver wire pickups while you sleep.
 
-Step 1: Get Yahoo API Credentials
+---
 
-Go to the Yahoo Developer Network: https://developer.yahoo.com/apps/
+## 🏗️ Tech Stack
 
-Click "Create an App".
+-   **Backend:** Python (Flask), Gevent, Gunicorn
+-   **Database:** PostgreSQL (Primary Data), Redis (Job Queues & Caching)
+-   **Worker Queue:** RQ (Redis Queue) for handling background ETL jobs and automated transactions.
+-   **Frontend:** HTML5, Tailwind CSS, JavaScript (Vanilla ES6)
+-   **APIs:** Yahoo! Fantasy Sports API (`yfpy`, `yahoo_fantasy_api`)
+-   **Deployment:** Render.com (Docker/Native)
 
-Fill out the form:
+---
 
-Application Name: Give your app a name.
+## ⚙️ Setup & Installation
 
-Application Type: Select "Installed App".
+### Prerequisites
+1.  **Yahoo Developer Account:** Create an app at [Yahoo Developer Network](https://developer.yahoo.com/apps/) with `Fantasy Sports Read/Write` permissions.
+2.  **PostgreSQL:** A local or hosted Postgres database.
+3.  **Redis:** A local or hosted Redis instance.
 
-Description: Optional.
+### Environment Variables
+Create a `.env` file in the root directory:
+```bash
+# Flask
+FLASK_APP=app.py
+FLASK_ENV=development
+FLASK_SECRET_KEY=your_secure_random_key
 
-API Permissions: Select "Fantasy Sports" and make sure "Read/Write" is checked.
+# Database
+DATABASE_URL=postgresql://user:pass@localhost:5432/fantasy_db
+REDIS_URL=redis://localhost:6379
 
-After creating the app, you will be given a Client ID (this is your Consumer Key) and a Client Secret (this is your Consumer Secret). Keep these safe.
-
-Step 2: Run the Local Authentication Script
-
-The Yahoo API uses OAuth2, which requires a one-time, browser-based login to grant your application access. You need to do this locally to get a refresh_token that the deployed web app can use.
-
-Clone the repository to your local machine.
-
-Create a virtual environment and install dependencies:
-
-python -m venv venv
-source venv/bin/activate  # On Windows, use `venv\Scripts\activate`
-pip install -r requirements.txt
-
-
-Run the get_refresh_token.py script:
-
-python get_refresh_token.py
-
-
-Follow the prompts:
-
-Enter the Consumer Key and Consumer Secret from Step 1.
-
-Your web browser will open. Log in to your Yahoo account and grant the permissions.
-
-After you approve, you will be redirected to a page that may show an error (this is normal). You can close the browser tab.
-
-The script will print the three values you need for deployment. It will also save them in a private.json file, which you can discard after setting up your hosting.
-
-Step 3: Deploy to Render
-
-Push the code (including app.py, templates/, requirements.txt, etc.) to a GitHub repository.
-
-Go to your Render dashboard and create a new "Web Service".
-
-Connect your GitHub repository.
-
-Configure the service:
-
-Name: Give your service a name (e.g., yfpy-terminal).
-
-Region: Choose a region.
-
-Branch: main or your primary branch.
-
-Runtime: Python 3.
-
-Build Command: pip install -r requirements.txt
-
-Start Command: gunicorn --worker-class eventlet -w 1 app:app
-
-Go to the "Environment" tab and add the following Environment Variables:
-
-YFPY_CONSUMER_KEY: Your Client ID from Step 1.
-
-YFPY_CONSUMER_SECRET: Your Client Secret from Step 1.
-
-YFPY_REFRESH_TOKEN: The refresh token you generated in Step 2.
-
-PYTHON_VERSION: Set this to a recent Python version, like 3.11.5.
-
-Click "Create Web Service". Render will build and deploy your application.
-
-Step 4: Use the Terminal
-
-Once deployed, visit your Render URL. You will see the terminal interface. You can now enter yfpy queries as if you were interacting with the data object.
-
-Example Queries:
-
-data.get_leagues_by_game_key('nhl')
-data.get_league_metadata('YOUR_LEAGUE_ID')
-data.get_team_metadata('YOUR_LEAGUE_ID.t.TEAM_ID')
-
-
-You can also use the clear command to clear the terminal screen. Arrow keys can be used to navigate command history.
+# Yahoo API (From Yahoo Developer Console)
+YAHOO_CONSUMER_KEY=your_client_id
+YAHOO_CONSUMER_SECRET=your_client_secret
