@@ -387,7 +387,7 @@ def _get_daily_simulated_roster(base_roster, simulated_moves, day_str):
 
 def get_optimal_lineup(players, lineup_settings):
     """
-    Calculates the optimal lineup using a three-pass greedy algorithm that prioritizes
+    Calculates the optimal lineup using a four-pass greedy algorithm that prioritizes
     maximizing player starts and then optimizing for the best rank.
     """
     processed_players = []
@@ -404,8 +404,6 @@ def get_optimal_lineup(players, lineup_settings):
 
     lineup = {pos: [] for pos in lineup_settings}
     player_pool = list(ranked_players)
-
-    # Use player_id for tracking
     assigned_player_ids = set()
 
     def assign_player(player, pos, current_lineup, assigned_set):
@@ -416,7 +414,6 @@ def get_optimal_lineup(players, lineup_settings):
     def get_pos_str(p):
         return p.get('eligible_positions') or p.get('positions', '')
 
-    # --- New Helper for Generic Slots ---
     GENERIC_MAP = {
         'F': {'C', 'LW', 'RW'},
         'W': {'LW', 'RW'},
@@ -427,24 +424,17 @@ def get_optimal_lineup(players, lineup_settings):
         """Returns list of slots in settings that player is eligible for."""
         pos_str = get_pos_str(player)
         player_positions = set(p.strip() for p in pos_str.split(','))
-
         eligible = []
-        # Priority: Specific first, then Generic
-        # Check specific positions (e.g. 'C' matches 'C')
         for pos in player_positions:
             if pos in settings_keys:
                 eligible.append(pos)
-
-        # Check generic positions
         for slot, valid_pos_set in GENERIC_MAP.items():
             if slot in settings_keys and (player_positions & valid_pos_set):
-                if slot not in eligible: # Avoid dupes
+                if slot not in eligible:
                     eligible.append(slot)
-
         return eligible
 
     # --- Pass 1: Place players with only one eligible SPECIFIC position ---
-    # We stick to specific positions here to reserve generic slots for overflow
     single_pos_players = sorted(
         [p for p in player_pool if len(get_pos_str(p).split(',')) == 1],
         key=lambda p: p['total_rank']
@@ -454,80 +444,106 @@ def get_optimal_lineup(players, lineup_settings):
         if pos in lineup and len(lineup[pos]) < lineup_settings.get(pos, 0):
             assign_player(player, pos, lineup, assigned_player_ids)
 
-    # Filter pool
     player_pool = [p for p in player_pool if p.get('player_id') not in assigned_player_ids]
 
-    # --- Pass 2: Place remaining players (Scarcity Aware, including Generic) ---
+    # --- Pass 2: Place remaining players (Scarcity Aware) ---
     player_pool.sort(key=lambda p: p['total_rank'])
     for player in player_pool:
-        # Get ALL eligible slots (Specific + Generic)
         all_eligible_slots = get_eligible_slots(player, lineup.keys())
-
         available_slots_for_player = [
             pos for pos in all_eligible_slots
             if len(lineup[pos]) < lineup_settings.get(pos, 0)
         ]
-
         if not available_slots_for_player: continue
 
         slot_scarcity = {}
         for slot in available_slots_for_player:
-            # Count how many REMAINING players can fit this slot
             scarcity_count = 0
             for other in player_pool:
                 if other == player or other.get('player_id') in assigned_player_ids:
                     continue
-
-                # Inline check for speed
                 other_pos_str = get_pos_str(other)
                 other_positions = set(p.strip() for p in other_pos_str.split(','))
-
-                fits = False
-                if slot in other_positions:
-                    fits = True
-                elif slot in GENERIC_MAP and (other_positions & GENERIC_MAP[slot]):
-                    fits = True
-
-                if fits:
-                    scarcity_count += 1
-
+                fits = (slot in other_positions) or (slot in GENERIC_MAP and (other_positions & GENERIC_MAP[slot]))
+                if fits: scarcity_count += 1
             slot_scarcity[slot] = scarcity_count
 
-        # Choose slot with FEWEST alternatives (Highest Scarcity)
         best_pos = min(slot_scarcity, key=slot_scarcity.get)
         assign_player(player, best_pos, lineup, assigned_player_ids)
 
-    # Filter pool
     player_pool = [p for p in player_pool if p.get('player_id') not in assigned_player_ids]
 
-    # --- Pass 3: Upgrade Pass ---
-    # Try to swap benched players into lineup if they are better than starters
-    for benched_player in player_pool:
-        # Check ALL slots the benched player could potentially fill
+    # --- Pass 3: Filling Empty Slots via Shuffling (NEW) ---
+    # Try to fill empty spots by moving current starters to other empty spots.
+    for benched_player in list(player_pool):
         possible_slots = get_eligible_slots(benched_player, lineup.keys())
+        shuffle_success = False
 
         for pos in possible_slots:
-            if not lineup[pos]: continue
+            # If the benched player's preferred position is full...
+            if len(lineup[pos]) >= lineup_settings.get(pos, 0):
+                # ...can we move any of the current starters in that position elsewhere?
+                for i, starter in enumerate(lineup[pos]):
+                    starter_alt_slots = get_eligible_slots(starter, lineup.keys())
+                    for alt_pos in starter_alt_slots:
+                        if alt_pos != pos and len(lineup[alt_pos]) < lineup_settings.get(alt_pos, 0):
+                            # Move the starter to the alternative empty spot
+                            lineup[pos].pop(i)
+                            lineup[alt_pos].append(starter)
+                            # Put the benched player in the now-vacant spot
+                            assign_player(benched_player, pos, lineup, assigned_player_ids)
+                            shuffle_success = True
+                            break
+                    if shuffle_success: break
+            else:
+                # Slot became empty or was missed by Pass 2; fill it directly
+                assign_player(benched_player, pos, lineup, assigned_player_ids)
+                shuffle_success = True
 
+            if shuffle_success:
+                player_pool.remove(benched_player)
+                break
+
+    # --- Pass 4: Upgrade Pass (Improved with Shuffling) ---
+    for benched_player in player_pool:
+        possible_slots = get_eligible_slots(benched_player, lineup.keys())
+        for pos in possible_slots:
+            if not lineup[pos]: continue
             worst_starter_in_pos = max(lineup[pos], key=lambda p: p['total_rank'])
 
             if benched_player['total_rank'] < worst_starter_in_pos['total_rank']:
-                # Perform Swap
+                # Perform the swap
                 lineup[pos].remove(worst_starter_in_pos)
                 lineup[pos].append(benched_player)
 
-                # Try to re-seat the removed starter
-                # Check ALL slots the removed starter can fit
+                # Try to re-seat the displaced starter
                 starter_slots = get_eligible_slots(worst_starter_in_pos, lineup.keys())
-
                 is_re_slotted = False
+
+                # Try 1: Direct seat
                 for other_pos in starter_slots:
                     if len(lineup[other_pos]) < lineup_settings.get(other_pos, 0):
                         lineup[other_pos].append(worst_starter_in_pos)
                         is_re_slotted = True
                         break
 
-                # If we successfully swapped (even if starter went to bench), stop checking other positions for this benched player
+                # Try 2: Shuffle seat (move someone else to re-seat this displaced starter)
+                if not is_re_slotted:
+                    for other_pos in starter_slots:
+                        for j, other_starter in enumerate(lineup[other_pos]):
+                            other_starter_alts = get_eligible_slots(other_starter, lineup.keys())
+                            for last_resort_pos in other_starter_alts:
+                                if last_resort_pos != other_pos and len(lineup[last_resort_pos]) < lineup_settings.get(last_resort_pos, 0):
+                                    lineup[other_pos].pop(j)
+                                    lineup[last_resort_pos].append(other_starter)
+                                    lineup[other_pos].append(worst_starter_in_pos)
+                                    is_re_slotted = True
+                                    break
+                            if is_re_slotted: break
+                        if is_re_slotted: break
+
+                if not is_re_slotted:
+                    player_pool.append(worst_starter_in_pos)
                 break
 
     return lineup
@@ -5105,7 +5121,7 @@ def get_scheduled_transactions():
         logging.error(f"Error fetching scheduled transactions: {e}")
         return jsonify([])
 
-        
+
 @app.route('/api/tools/cancel_transaction', methods=['POST'])
 def cancel_transaction():
     if 'yahoo_token' not in session:
