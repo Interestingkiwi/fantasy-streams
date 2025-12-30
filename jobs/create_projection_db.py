@@ -360,8 +360,14 @@ def process_separate_files_to_table(cursor, skater_csv_file, goalie_csv_file, ta
         clean_row = []
         for h in insert_headers:
             val = data.get(h, None)
-            if val == "":
+
+            # --- FIX: Handle spreadsheet error strings and empty values ---
+            # Convert Excel/Sheets error strings and empty strings to None (NULL)
+            error_strings = ["", "#DIV/0!", "#N/A", "N/A", "#VALUE!", "#REF!", "nan"]
+            if val is None or (isinstance(val, str) and val.strip().lower() in error_strings):
                 val = None
+            # ---------------------------------------------------------------
+
             clean_row.append(val)
         rows_to_insert.append(tuple(clean_row))
 
