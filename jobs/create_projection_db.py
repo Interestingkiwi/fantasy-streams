@@ -355,7 +355,11 @@ def process_separate_files_to_table(cursor, skater_csv_file, goalie_csv_file, ta
 
     insert_sql = f'INSERT INTO {target_table_name} ({col_list}) VALUES ({placeholders})'
 
-    text_cols = ['player_name', 'positions', 'position', 'team', 'playerid', 'fantasy_team', 'salary', 'age', 'rank', 'gp_org', 'gp', 'total_toi']
+    text_cols = [
+        'player_name_normalized', 'player_name', 'positions', 'position',
+        'team', 'playerid', 'fantasy_team', 'salary', 'age', 'rank',
+        'gp_org', 'gp', 'total_toi'
+    ]
 
     rows_to_insert = []
     for norm, data in player_data.items():
