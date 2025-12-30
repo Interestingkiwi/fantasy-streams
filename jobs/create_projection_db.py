@@ -355,18 +355,24 @@ def process_separate_files_to_table(cursor, skater_csv_file, goalie_csv_file, ta
 
     insert_sql = f'INSERT INTO {target_table_name} ({col_list}) VALUES ({placeholders})'
 
+    text_cols = ['player_name', 'positions', 'position', 'team', 'playerid', 'fantasy_team', 'salary', 'age', 'rank', 'gp_org', 'gp', 'total_toi']
+
     rows_to_insert = []
     for norm, data in player_data.items():
         clean_row = []
         for h in insert_headers:
             val = data.get(h, None)
 
-            # --- FIX: Handle spreadsheet error strings and empty values ---
-            # Convert Excel/Sheets error strings and empty strings to None (NULL)
-            error_strings = ["", "#DIV/0!", "#N/A", "N/A", "#VALUE!", "#REF!", "nan"]
-            if val is None or (isinstance(val, str) and val.strip().lower() in error_strings):
+            # 1. Handle explicit NULLs or empty strings
+            if val is None or str(val).strip() == "" or str(val).lower() in ["#div/0!", "#n/a", "nan"]:
                 val = None
-            # ---------------------------------------------------------------
+
+            # 2. If the column is numeric (not in text_cols), force conversion to float
+            elif h not in text_cols:
+                try:
+                    val = float(str(val).replace('%', '').replace('$', '').replace(',', ''))
+                except (ValueError, TypeError):
+                    val = None
 
             clean_row.append(val)
         rows_to_insert.append(tuple(clean_row))
