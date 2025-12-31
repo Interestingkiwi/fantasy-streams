@@ -13,8 +13,8 @@ from yahoo_oauth import OAuth2
 from yfpy.query import YahooFantasySportsQuery
 
 # --- CONFIGURATION ---
-LEAGUE_ID = "21022"
-TARGET_GUID = "ULYBMB2VUJXZ62KPAUFZC6SCJA"
+LEAGUE_ID = ""
+TARGET_GUID = ""
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
