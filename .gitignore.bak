@@ -24,3 +24,4 @@ appwebapp.js
 gitpush.bat
 debug_roster.py 
 debug_teams.py 
+debug_scoring.py
