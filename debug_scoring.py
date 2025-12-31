@@ -3,6 +3,11 @@ import sys
 import json
 import logging
 import psycopg2.extras
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
+
 from database import get_db_connection
 from yahoo_oauth import OAuth2
 from yfpy.query import YahooFantasySportsQuery
@@ -11,7 +16,7 @@ from yfpy.query import YahooFantasySportsQuery
 LEAGUE_ID = "21022"
 TARGET_GUID = "ULYBMB2VUJXZ62KPAUFZC6SCJA"
 
-# Setup basic logging
+# Setup logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("debug_scoring")
 
@@ -40,32 +45,47 @@ def main():
                     "token_time": row['token_time'],
                     "xoauth_yahoo_guid": row['guid']
                 }
+                # Ensure GUID is in top level for some versions of yahoo_oauth
+                creds['guid'] = row['guid']
+
     except Exception as e:
         logger.error(f"Database error: {e}")
         return
 
-    # 2. Refresh Token
+    # 2. Refresh Token using LOCAL file
     logger.info("Refreshing token...")
-    try:
-        # Create a temp file for yahoo_oauth to read/write
-        import tempfile
-        with tempfile.NamedTemporaryFile(mode='w+', delete=False) as temp_cred_file:
-            json.dump(creds, temp_cred_file)
-            temp_path = temp_cred_file.name
+    temp_path = "debug_creds.json"  # <--- USING LOCAL FILE
 
+    try:
+        # Write creds to local file
+        with open(temp_path, 'w') as f:
+            json.dump(creds, f, indent=4)
+
+        # Verify file has content
+        file_size = os.path.getsize(temp_path)
+        logger.info(f"Created temp creds file at {temp_path} (Size: {file_size} bytes)")
+        if file_size == 0:
+            raise Exception("Credential file is empty before refresh!")
+
+        # Initialize OAuth2 with local file
         sc = OAuth2(None, None, from_file=temp_path)
+
+        # Refresh
         sc.refresh_access_token()
 
         # Read back the refreshed token
         with open(temp_path, 'r') as f:
             new_creds = json.load(f)
 
-        os.remove(temp_path) # cleanup
-
         logger.info("Token refreshed successfully.")
 
     except Exception as e:
         logger.error(f"Auth failed: {e}")
+        # Print file content if it failed, for debugging
+        if os.path.exists(temp_path):
+            with open(temp_path, 'r') as f:
+                content = f.read()
+                logger.info(f"--- File Content at Failure ---\n{content}\n-----------------------------")
         return
 
     # 3. Initialize Yahoo Query
@@ -86,25 +106,26 @@ def main():
     try:
         settings = yq.get_league_settings()
 
-        print("\n--- RAW SETTINGS OBJECT DUMP ---")
-        print(settings)
-        print("--------------------------------\n")
-
-        print("--- INSPECTING STAT CATEGORIES ---")
+        print("\n--- INSPECTING STAT CATEGORIES ---")
         if hasattr(settings, 'stat_categories') and hasattr(settings.stat_categories, 'stats'):
             stats_list = settings.stat_categories.stats
             print(f"Found {len(stats_list)} stats.")
 
+            data_to_insert = []
             for stat in stats_list:
                 print(f"ID: {stat.stat_id} | Name: '{stat.name}' | Display: '{stat.display_name}' | Group: {stat.group}")
 
-                # Test your specific logic
                 cat = stat.display_name
                 if cat == 'SV%': cat = 'SVpct'
-                # print(f" -> DB Insert would be: ({LEAGUE_ID}, {stat.stat_id}, {cat}, {stat.group})")
+                data_to_insert.append((LEAGUE_ID, stat.stat_id, cat, stat.group))
+
+            print("\n--- SIMULATED DB INSERT ---")
+            for row in data_to_insert:
+                print(row)
+
         else:
             print("ERROR: settings object does not have stat_categories.stats")
-            print(f"Available attributes: {dir(settings)}")
+            print(dir(settings))
 
     except Exception as e:
         logger.error(f"Failed during query or parsing: {e}", exc_info=True)
