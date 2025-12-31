@@ -2062,7 +2062,16 @@ def get_matchup_stats():
                 stats = {
                     'team1': {'live': {cat: 0 for cat in all_categories_to_fetch}, 'row': {}},
                     'team2': {'live': {cat: 0 for cat in all_categories_to_fetch}, 'row': {}},
-                    'game_counts': { 'team1_total': 0, 'team2_total': 0, 'team1_remaining': 0, 'team2_remaining': 0 }
+                    'game_counts': {
+                        'team1_total': 0, 'team2_total': 0,
+                        'team1_remaining': 0, 'team2_remaining': 0,
+                        # --- NEW FIELDS ---
+                        'team1_skater_total': 0, 'team2_skater_total': 0,
+                        'team1_skater_remaining': 0, 'team2_skater_remaining': 0,
+                        'team1_goalie_total': 0, 'team2_goalie_total': 0,
+                        'team1_goalie_remaining': 0, 'team2_goalie_remaining': 0
+                        # ------------------
+                    }
                 }
 
                 for row in live_stats_raw:
@@ -2117,6 +2126,20 @@ def get_matchup_stats():
 
                     stats['game_counts']['team1_remaining'] += len(team1_starters)
                     stats['game_counts']['team2_remaining'] += len(team2_starters)
+
+                    # --- NEW LOGIC FOR REMAINING ---
+                    for p in team1_starters:
+                        if 'G' in (p.get('eligible_positions') or p.get('positions', '')):
+                            stats['game_counts']['team1_goalie_remaining'] += 1
+                        else:
+                            stats['game_counts']['team1_skater_remaining'] += 1
+
+                    for p in team2_starters:
+                        if 'G' in (p.get('eligible_positions') or p.get('positions', '')):
+                            stats['game_counts']['team2_goalie_remaining'] += 1
+                        else:
+                            stats['game_counts']['team2_skater_remaining'] += 1
+                    # -------------------------------
 
                     starter_names = [p['player_name_normalized'] for p in team1_starters + team2_starters if p.get('player_name_normalized')]
                     if starter_names:
@@ -2174,8 +2197,26 @@ def get_matchup_stats():
                     t2_play = [p for p in team2_ranked_roster if day_str in p.get('game_dates_this_week', [])]
                     t1_opt = get_optimal_lineup(t1_play, lineup_settings)
                     t2_opt = get_optimal_lineup(t2_play, lineup_settings)
-                    stats['game_counts']['team1_total'] += sum(len(v) for v in t1_opt.values())
-                    stats['game_counts']['team2_total'] += sum(len(v) for v in t2_opt.values())
+
+                    # --- REPLACED LOGIC FOR TOTALS ---
+                    # Process Team 1
+                    for pos_list in t1_opt.values():
+                        for p in pos_list:
+                            stats['game_counts']['team1_total'] += 1
+                            if 'G' in (p.get('eligible_positions') or p.get('positions', '')):
+                                stats['game_counts']['team1_goalie_total'] += 1
+                            else:
+                                stats['game_counts']['team1_skater_total'] += 1
+
+                    # Process Team 2
+                    for pos_list in t2_opt.values():
+                        for p in pos_list:
+                            stats['game_counts']['team2_total'] += 1
+                            if 'G' in (p.get('eligible_positions') or p.get('positions', '')):
+                                stats['game_counts']['team2_goalie_total'] += 1
+                            else:
+                                stats['game_counts']['team2_skater_total'] += 1
+                    # ---------------------------------
 
                 stats['team1_unused_spots'] = _calculate_unused_spots(days_in_week, team1_ranked_roster, lineup_settings, simulated_moves)
                 return jsonify(stats)

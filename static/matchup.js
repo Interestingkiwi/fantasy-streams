@@ -288,7 +288,7 @@
                 return;
             }
 
-          
+
             const dayOrder = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
             const sortedDays = Object.keys(unusedSpotsData).sort((a, b) => {
@@ -339,39 +339,69 @@
 
 
         function renderGameCounts(gameCounts, yourTeamName, opponentName) {
-                if (!gameCounts) {
-                    gameCountsContainer.innerHTML = '';
-                    return;
-                }
+        if (!gameCounts) {
+            gameCountsContainer.innerHTML = '';
+            return;
+        }
 
-                let tableHtml = `
-                    <div class="bg-gray-900 rounded-lg shadow">
-                        <h2 class="text-xl font-bold text-white p-3 bg-gray-800 rounded-t-lg">Total Player Starts</h2>
-                        <table class="w-full divide-y divide-gray-700">
-                            <thead class="bg-gray-700/50">
-                                <tr>
-                                    <th class="px-2 py-1 text-left text-xs font-bold text-gray-300 uppercase tracking-wider">Team</th>
-                                    <th class="px-2 py-1 text-center text-xs font-bold text-gray-300 uppercase tracking-wider">Total</th>
-                                    <th class="px-2 py-1 text-center text-xs font-bold text-gray-300 uppercase tracking-wider">Remaining</th>
-                                </tr>
-                            </thead>
-                            <tbody class="bg-gray-800"> <tr class="hover:bg-gray-700/50">
-                                    <td class="px-2 py-1 whitespace-nowrap text-sm font-medium text-gray-300">${yourTeamName}</td>
-                                    <td class="px-2 py-1 whitespace-nowrap text-sm text-center text-gray-300">${gameCounts.team1_total}</td>
-                                    <td class="px-2 py-1 whitespace-nowrap text-sm text-center text-gray-300">${gameCounts.team1_remaining}</td>
-                                </tr>
-                               <tr class="hover:bg-gray-700/50">
-                                    <td class="px-2 py-1 whitespace-nowrap text-sm font-medium text-gray-300">${opponentName}</td>
-                                    <td class="px-2 py-1 whitespace-nowrap text-sm text-center text-gray-300">${gameCounts.team2_total}</td>
-                                    <td class="px-2 py-1 whitespace-nowrap text-sm text-center text-gray-300">${gameCounts.team2_remaining}</td>
-                                </tr>
-                            </tbody>
-                        </table>
-                    </div>
-                `;
+        // Helper function to generate a table
+        function createTableHtml(title, t1Total, t1Remaining, t2Total, t2Remaining) {
+            return `
+                <div class="bg-gray-900 rounded-lg shadow">
+                    <h2 class="text-xl font-bold text-white p-3 bg-gray-800 rounded-t-lg">${title}</h2>
+                    <table class="w-full divide-y divide-gray-700">
+                        <thead class="bg-gray-700/50">
+                            <tr>
+                                <th class="px-2 py-1 text-left text-xs font-bold text-gray-300 uppercase tracking-wider">Team</th>
+                                <th class="px-2 py-1 text-center text-xs font-bold text-gray-300 uppercase tracking-wider">Total</th>
+                                <th class="px-2 py-1 text-center text-xs font-bold text-gray-300 uppercase tracking-wider">Remaining</th>
+                            </tr>
+                        </thead>
+                        <tbody class="bg-gray-800">
+                            <tr class="hover:bg-gray-700/50">
+                                <td class="px-2 py-1 whitespace-nowrap text-sm font-medium text-gray-300">${yourTeamName}</td>
+                                <td class="px-2 py-1 whitespace-nowrap text-sm text-center text-gray-300">${t1Total}</td>
+                                <td class="px-2 py-1 whitespace-nowrap text-sm text-center text-gray-300">${t1Remaining}</td>
+                            </tr>
+                            <tr class="hover:bg-gray-700/50">
+                                <td class="px-2 py-1 whitespace-nowrap text-sm font-medium text-gray-300">${opponentName}</td>
+                                <td class="px-2 py-1 whitespace-nowrap text-sm text-center text-gray-300">${t2Total}</td>
+                                <td class="px-2 py-1 whitespace-nowrap text-sm text-center text-gray-300">${t2Remaining}</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            `;
+        }
 
-                gameCountsContainer.innerHTML = tableHtml;
-            }
+        // Build HTML for all three tables stacked vertically
+        let combinedHtml = '<div class="space-y-4">'; // Add spacing between tables
+
+        // 1. Total Player Starts
+        combinedHtml += createTableHtml(
+            "Total Player Starts",
+            gameCounts.team1_total, gameCounts.team1_remaining,
+            gameCounts.team2_total, gameCounts.team2_remaining
+        );
+
+        // 2. Total Skater Starts
+        combinedHtml += createTableHtml(
+            "Total Skater Starts",
+            gameCounts.team1_skater_total, gameCounts.team1_skater_remaining,
+            gameCounts.team2_skater_total, gameCounts.team2_skater_remaining
+        );
+
+        // 3. Total Goalie Starts
+        combinedHtml += createTableHtml(
+            "Total Goalie Starts",
+            gameCounts.team1_goalie_total, gameCounts.team1_goalie_remaining,
+            gameCounts.team2_goalie_total, gameCounts.team2_goalie_remaining
+        );
+
+        combinedHtml += '</div>';
+
+        gameCountsContainer.innerHTML = combinedHtml;
+    }
 
     function renderSimulatedMovesLog() {
         if (!simLogContainer) return;
