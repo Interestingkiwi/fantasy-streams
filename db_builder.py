@@ -1017,8 +1017,18 @@ def _update_league_scoring_settings(yq, cursor, league_id, logger):
         data = []
         for stat in settings.stat_categories.stats:
             cat = stat.display_name
-            if cat == 'SV%': cat = 'SVpct'
-            data.append((league_id, stat.stat_id, cat, stat.group))
+            group = stat.group  # Start with the default from Yahoo
+
+            # [FIX 1] Normalize Save Percentage name for DB safety
+            if cat == 'SV%':
+                cat = 'SVpct'
+
+            # [FIX 2] Yahoo Quirk: Force 'GS' (Games Started) to be Goaltending
+            # Yahoo often mislabels this as 'Offense'
+            if cat == 'GS':
+                group = 'goaltending'
+
+            data.append((league_id, stat.stat_id, cat, group))
 
         sql = """
             INSERT INTO scoring (league_id, stat_id, category, scoring_group)
