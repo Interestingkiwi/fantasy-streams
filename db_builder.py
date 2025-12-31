@@ -1276,19 +1276,29 @@ def _update_waivers(lg, cursor, league_id, logger):
 
 def _update_rostered_players(lg, cursor, league_id, logger):
     logger.info("Updating rostered players...")
-    cursor.execute("DELETE FROM rostered_players WHERE league_id = %s", (league_id,))
-    data = []
-    try:
-        tkp = lg.taken_players()
-        for p in tkp:
-            pos = ','.join(p['eligible_positions'])
-            data.append((league_id, p['player_id'], 'R', pos))
-    except: pass
+    # Don't delete until we know we have data?
+    # Or at least log the error so we know why it's empty.
 
-    cursor.executemany("""
-        INSERT INTO rostered_players (league_id, player_id, status, eligible_positions)
-        VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING
-    """, data)
+    try:
+        tkp = lg.taken_players() # Fetch data first
+
+        if tkp:
+            # Only delete if we successfully got data
+            cursor.execute("DELETE FROM rostered_players WHERE league_id = %s", (league_id,))
+
+            data = []
+            for p in tkp:
+                pos = ','.join(p['eligible_positions'])
+                data.append((league_id, p['player_id'], 'R', pos))
+
+            cursor.executemany("""
+                INSERT INTO rostered_players (league_id, player_id, status, eligible_positions)
+                VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING
+            """, data)
+            logger.info(f"Successfully updated {len(data)} rostered players.")
+
+    except Exception as e:
+        logger.error(f"FAILED to update rostered_players: {e}", exc_info=True)
 
 def _update_db_metadata(cursor, league_id, logger, update_available_players_timestamp=False, is_full_update=False):
     # Use UTC for consistency
