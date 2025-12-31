@@ -22,31 +22,67 @@
     </div>
 </div>
 
-    <div id="modal-gift-premium" class="fixed inset-0 bg-black bg-opacity-75 hidden items-center justify-center z-50">
+<div id="modal-gift-premium" class="fixed inset-0 bg-black bg-opacity-75 hidden items-center justify-center z-50">
         <div class="bg-gray-800 rounded-lg p-8 max-w-md w-full border border-gray-600 shadow-2xl">
             <h3 class="text-2xl font-bold text-yellow-500 mb-4">Go Premium</h3>
-            <p class="text-gray-300 mb-6">
-                Thanks for testing the app! As a token of appreciation, click below to unlock a <strong>Lifetime Account</strong> for free.
+            <p class="text-gray-300 mb-4 text-sm">
+                <strong>Nothing</strong> is currently locked behind premium, however this app costs about $25/mo to keep running.
             </p>
-            <div class="flex justify-end gap-3">
-                <button id="btn-close-gift" class="text-gray-400 hover:text-white px-4 py-2">Cancel</button>
-                <button id="btn-claim-gift" class="bg-yellow-600 hover:bg-yellow-500 text-white font-bold py-2 px-6 rounded shadow-lg transform hover:scale-105 transition">
-                    Claim Lifetime Account
-                </button>
+            <p class="text-gray-300 mb-6 text-sm">
+                If you'd like to support development, any donation will be rewarded with premium access for the entire 2026/27 season. Please include your <strong>User ID</strong> below in the donation note so I can upgrade your account manually.
+            </p>
+
+            <div class="bg-gray-700 p-4 rounded mb-6 border border-gray-600">
+                <label class="text-xs text-gray-400 uppercase font-bold tracking-wider">Your User ID (Include in Note)</label>
+                <div class="flex items-center gap-2 mt-2">
+                    <code id="user-guid-display" class="bg-gray-900 text-green-400 p-2 rounded flex-1 font-mono text-xs overflow-hidden text-ellipsis select-all border border-gray-700">Loading...</code>
+                    <button id="btn-copy-guid" class="bg-gray-600 hover:bg-gray-500 text-white px-3 py-2 rounded text-xs font-bold transition">
+                        COPY
+                    </button>
+                </div>
+            </div>
+
+            <div class="flex flex-col gap-3">
+            <a id="btn-donate-paypal" href="https://paypal.me/jaydruck" target="_blank" class="bg-[#0070BA] hover:bg-[#003087] text-white font-bold py-2 px-6 rounded shadow-lg text-center flex items-center justify-center gap-2 transition cursor-pointer">
+                 Donate via PayPal
+            </a>
+            <div class="flex flex-col gap-3">
+            <a id="btn-donate-paypal" href="https://paypal.me/jaydruck" target="_blank" class="bg-[#0070BA] hover:bg-[#003087] text-white font-bold py-2 px-6 rounded shadow-lg text-center flex items-center justify-center gap-2 transition cursor-pointer">
+                 Donate via PayPal
+            </a>
+                <button id="btn-close-gift" class="text-gray-400 hover:text-white px-4 py-2 mt-2 text-sm">Close</button>
             </div>
         </div>
     </div>
-
+<div id="modal-donation-reminder" class="fixed inset-0 bg-black bg-opacity-75 hidden items-center justify-center z-[60]">
+    <div class="bg-gray-800 rounded-lg p-6 max-w-sm w-full border border-yellow-600 shadow-2xl transform transition-all scale-100">
+        <h3 class="text-xl font-bold text-white mb-3 flex items-center gap-2">
+            <span class="text-yellow-500 text-2xl">⚠️</span> Just a reminder
+        </h3>
+        <p class="text-gray-300 mb-6 text-sm leading-relaxed">
+            Nothing on the site currently requires a premium account. Premium-only features will only be implemented for the <strong>2026/27 Season</strong> and beyond.
+        </p>
+        <div class="flex justify-end gap-3">
+            <button id="btn-cancel-donation" class="text-gray-400 hover:text-white px-3 py-2 text-sm transition">Cancel</button>
+            <button id="btn-confirm-donation" class="bg-yellow-600 hover:bg-yellow-500 text-white font-bold py-2 px-4 rounded shadow-lg text-sm transition transform hover:scale-105">
+                Continue to Donate
+            </button>
+        </div>
+    </div>
+</div>
     <div id="modal-benefits" class="fixed inset-0 bg-black bg-opacity-75 hidden items-center justify-center z-50">
         <div class="bg-gray-800 rounded-lg p-8 max-w-lg w-full border border-gray-600 shadow-2xl">
             <h3 class="text-2xl font-bold text-blue-400 mb-4">Premium Benefits</h3>
             <div class="text-gray-300 space-y-3 mb-6">
-                <p>Unlock the full power of Fantasy Streams:</p>
+                <p>Features that will likely be locked behind premium:</p>
                 <ul class="list-disc list-inside space-y-1 ml-2 text-sm text-gray-400">
-                    <li>Automated daily database updates.</li>
-                    <li>A</li>
-                    <li>B</li>
-                    <li>Priority support.</li>
+                    <li>Automated league database updates daily, and automated roster updates on visit</li>
+                    <li>Priority manual updates</li>
+                    <li>Similar League Insights</li>
+                    <li>Direct Yahoo Integration Tools (Add/Drop Scheduler, Lineup Setter, etc</li>
+                    <li>Early/Free App Access</li>
+                    <li>Priority Support</li>
+                    <li>Historical League Data</li>
                 </ul>
             </div>
             <div class="flex justify-end">

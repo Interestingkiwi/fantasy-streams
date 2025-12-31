@@ -268,19 +268,19 @@ def get_user_status():
                 row = cursor.fetchone()
 
         if row:
-            # Convert date object to string for JSON serialization
             exp_date = str(row['premium_expiration_date']) if row['premium_expiration_date'] else None
 
             return jsonify({
                 "is_premium": bool(row['is_premium']),
-                "expiration_date": exp_date
+                "expiration_date": exp_date,
+                "user_guid": guid  # <--- ADD THIS LINE
             })
 
     except Exception as e:
         logging.error(f"Error fetching user status: {e}", exc_info=True)
 
-    return jsonify({"is_premium": False, "expiration_date": None})
-
+    # Return guid even on fallback so they can still copy it
+    return jsonify({"is_premium": False, "expiration_date": None, "user_guid": guid})
 
 @app.route('/api/gift_premium', methods=['POST'])
 def gift_premium():

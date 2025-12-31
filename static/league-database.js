@@ -156,20 +156,36 @@ function initPremiumFeatures() {
     const exploreBtn = document.getElementById('btn-explore-benefits');
     const statusText = document.getElementById('premium-status-text');
 
+    // Modals
     const giftModal = document.getElementById('modal-gift-premium');
     const benefitsModal = document.getElementById('modal-benefits');
+    const reminderModal = document.getElementById('modal-donation-reminder'); // NEW
 
-    const claimBtn = document.getElementById('btn-claim-gift');
+    // Buttons
     const closeGiftBtn = document.getElementById('btn-close-gift');
     const closeBenefitsBtn = document.getElementById('btn-close-benefits');
+    const guidDisplay = document.getElementById('user-guid-display');
+    const copyGuidBtn = document.getElementById('btn-copy-guid');
 
-    if(!container) return; // Guard clause if elements don't exist
+    // Donation Buttons
+    const donatePaypalBtn = document.getElementById('btn-donate-paypal');
+    const confirmDonationBtn = document.getElementById('btn-confirm-donation'); // NEW
+    const cancelDonationBtn = document.getElementById('btn-cancel-donation');   // NEW
+
+    let pendingDonationUrl = ''; // Store the URL here
+
+    if(!container) return;
 
     // 1. Fetch Status
     fetch('/api/user_status')
         .then(res => res.json())
         .then(data => {
             container.classList.remove('hidden');
+
+            // Populate GUID in the modal
+            if (guidDisplay && data.user_guid) {
+                guidDisplay.textContent = data.user_guid;
+            }
 
             if (data.is_premium) {
                 actionBtn.textContent = "Extend Premium";
@@ -200,30 +216,55 @@ function initPremiumFeatures() {
     closeGiftBtn.onclick = () => closeModal(giftModal);
     closeBenefitsBtn.onclick = () => closeModal(benefitsModal);
 
+    if(cancelDonationBtn) {
+        cancelDonationBtn.onclick = () => {
+            closeModal(reminderModal);
+            pendingDonationUrl = '';
+        };
+    }
+
     window.onclick = (event) => {
         if (event.target == giftModal) closeModal(giftModal);
         if (event.target == benefitsModal) closeModal(benefitsModal);
     };
 
-    // 3. Claim Gift Logic
-    claimBtn.onclick = async () => {
-        claimBtn.textContent = "Updating...";
-        claimBtn.disabled = true;
-        try {
-            const res = await fetch('/api/gift_premium', { method: 'POST' });
-            const result = await res.json();
-            if (result.success) {
-                alert("Success! Your account has been upgraded to Lifetime Premium.");
-                window.location.reload();
-            } else {
-                alert("Error: " + (result.error || "Unknown error occurred."));
-                claimBtn.textContent = "Claim Lifetime Account";
-                claimBtn.disabled = false;
+    if (donatePaypalBtn) {
+        donatePaypalBtn.onclick = (e) => {
+            e.preventDefault(); // Stop the link from opening
+            pendingDonationUrl = donatePaypalBtn.href; // Save the URL
+
+            // Show Reminder
+            reminderModal.classList.remove('hidden');
+            reminderModal.classList.add('flex');
+        };
+    }
+
+    if (confirmDonationBtn) {
+        confirmDonationBtn.onclick = () => {
+            if (pendingDonationUrl) {
+                window.open(pendingDonationUrl, '_blank'); // Open URL in new tab
             }
-        } catch (e) {
-            alert("Network error occurred.");
-            claimBtn.textContent = "Claim Lifetime Account";
-            claimBtn.disabled = false;
-        }
-    };
+            closeModal(reminderModal);
+            pendingDonationUrl = '';
+        };
+    }
+    
+    // 3. Copy GUID Logic
+    if (copyGuidBtn && guidDisplay) {
+        copyGuidBtn.onclick = () => {
+            const guid = guidDisplay.textContent;
+            navigator.clipboard.writeText(guid).then(() => {
+                const originalText = copyGuidBtn.textContent;
+                copyGuidBtn.textContent = "COPIED!";
+                copyGuidBtn.classList.add("bg-green-600", "text-white");
+
+                setTimeout(() => {
+                    copyGuidBtn.textContent = originalText;
+                    copyGuidBtn.classList.remove("bg-green-600", "text-white");
+                }, 2000);
+            }).catch(err => {
+                console.error('Failed to copy text: ', err);
+            });
+        };
+    }
 }
