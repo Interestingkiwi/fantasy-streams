@@ -22,3 +22,5 @@ token_cache.json
 applocal.js
 appwebapp.js
 gitpush.bat
+debug_roster.py 
+debug_teams.py 
