@@ -71,9 +71,6 @@
         }
     };
 
-    // --- REMOVED LOCAL connectToLogStream FUNCTION ENTIRELY ---
-    // We now rely exclusively on window.startLogStream from home.js
-
     const handleDbAction = async (event) => {
         event.preventDefault();
         actionButton.disabled = true;
@@ -159,7 +156,7 @@ function initPremiumFeatures() {
     // Modals
     const giftModal = document.getElementById('modal-gift-premium');
     const benefitsModal = document.getElementById('modal-benefits');
-    const reminderModal = document.getElementById('modal-donation-reminder'); // NEW
+    const reminderModal = document.getElementById('modal-donation-reminder');
 
     // Buttons
     const closeGiftBtn = document.getElementById('btn-close-gift');
@@ -169,8 +166,9 @@ function initPremiumFeatures() {
 
     // Donation Buttons
     const donatePaypalBtn = document.getElementById('btn-donate-paypal');
-    const confirmDonationBtn = document.getElementById('btn-confirm-donation'); // NEW
-    const cancelDonationBtn = document.getElementById('btn-cancel-donation');   // NEW
+    const donateVenmoBtn = document.getElementById('btn-donate-venmo'); // NEW
+    const confirmDonationBtn = document.getElementById('btn-confirm-donation');
+    const cancelDonationBtn = document.getElementById('btn-cancel-donation');
 
     let pendingDonationUrl = ''; // Store the URL here
 
@@ -226,17 +224,27 @@ function initPremiumFeatures() {
     window.onclick = (event) => {
         if (event.target == giftModal) closeModal(giftModal);
         if (event.target == benefitsModal) closeModal(benefitsModal);
+        // Also close reminder if clicking outside box
+        if (event.target == reminderModal) {
+            closeModal(reminderModal);
+            pendingDonationUrl = '';
+        }
+    };
+
+    // Helper to handle donation clicks
+    const handleDonationClick = (e, btn) => {
+        e.preventDefault();
+        pendingDonationUrl = btn.href;
+        reminderModal.classList.remove('hidden');
+        reminderModal.classList.add('flex');
     };
 
     if (donatePaypalBtn) {
-        donatePaypalBtn.onclick = (e) => {
-            e.preventDefault(); // Stop the link from opening
-            pendingDonationUrl = donatePaypalBtn.href; // Save the URL
+        donatePaypalBtn.onclick = (e) => handleDonationClick(e, donatePaypalBtn);
+    }
 
-            // Show Reminder
-            reminderModal.classList.remove('hidden');
-            reminderModal.classList.add('flex');
-        };
+    if (donateVenmoBtn) {
+        donateVenmoBtn.onclick = (e) => handleDonationClick(e, donateVenmoBtn);
     }
 
     if (confirmDonationBtn) {
@@ -248,7 +256,7 @@ function initPremiumFeatures() {
             pendingDonationUrl = '';
         };
     }
-    
+
     // 3. Copy GUID Logic
     if (copyGuidBtn && guidDisplay) {
         copyGuidBtn.onclick = () => {
