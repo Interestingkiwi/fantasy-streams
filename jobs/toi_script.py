@@ -1558,7 +1558,6 @@ def fetch_daily_goalie_days_rest_stats():
 # --- MERGING FUNCTIONS ---
 
 def join_special_teams_data():
-    # ... (No changes here) ...
     print("\n--- Joining Special Teams into Projections ---")
     with get_db_connection() as conn:
         with conn.cursor() as cursor:
@@ -1585,12 +1584,25 @@ def join_special_teams_data():
             FROM last_week_pp
         """, conn)
 
+        # --- FIX: Drop overlapping columns from df_proj to prevent _x/_y duplication ---
+        lg_cols = [c for c in df_lg.columns if c != 'nhlplayerid']
+        lw_cols = [c for c in df_lw.columns if c != 'nhlplayerid']
+
+        # Identify columns in df_proj that collide with incoming data
+        cols_to_drop = [c for c in df_proj.columns if c in lg_cols or c in lw_cols]
+
+        if cols_to_drop:
+            print(f"  Dropping {len(cols_to_drop)} stale columns from projections before merge.")
+            df_proj.drop(columns=cols_to_drop, inplace=True)
+
+        # Merge clean dataframes
         df_final = pd.merge(df_proj, df_lg, on='nhlplayerid', how='left')
         df_final = pd.merge(df_final, df_lw, on='nhlplayerid', how='left')
 
         if 'nhlplayerid' in df_final.columns:
             df_final['nhlplayerid'] = pd.to_numeric(df_final['nhlplayerid'], errors='coerce').astype('Int64')
 
+        # Write back to projections
         df_to_postgres(df_final, 'projections', conn, lowercase_columns=False, primary_key='player_name_normalized')
 
         with conn.cursor() as cursor:
@@ -1864,11 +1876,15 @@ def create_stats_to_date_table():
         df_to_postgres(df_merged, 'stats_to_date', conn, lowercase_columns=False, primary_key='player_name_normalized')
 
 def calculate_and_save_to_date_ranks():
-    # ... (No changes here) ...
     print("\n--- Calculating Ranks ---")
     with get_db_connection() as conn:
+        # Read FULL table (ensuring true_start_pct is included if it exists)
         df = read_sql_postgres("SELECT * FROM stats_to_date", conn)
         if df.empty: return
+
+        # Verify true_start_pct is present (Debug Check)
+        if 'true_start_pct' not in df.columns:
+            print("WARNING: 'true_start_pct' column NOT found in stats_to_date before ranking.")
 
         # --- UPDATED: Added GWG, FW, FL, FOpct to list of ranked stats ---
         skater_stats = ['G', 'A', 'P', 'PPG', 'PPA', 'PPP', 'SHG', 'SHA', 'SHP', 'GWG', 'HIT', 'BLK', 'PIM', 'FOW', 'SOG', 'plus_minus', 'FW', 'FL', 'FOpct']
@@ -1908,6 +1924,9 @@ def calculate_and_save_to_date_ranks():
                     choice = [1,2,3,4,5,6,7,8,9,10,15]
                     df.loc[mask_goalie, col] = np.select(cond, choice, default=20)
 
+        # Write back to Postgres
+        # This overwrites the table. Since 'df' was read via "SELECT *",
+        # it includes 'true_start_pct' unless the column was missing from the DB to begin with.
         df_to_postgres(df, 'stats_to_date', conn, lowercase_columns=False, primary_key='player_name_normalized')
 
 def create_combined_projections():
