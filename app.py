@@ -1187,7 +1187,14 @@ def _get_ranked_players(cursor, player_ids, cat_rank_columns, raw_stat_columns, 
 
     # Select using the DB names
     cols_to_select_db = db_cat_rank_columns + pp_stat_columns + db_raw_stat_columns
-    stat_cols_select = [f'proj."{c}"' for c in cols_to_select_db]
+
+    # [UPDATED] Swap GS for true_start_pct (using proj alias)
+    stat_cols_select = []
+    for c in cols_to_select_db:
+        if c == 'GS':
+            stat_cols_select.append('COALESCE(proj.true_start_pct, 0) as "GS"')
+        else:
+            stat_cols_select.append(f'proj."{c}"')
 
     status_col = """
         CASE
@@ -2145,7 +2152,14 @@ def get_matchup_stats():
                     if starter_names:
                         placeholders = ','.join(['%s'] * len(starter_names))
                         db_projection_cats = [c.replace('+/-', 'plus_minus') for c in projection_cats]
-                        quoted_cats = [f'"{c}"' for c in db_projection_cats]
+
+                        # [UPDATED] Swap GS for true_start_pct
+                        quoted_cats = []
+                        for c in db_projection_cats:
+                            if c == 'GS':
+                                quoted_cats.append('COALESCE(true_start_pct, 0) as "GS"')
+                            else:
+                                quoted_cats.append(f'"{c}"')
 
                         query = f"SELECT player_name_normalized, {', '.join(quoted_cats)} FROM {stat_table} WHERE player_name_normalized IN ({placeholders})"
                         cursor.execute(query, tuple(starter_names))
@@ -3522,7 +3536,14 @@ def get_trade_helper_league_roster_data():
 
                 if valid_normalized_names:
                     cols_to_select = list(set(cat_rank_columns + pp_cols + raw_stats_to_fetch + ['nhlplayerid']))
-                    quoted_cols = [f'"{col}"' for col in cols_to_select]
+
+                    # [UPDATED] Swap GS for true_start_pct
+                    quoted_cols = []
+                    for col in cols_to_select:
+                        if col == 'GS':
+                            quoted_cols.append('COALESCE(true_start_pct, 0) as "GS"')
+                        else:
+                            quoted_cols.append(f'"{col}"')
 
                     placeholders = ','.join(['%s'] * len(valid_normalized_names))
 
@@ -4100,7 +4121,14 @@ def get_roster_data():
                 player_lines_info = {} # --- NEW STORE FOR LINE INFO ---
 
                 if valid_names:
-                    quoted_cols = [f'"{c}"' for c in (all_cols + pp_stat_columns)]
+                    # [UPDATED] Swap GS for true_start_pct
+                    quoted_cols = []
+                    for c in (all_cols + pp_stat_columns):
+                        if c == 'GS':
+                            quoted_cols.append('COALESCE(true_start_pct, 0) as "GS"')
+                        else:
+                            quoted_cols.append(f'"{c}"')
+
                     placeholders = ','.join(['%s'] * len(valid_names))
 
                     # A. Fetch Stats

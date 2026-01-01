@@ -17,6 +17,7 @@ import json
 import psycopg2
 import psycopg2.extras
 import io
+from collections import defaultdict
 
 # Add parent dir to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -1661,6 +1662,120 @@ def perform_smart_join(base_df, merge_df, merge_cols, source_name, conn):
     drop_cols = [c for c in df_merged.columns if c.endswith('_new') or c.endswith('_name') or c == 'mc_key']
     return df_merged.drop(columns=drop_cols)
 
+
+def fetch_and_update_true_goalie_starts():
+    print("\n--- Fetching & Updating True Goalie Starts (L15 Trend) ---")
+
+    # 1. Setup Persistent Tables & Columns
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
+            # Table to track which games we have already scanned for dressed goalies
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS goalie_dressed_lookup (
+                    gameid INTEGER,
+                    nhlplayerid INTEGER,
+                    PRIMARY KEY (gameid, nhlplayerid)
+                )
+            """)
+            # Ensure projections table has the column to store our result
+            cursor.execute("""
+                ALTER TABLE projections
+                ADD COLUMN IF NOT EXISTS true_start_pct REAL
+            """)
+        conn.commit()
+
+    # 2. Incremental Scan: Find games in historical_stats we haven't checked for 'Dressed' status yet
+    with get_db_connection() as conn:
+        game_ids_to_scan = read_sql_postgres("""
+            SELECT DISTINCT h.gameid
+            FROM historical_stats h
+            WHERE h.gameid NOT IN (SELECT DISTINCT gameid FROM goalie_dressed_lookup)
+            ORDER BY h.gameid
+        """, conn)
+
+    ids_to_process = game_ids_to_scan['gameid'].tolist() if not game_ids_to_scan.empty else []
+    print(f"Found {len(ids_to_process)} games to scan for goalie roster status.")
+
+    BASE_URL = "https://api-web.nhle.com/v1/gamecenter/{}/boxscore"
+    new_dressed_records = []
+
+    # 3. Fetch Boxscores for missing games
+    if ids_to_process:
+        for i, gid in enumerate(ids_to_process):
+            if i % 10 == 0: print(f"  Scanning game {gid} ({i+1}/{len(ids_to_process)})...")
+            try:
+                resp = requests.get(BASE_URL.format(gid), timeout=5)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    # Check both Home and Away
+                    for side in ['awayTeam', 'homeTeam']:
+                        if side in data.get('playerByGameStats', {}):
+                            g_list = data['playerByGameStats'][side].get('goalies', [])
+                            for g in g_list:
+                                pid = g.get('playerId')
+                                if pid:
+                                    new_dressed_records.append((gid, pid))
+                time.sleep(0.1)
+            except Exception as e:
+                print(f"  Error scanning game {gid}: {e}")
+
+        # Save New Records
+        if new_dressed_records:
+            print(f"  Saving {len(new_dressed_records)} new dressed records...")
+            with get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.executemany(
+                        "INSERT INTO goalie_dressed_lookup (gameid, nhlplayerid) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+                        new_dressed_records
+                    )
+                conn.commit()
+
+    # 4. Calculate L15 Trend
+    print("Calculating L15 Start %...")
+    with get_db_connection() as conn:
+        # A. Get Dressed History linked to Dates (for sorting)
+        query_history = """
+            SELECT g.nhlplayerid, g.gameid, h.gamedate
+            FROM goalie_dressed_lookup g
+            JOIN (SELECT DISTINCT gameid, gamedate FROM historical_stats) h ON g.gameid = h.gameid
+            ORDER BY g.nhlplayerid, h.gamedate DESC
+        """
+        df_history = read_sql_postgres(query_history, conn)
+
+        # B. Get Actual Starts (Games where they actually played/started)
+        df_starts = read_sql_postgres("SELECT gameid, nhlplayerid FROM historical_goalie_stats WHERE gamesstarted > 0", conn)
+        started_set = set(zip(df_starts['gameid'], df_starts['nhlplayerid']))
+
+        updates = []
+
+        # Group by player and process last 15
+        for pid, group in df_history.groupby('nhlplayerid'):
+            last_15 = group.head(15)
+            dressed_count = len(last_15)
+
+            if dressed_count == 0: continue
+
+            start_count = 0
+            for _, row in last_15.iterrows():
+                if (row['gameid'], row['nhlplayerid']) in started_set:
+                    start_count += 1
+
+            rate = round(start_count / dressed_count, 3)
+            updates.append((rate, int(pid)))
+
+        # 5. Update Projections Table
+        if updates:
+            print(f"Updating projections for {len(updates)} goalies...")
+            with conn.cursor() as cursor:
+                cursor.executemany("""
+                    UPDATE projections
+                    SET true_start_pct = %s
+                    WHERE nhlplayerid = %s
+                """, updates)
+            conn.commit()
+            print("Projections updated with L15 start rates.")
+
+
 def create_stats_to_date_table():
     print("\n--- Creating stats_to_date ---")
     with get_db_connection() as conn:
@@ -1668,6 +1783,7 @@ def create_stats_to_date_table():
             cursor.execute("TRUNCATE TABLE unmatched_players")
         conn.commit()
 
+        # 1. READ PROJECTIONS (Now contains 'true_start_pct')
         df_proj = read_sql_postgres("SELECT * FROM projections", conn)
         if 'gp' in df_proj.columns: df_proj.rename(columns={'gp': 'GP'}, inplace=True)
         df_proj['nhlplayerid'] = pd.to_numeric(df_proj['nhlplayerid'], errors='coerce').fillna(0).astype(int)
@@ -1677,36 +1793,34 @@ def create_stats_to_date_table():
         if drop_rank_cols:
             df_proj.drop(columns=drop_rank_cols, inplace=True)
 
+        # 2. SCORING
         df_sc = read_sql_postgres("SELECT * FROM scoring_to_date", conn)
-        # --- UPDATED MAPPING: Added gwgoals to GWG ---
         sc_map = {
             'gamesplayed': 'GPskater', 'goals': 'G', 'assists': 'A', 'points': 'P', 'plusminus': 'plus_minus',
             'penaltyminutes': 'PIM', 'ppgoals': 'PPG', 'ppassists': 'PPA', 'pppoints': 'PPP',
             'shgoals': 'SHG', 'shassists': 'SHA', 'shpoints': 'SHP',
-            'gwgoals': 'GWG',  # Added GWG mapping
+            'gwgoals': 'GWG',
             'shootingpct': 'shootingPct', 'toi/g': 'TOI/G', 'shots': 'SOG'
         }
         df_sc.rename(columns=sc_map, inplace=True)
         df_sc['nhlplayerid'] = pd.to_numeric(df_sc['nhlplayerid'], errors='coerce').fillna(0).astype(int)
-
         df_merged = perform_smart_join(df_proj, df_sc, list(sc_map.values()), 'scoring', conn)
 
+        # 3. BANGERS
         df_bn = read_sql_postgres("SELECT * FROM bangers_to_date", conn)
         bn_map = {'blockspergame': 'BLK', 'hitspergame': 'HIT'}
         df_bn.rename(columns=bn_map, inplace=True)
         df_bn['nhlplayerid'] = pd.to_numeric(df_bn['nhlplayerid'], errors='coerce').fillna(0).astype(int)
-
         df_merged = perform_smart_join(df_merged, df_bn, list(bn_map.values()), 'bangers', conn)
 
-        # --- NEW: Join Faceoff Stats ---
+        # 4. FACEOFFS
         df_fo = read_sql_postgres("SELECT * FROM faceoff_to_date", conn)
         fo_map = {'totalfaceoffwins': 'FW', 'totalfaceofflosses': 'FL', 'faceoffwinpct': 'FOpct'}
         df_fo.rename(columns=fo_map, inplace=True)
         df_fo['nhlplayerid'] = pd.to_numeric(df_fo['nhlplayerid'], errors='coerce').fillna(0).astype(int)
-
         df_merged = perform_smart_join(df_merged, df_fo, list(fo_map.values()), 'faceoffs', conn)
 
-        # --- FIX for GOALIE JOIN ---
+        # 5. GOALIES
         df_gl = read_sql_postgres("SELECT * FROM goalie_to_date", conn)
         gl_map = {
             'gamesstarted': 'GS', 'gamesplayed': 'GP', 'goalsagainstaverage': 'GAA', 'losses': 'L',
@@ -1716,7 +1830,9 @@ def create_stats_to_date_table():
         df_gl.rename(columns=gl_map, inplace=True)
         df_gl['nhlplayerid'] = pd.to_numeric(df_gl['nhlplayerid'], errors='coerce').fillna(0).astype(int)
 
-        # Use Name-Only Match for Goalies (overwrites missing IDs in Projections)
+        # [NEW LOGIC] Use true_start_pct from PROJECTIONS (base_df) to overwrite startpct if available
+        # df_merged is derived from df_proj, so it already has 'true_start_pct' if it existed in DB
+
         print(f"  Smart Join: goalies (Name Only)")
         cols_to_use = list(gl_map.values()) + ['player_name_normalized', 'nhlplayerid']
         cols_to_use = [c for c in cols_to_use if c in df_gl.columns]
@@ -1728,9 +1844,17 @@ def create_stats_to_date_table():
             if f"{col}_gl" in df_merged.columns:
                  df_merged[col] = df_merged[col].fillna(df_merged[f"{col}_gl"])
 
-        # Fix Broken IDs from Projections using correct API ID
+        # [CRITICAL UPDATE] Overwrite 'startpct' with 'true_start_pct' (from Projections) if available
+        if 'true_start_pct' in df_merged.columns:
+            print("  Overwriting startpct with L15 true_start_pct...")
+            df_merged['startpct'] = np.where(
+                df_merged['true_start_pct'].notna() & (df_merged['true_start_pct'] > 0),
+                df_merged['true_start_pct'],
+                df_merged['startpct']
+            )
+
+        # Fix Broken IDs from Projections using correct API ID from Goalie Table
         if 'nhlplayerid_gl' in df_merged.columns:
-             # If projection ID is missing (0) but we found a name match, update it
              df_merged['nhlplayerid'] = np.where(
                  df_merged['nhlplayerid'] == 0,
                  df_merged['nhlplayerid_gl'].fillna(0),
@@ -3010,6 +3134,7 @@ def update_toi_stats():
     fetch_daily_summary_stats()
     fetch_daily_realtime_stats()
     fetch_game_shifts()
+    fetch_and_update_true_goalie_starts()
     fetch_daily_historical_goalie_stats()
     fetch_daily_goalie_advanced_stats()
     fetch_daily_goalie_days_rest_stats()
