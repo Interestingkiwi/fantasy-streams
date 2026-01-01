@@ -1902,23 +1902,23 @@ def create_stats_to_date_table():
              )
 
         df_to_postgres(df_merged, 'stats_to_date', conn, lowercase_columns=False, primary_key='player_name_normalized')
+
+
 def calculate_and_save_to_date_ranks():
     print("\n--- Calculating Ranks ---")
     with get_db_connection() as conn:
-        # Read FULL table (ensuring true_start_pct is included if it exists)
         df = read_sql_postgres("SELECT * FROM stats_to_date", conn)
         if df.empty: return
 
-        # Verify true_start_pct is present (Debug Check)
-        if 'true_start_pct' not in df.columns:
-            print("WARNING: 'true_start_pct' column NOT found in stats_to_date before ranking.")
-
-        # --- UPDATED: Added GWG, FW, FL, FOpct to list of ranked stats ---
+        # Skater Stats Configuration
         skater_stats = ['G', 'A', 'P', 'PPG', 'PPA', 'PPP', 'SHG', 'SHA', 'SHP', 'GWG', 'HIT', 'BLK', 'PIM', 'FOW', 'SOG', 'plus_minus', 'FW', 'FL', 'FOpct']
+
+        # Goalie Stats Configuration (True = Lower is Better)
         goalie_stats = {'GS': False, 'W': False, 'L': True, 'GA': True, 'SA': False, 'SV': False, 'SVpct': False, 'GAA': True, 'SHO': False, 'QS': False}
 
         if 'positions' not in df.columns: return
 
+        # --- SKATER RANKS ---
         mask_skater = ~df['positions'].str.contains('G', na=False)
         num_skaters = mask_skater.sum()
         if num_skaters > 0:
@@ -1935,25 +1935,31 @@ def calculate_and_save_to_date_ranks():
                     choice = [1,2,3,4,5,6,7,8,9,10,15]
                     df.loc[mask_skater, col] = np.select(cond, choice, default=20)
 
+        # --- GOALIE RANKS ---
         mask_goalie = df['positions'].str.contains('G', na=False)
         num_goalies = mask_goalie.sum()
         if num_goalies > 0:
             for stat, is_inv in goalie_stats.items():
                 col = f"{stat}_cat_rank"
-                s_key = stat if stat in df.columns else stat.lower()
-                if stat == 'TOI/G': s_key = 'TOI/G' if 'TOI/G' in df.columns else 'toi/g'
+
+                # [UPDATED] Use 'true_start_pct' for GS rank, but keep output column as GS_cat_rank
+                if stat == 'GS':
+                    s_key = 'true_start_pct'
+                elif stat == 'TOI/G':
+                    s_key = 'TOI/G' if 'TOI/G' in df.columns else 'toi/g'
+                else:
+                    s_key = stat if stat in df.columns else stat.lower()
 
                 if s_key in df.columns:
                     df[s_key] = pd.to_numeric(df[s_key], errors='coerce').fillna(0)
+                    # Rank Calculation
                     ranks = df.loc[mask_goalie, s_key].rank(method='first', ascending=is_inv)
                     pct = ranks / num_goalies
+
                     cond = [pct<=0.05, pct<=0.10, pct<=0.15, pct<=0.20, pct<=0.25, pct<=0.30, pct<=0.35, pct<=0.40, pct<=0.45, pct<=0.50, pct<=0.75]
                     choice = [1,2,3,4,5,6,7,8,9,10,15]
                     df.loc[mask_goalie, col] = np.select(cond, choice, default=20)
 
-        # Write back to Postgres
-        # This overwrites the table. Since 'df' was read via "SELECT *",
-        # it includes 'true_start_pct' unless the column was missing from the DB to begin with.
         df_to_postgres(df, 'stats_to_date', conn, lowercase_columns=False, primary_key='player_name_normalized')
 
 def create_combined_projections():
