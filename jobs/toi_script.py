@@ -1689,7 +1689,9 @@ def fetch_and_update_true_goalie_starts():
                     PRIMARY KEY (gameid, nhlplayerid)
                 )
             """)
-            # Ensure projections table has the columns to store our results
+            # Ensure projections table has BOTH columns
+            # true_start_pct = L15 Trend (For Projections)
+            # true_start_pct_season = Full Season Trend (For Stats to Date)
             cursor.execute("""
                 ALTER TABLE projections
                 ADD COLUMN IF NOT EXISTS true_start_pct REAL,
@@ -1697,7 +1699,7 @@ def fetch_and_update_true_goalie_starts():
             """)
         conn.commit()
 
-    # 2. Incremental Scan: Find games in historical_stats we haven't checked for 'Dressed' status yet
+    # 2. Incremental Scan (Find games in historical_stats we haven't checked for 'Dressed' status yet)
     with get_db_connection() as conn:
         game_ids_to_scan = read_sql_postgres("""
             SELECT DISTINCT h.gameid
@@ -1743,7 +1745,7 @@ def fetch_and_update_true_goalie_starts():
                     )
                 conn.commit()
 
-    # 4. Calculate Start Rates (L15 and Season)
+    # 4. Calculate BOTH Rates (L15 and Season)
     print("Calculating True Start % (L15 and Season)...")
     with get_db_connection() as conn:
         # A. Get Dressed History linked to Dates (for sorting)
@@ -1788,7 +1790,7 @@ def fetch_and_update_true_goalie_starts():
 
             updates.append((rate_l15, rate_season, int(pid)))
 
-        # 5. Update Projections Table
+        # 5. Update Projections Table with BOTH values
         if updates:
             print(f"Updating projections for {len(updates)} goalies...")
             with conn.cursor() as cursor:
@@ -1867,8 +1869,8 @@ def create_stats_to_date_table():
             if f"{col}_gl" in df_merged.columns:
                  df_merged[col] = df_merged[col].fillna(df_merged[f"{col}_gl"])
 
-        # [CRITICAL UPDATE] Overwrite 'startpct' with 'true_start_pct_season' (from Projections) if available
-        # This ensures stats_to_date uses the SEASON-LONG 'true' start percentage, not the L15.
+        # [CRITICAL UPDATE] Overwrite 'startpct' with 'true_start_pct_season' (SEASON DATA)
+        # We purposely ignore 'true_start_pct' (L15) here, so this table reflects full season stats.
         if 'true_start_pct_season' in df_merged.columns:
             print("  Overwriting startpct with SEASON true_start_pct_season...")
             df_merged['startpct'] = np.where(
