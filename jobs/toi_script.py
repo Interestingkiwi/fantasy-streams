@@ -1676,7 +1676,7 @@ def perform_smart_join(base_df, merge_df, merge_cols, source_name, conn):
 
 
 def fetch_and_update_true_goalie_starts():
-    print("\n--- Fetching & Updating True Goalie Starts (L15 Trend) ---")
+    print("\n--- Fetching & Updating True Goalie Starts (L15 vs Season) ---")
 
     # 1. Setup Persistent Tables & Columns
     with get_db_connection() as conn:
@@ -1689,10 +1689,11 @@ def fetch_and_update_true_goalie_starts():
                     PRIMARY KEY (gameid, nhlplayerid)
                 )
             """)
-            # Ensure projections table has the column to store our result
+            # Ensure projections table has the columns to store our results
             cursor.execute("""
                 ALTER TABLE projections
-                ADD COLUMN IF NOT EXISTS true_start_pct REAL
+                ADD COLUMN IF NOT EXISTS true_start_pct REAL,
+                ADD COLUMN IF NOT EXISTS true_start_pct_season REAL
             """)
         conn.commit()
 
@@ -1742,8 +1743,8 @@ def fetch_and_update_true_goalie_starts():
                     )
                 conn.commit()
 
-    # 4. Calculate L15 Trend
-    print("Calculating L15 Start %...")
+    # 4. Calculate Start Rates (L15 and Season)
+    print("Calculating True Start % (L15 and Season)...")
     with get_db_connection() as conn:
         # A. Get Dressed History linked to Dates (for sorting)
         query_history = """
@@ -1760,20 +1761,32 @@ def fetch_and_update_true_goalie_starts():
 
         updates = []
 
-        # Group by player and process last 15
+        # Group by player
         for pid, group in df_history.groupby('nhlplayerid'):
+            # --- L15 CALC ---
             last_15 = group.head(15)
-            dressed_count = len(last_15)
+            l15_dressed = len(last_15)
+            l15_starts = 0
+            if l15_dressed > 0:
+                for _, row in last_15.iterrows():
+                    if (row['gameid'], row['nhlplayerid']) in started_set:
+                        l15_starts += 1
+                rate_l15 = round(l15_starts / l15_dressed, 3)
+            else:
+                rate_l15 = 0.0
 
-            if dressed_count == 0: continue
+            # --- SEASON CALC ---
+            season_dressed = len(group)
+            season_starts = 0
+            if season_dressed > 0:
+                for _, row in group.iterrows():
+                    if (row['gameid'], row['nhlplayerid']) in started_set:
+                        season_starts += 1
+                rate_season = round(season_starts / season_dressed, 3)
+            else:
+                rate_season = 0.0
 
-            start_count = 0
-            for _, row in last_15.iterrows():
-                if (row['gameid'], row['nhlplayerid']) in started_set:
-                    start_count += 1
-
-            rate = round(start_count / dressed_count, 3)
-            updates.append((rate, int(pid)))
+            updates.append((rate_l15, rate_season, int(pid)))
 
         # 5. Update Projections Table
         if updates:
@@ -1781,11 +1794,12 @@ def fetch_and_update_true_goalie_starts():
             with conn.cursor() as cursor:
                 cursor.executemany("""
                     UPDATE projections
-                    SET true_start_pct = %s
+                    SET true_start_pct = %s,
+                        true_start_pct_season = %s
                     WHERE nhlplayerid = %s
                 """, updates)
             conn.commit()
-            print("Projections updated with L15 start rates.")
+            print("Projections updated with true start rates.")
 
 
 def create_stats_to_date_table():
@@ -1795,7 +1809,7 @@ def create_stats_to_date_table():
             cursor.execute("TRUNCATE TABLE unmatched_players")
         conn.commit()
 
-        # 1. READ PROJECTIONS (Now contains 'true_start_pct')
+        # 1. READ PROJECTIONS (Now contains 'true_start_pct' AND 'true_start_pct_season')
         df_proj = read_sql_postgres("SELECT * FROM projections", conn)
         if 'gp' in df_proj.columns: df_proj.rename(columns={'gp': 'GP'}, inplace=True)
         df_proj['nhlplayerid'] = pd.to_numeric(df_proj['nhlplayerid'], errors='coerce').fillna(0).astype(int)
@@ -1842,9 +1856,6 @@ def create_stats_to_date_table():
         df_gl.rename(columns=gl_map, inplace=True)
         df_gl['nhlplayerid'] = pd.to_numeric(df_gl['nhlplayerid'], errors='coerce').fillna(0).astype(int)
 
-        # [NEW LOGIC] Use true_start_pct from PROJECTIONS (base_df) to overwrite startpct if available
-        # df_merged is derived from df_proj, so it already has 'true_start_pct' if it existed in DB
-
         print(f"  Smart Join: goalies (Name Only)")
         cols_to_use = list(gl_map.values()) + ['player_name_normalized', 'nhlplayerid']
         cols_to_use = [c for c in cols_to_use if c in df_gl.columns]
@@ -1856,12 +1867,13 @@ def create_stats_to_date_table():
             if f"{col}_gl" in df_merged.columns:
                  df_merged[col] = df_merged[col].fillna(df_merged[f"{col}_gl"])
 
-        # [CRITICAL UPDATE] Overwrite 'startpct' with 'true_start_pct' (from Projections) if available
-        if 'true_start_pct' in df_merged.columns:
-            print("  Overwriting startpct with L15 true_start_pct...")
+        # [CRITICAL UPDATE] Overwrite 'startpct' with 'true_start_pct_season' (from Projections) if available
+        # This ensures stats_to_date uses the SEASON-LONG 'true' start percentage, not the L15.
+        if 'true_start_pct_season' in df_merged.columns:
+            print("  Overwriting startpct with SEASON true_start_pct_season...")
             df_merged['startpct'] = np.where(
-                df_merged['true_start_pct'].notna() & (df_merged['true_start_pct'] > 0),
-                df_merged['true_start_pct'],
+                df_merged['true_start_pct_season'].notna() & (df_merged['true_start_pct_season'] > 0),
+                df_merged['true_start_pct_season'],
                 df_merged['startpct']
             )
 
